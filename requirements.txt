@@ -1,0 +1,6 @@
+httpx
+requests
+polygon
+ib_insync
+colorama
+python-dateutil
