@@ -1,135 +1,175 @@
 import logging
-import re
-from datetime import datetime, timedelta
+import requests
+from datetime import date
+from typing import Dict, Union
+
+import ib_insync
+from ib_insync import Option, Stock, Order, Ticker
 
 import config
-import utils
 
-class CommonParser:
+# ==============================================================================
+# DISCORD SCRAPER INTERFACE
+# ==============================================================================
+
+class DiscordScraper:
     """
-    A parser designed to extract trade signal details from a raw Discord message.
-    It uses a series of regular expressions and keyword checks to find the
-    action, ticker, strike, expiry, and option type.
+    Handles the HTTP requests to scrape messages from a Discord channel.
+    """
+    BASE_URL = 'https://discord.com/api/v9/channels/{channel_id}/messages?limit={limit}'
+
+    def __init__(self, auth_token: str):
+        if not auth_token:
+            raise ValueError("Discord authentication token is required.")
+        
+        self.headers = {
+            'authorization': auth_token,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+    def poll_new_messages(self, channel_id: str, limit: int = 10) -> list:
+        """
+        Polls a specific channel for the latest messages.
+        """
+        try:
+            url = self.BASE_URL.format(channel_id=channel_id, limit=limit)
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"Exception polling messages from Discord channel {channel_id}: {e}")
+            return []
+        except Exception as e:
+            logging.error(f"An unexpected error occurred during Discord poll: {e}")
+            return []
+
+# ==============================================================================
+# INTERACTIVE BROKERS INTERFACE
+# ==============================================================================
+
+class IBInterface:
+    """
+    Handles all communication with the Interactive Brokers TWS or Gateway.
     """
     def __init__(self):
-        # We can pre-compile regex patterns here for efficiency if needed
-        pass
-
-    def parse_message(self, message: dict, reject_keywords: list, assume_buy: bool) -> dict:
-        """
-        Parses a raw Discord message dictionary.
-
-        Args:
-            message (dict): The raw message object from Discord.
-            reject_keywords (list): A list of words that, if found, will cause the signal to be rejected.
-            assume_buy (bool): If True, signals without an explicit action keyword will be treated as BUY.
-
-        Returns:
-            A dictionary containing the parsed signal details, or an empty dictionary if no valid signal is found.
-        """
-        # Combine content from message body and any embeds into a single string
-        full_content = ""
+        self.ib = ib_insync.IB()
+        self.connection_settings = (
+            config.TWS_SETTINGS if config.USE_TWS else config.GATEWAY_SETTINGS
+        )
         try:
-            full_content += message.get('content', '')
-            for embed in message.get('embeds', []):
-                if embed.get('title'):
-                    full_content += f" {embed['title']}"
-                if embed.get('description'):
-                    full_content += f" {embed['description']}"
+            self.ib.connect(
+                self.connection_settings['IP'],
+                self.connection_settings['PORT'],
+                clientId=self.connection_settings['CLIENT_ID']
+            )
+            logging.info(f"[IB] Connected to {self.connection_settings['IP']}:{self.connection_settings['PORT']}")
         except Exception as e:
-            logging.error(f"Error combining message content: {e}")
-            return {}
+            logging.critical(f"[IB] Connection failed: {e}", exc_info=True)
+            raise
 
-        # 1. Reject Filter: Check for reject keywords first
-        for word in reject_keywords:
-            if word.lower() in full_content.lower():
-                logging.info(f"Signal rejected due to keyword: '{word}'")
-                return {}
+    def create_contract_from_parsed_signal(self, parsed_signal: Dict) -> Union[Option, None]:
+        """
+        Creates and qualifies an IBKR Option contract from a parsed signal dictionary.
+        """
+        try:
+            symbol = parsed_signal.get("underlying")
+            if not symbol:
+                raise ValueError("Parsed signal must contain an 'underlying' symbol.")
 
-        # 2. Clean and split the message content into processable parts
-        # This regex splits by spaces, newlines, colons, and asterisks
-        msg_parts = re.split(r'[\s\n:*]+|\*\*', full_content)
-        msg_parts = [part.strip().upper() for part in msg_parts if part.strip()]
+            # Determine the correct expiry year
+            exp_date = date(date.today().year, parsed_signal['exp_month'], parsed_signal['exp_day'])
+            if exp_date < date.today():
+                exp_date = date(date.today().year + 1, parsed_signal['exp_month'], parsed_signal['exp_day'])
+            
+            expiry_str = exp_date.strftime("%Y%m%d")
+            right = "P" if parsed_signal["p_or_c"].upper() == "P" else "C"
 
-        if not msg_parts:
-            return {}
+            contract = Option(
+                symbol,
+                expiry_str,
+                parsed_signal["strike"],
+                right,
+                "SMART",
+                currency="USD"
+            )
+            
+            # Add tradingClass for SPX weeklies for proper routing
+            if symbol.upper() == "SPX":
+                contract.tradingClass = "SPXW"
 
-        # 3. Find Action (BUY, SELL, TRIM)
-        instr = ""
-        for word in msg_parts:
-            if word in config.BUY_KEYWORDS:
-                instr = "BUY"
-                break
-            if word in config.SELL_KEYWORDS:
-                instr = "SELL"
-                break
-            if word in config.TRIM_KEYWORDS:
-                instr = "TRIM"
-                break
+            # Qualify contract to get conId and other details
+            self.ib.qualifyContracts(contract)
+            logging.info(f"[CONTRACT] Qualified: {contract.localSymbol}")
+            return contract
+        except Exception as e:
+            logging.error(f"[CONTRACT] Failed to create or qualify contract for {parsed_signal.get('underlying')}: {e}")
+            return None
+
+    def get_realtime_price(self, contract: Option) -> float:
+        """
+        Fetches a single real-time price for a qualified IB Contract.
+        Returns the price as a float, or None if unsuccessful.
+        """
+        if not contract or not contract.conId:
+            logging.error(f"[PRICE] Cannot fetch price for an invalid or unqualified contract.")
+            return None
+
+        ticker = self.ib.reqMktData(contract, "", snapshot=False, regulatorySnapshot=False)
+        self.ib.sleep(2)  # Allow time for data to arrive
+
+        # Prioritize the 'last' price, fall back to market price (midpoint)
+        price = ticker.last if Ticker.isne(ticker.last) else ticker.marketPrice()
         
-        # Apply the "assume buy" logic if no instruction was found
-        if not instr and assume_buy:
-            instr = "BUY"
+        self.ib.cancelMktData(contract) # Clean up the data subscription
 
-        # If still no instruction, we can't proceed
-        if not instr:
-            logging.debug("No valid action keyword found in message.")
-            return {}
+        if Ticker.isne(price):
+            logging.info(f"[PRICE] Fetched price for {contract.localSymbol}: {price}")
+            return price
+        else:
+            logging.warning(f"[PRICE] Could not fetch valid last or market price for {contract.localSymbol}.")
+            return None
 
-        # 4. Find Ticker, Strike, and Option Type (C/P)
-        # This is a simplified example; your original complex regex logic can be adapted here.
-        # We'll look for a common pattern like "SPY 500C"
-        ticker, strike, p_or_c = None, None, None
-        for i, part in enumerate(msg_parts):
-            # Regex to find patterns like 500C, 450.5P, 120CALL, etc.
-            match = re.match(r'^(\d+(\.\d+)?)(C|P|CALL|PUTS|PUT|CALLS)$', part)
-            if match and i > 0:
-                strike = float(match.group(1))
-                p_or_c = "C" if match.group(3).startswith('C') else "P"
-                ticker = msg_parts[i-1] # Assume the ticker is the word before the strike/call
-                break
+    def submit_buy_market_order(self, order_details: Dict) -> ib_insync.Trade:
+        """Places a simple market buy order."""
+        contract = self.create_contract_from_parsed_signal(order_details["parsed_symbol"])
+        if not contract: return None
 
-        if not all([ticker, strike, p_or_c]):
-            logging.debug(f"Could not parse Ticker/Strike/Type from message parts: {msg_parts}")
-            return {}
+        order = Order(
+            action="BUY",
+            orderType="MKT",
+            totalQuantity=order_details["qty"],
+            account=config.ACCOUNT_NUMBER or ""
+        )
+        trade = self.ib.placeOrder(contract, order)
+        logging.info(f"Submitted market BUY order for {order_details['qty']}x {contract.localSymbol}")
+        return trade
 
-        # 5. Find Expiry Date (e.g., MM/DD or DTE format)
-        exp_month, exp_day = None, None
-        for part in msg_parts:
-            if "/" in part:
-                try:
-                    month_str, day_str = part.split('/')
-                    exp_month, exp_day = int(month_str), int(day_str)
-                    break
-                except ValueError:
-                    continue # Not a valid date format
-            elif "DTE" in part:
-                try:
-                    dte_days = int(part.replace("DTE", ""))
-                    expiry_date = utils.get_business_day(dte_days)
-                    exp_month, exp_day = expiry_date.month, expiry_date.day
-                    break
-                except (ValueError, IndexError):
-                    continue
+    # Note: The logic for bracket and native trail orders will be added in a future step
+    # when we implement the advanced exit strategies.
 
-        # Default to daily expiry for specific tickers if no date found
-        if not exp_month and ticker in config.DAILY_EXPIRY_TICKERS:
-            today = datetime.now()
-            exp_month, exp_day = today.month, today.day
-        
-        if not all([exp_month, exp_day]):
-            logging.debug(f"Could not parse expiry date from message parts: {msg_parts}")
-            return {}
+    def close_all_positions(self):
+        """Finds and closes all open positions in the account."""
+        positions = self.ib.positions(account=config.ACCOUNT_NUMBER or "")
+        if not positions:
+            logging.info("[EOD] No positions to close.")
+            return
 
-        # 6. Assemble and return the final parsed signal
-        parsed_signal = {
-            'underlying': ticker,
-            'exp_month': exp_month,
-            'exp_day': exp_day,
-            'strike': strike,
-            'p_or_c': p_or_c,
-            'instr': instr,
-            'id': message['id']
-        }
-        return parsed_signal
+        logging.info(f"[EOD] Found {len(positions)} positions to close.")
+        for position in positions:
+            if position.position == 0:
+                continue
+            
+            close_order = Order(
+                action="SELL" if position.position > 0 else "BUY",
+                orderType="MKT",
+                totalQuantity=abs(position.position)
+            )
+            self.ib.placeOrder(position.contract, close_order)
+            logging.info(f"[EOD] Submitted closing order for {abs(position.position)}x {position.contract.localSymbol}")
+            self.ib.sleep(0.5) # Stagger orders slightly
+
+    def disconnect(self):
+        """Disconnects the client."""
+        logging.info("[IB] Disconnecting from Interactive Brokers.")
+        self.ib.disconnect()
 
