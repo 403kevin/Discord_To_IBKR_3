@@ -1,30 +1,29 @@
-# =============================================================================================== #
 from datetime import datetime, timedelta
-import config
-
-# =============================================================================================== #
-
-def get_next_friday(symbol=''):
-    days_to_str = {"monday": 4, "tuesday": 3, "wednesday": 2, "thursday": 1, "friday": 0}
-    inc = days_to_str[datetime.today().strftime('%A').lower()]
-    if config.NEXT_FRIDAY_IS_A_HOLIDAY:
-        inc -= 1
-    if symbol == 'spx':
-        inc = 0
-    day = str((datetime.now() + timedelta(inc)).day)
-    day = day if len(day) == 2 else '0' + day
-    month = str((datetime.now() + timedelta(inc)).month)
-    month = month if len(month) == 2 else '0' + month
-    dtt = str(datetime.now().year) + month + day
-    return dtt
 
 def get_business_day(dte: int) -> datetime:
-    """Calculate expiry date skipping weekends"""
-    today = datetime.today()
-    target_date = today + timedelta(days=dte)
-    # Skip weekends (Saturday=5, Sunday=6)
+    """
+    Calculates a future business day by adding a number of days to today,
+    skipping any weekends.
+
+    Args:
+        dte (int): The number of days to expiry. For example, 0 for today,
+                   1 for the next business day, etc.
+
+    Returns:
+        A datetime object representing the target expiry date.
+    """
+    # Start with today's date
+    target_date = datetime.today() + timedelta(days=dte)
+
+    # If the target date lands on a weekend, move it to the next Monday.
+    # Note: weekday() returns 5 for Saturday and 6 for Sunday.
     while target_date.weekday() >= 5:
         target_date += timedelta(days=1)
+        
     return target_date
 
-# =============================================================================================== #
+# The old `get_next_friday` function has been removed. It was complex and
+# less reliable than handling explicit dates or DTE formats, which our
+# new parser is designed to do. The `get_business_day` function is a
+# much more robust way to handle relative expiries.
+
