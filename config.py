@@ -23,7 +23,7 @@ SIGNAL_MAX_AGE_SECONDS = 60
 
 CHANNEL_PROFILES = [
     {
-        "channel_id": 1021379480503205898,  # Replace with the actual Channel ID
+        "channel_id": 1392531225348014180,  # Replace with the actual Channel ID
         "channel_name": "Test_Server_Trader",
         "enabled": True,  # Set to False to temporarily disable this profile
 
@@ -39,9 +39,9 @@ CHANNEL_PROFILES = [
             "type": "dynamic_trail",  # Options: "dynamic_trail", "bracket", "native_trail", "none"
 
             # --- Settings for "dynamic_trail" ---
-            "breakeven_trigger_percent": 20,
+            "breakeven_trigger_percent": 10,
             "pullback_stop_percent": 15,
-            "hard_stop_loss_percent": 25,
+            "hard_stop_loss_percent": 35,
             "timeout_exit_minutes": 30,
 
             # --- Settings for "bracket" ---
@@ -52,19 +52,6 @@ CHANNEL_PROFILES = [
             "trailing_percent": 25
         }
     },
-    # --- Add another profile for a different trader below ---
-    # {
-    #     "channel_id": 987654321098765432,
-    #     "channel_name": "Trader_Jane_Smith",
-    #     "enabled": True,
-    #     "assume_buy_on_ambiguous": False,
-    #     "reject_if_contains": ["earnings", "play"],
-    #     "exit_strategy": {
-    #         "type": "bracket",
-    #         "take_profit_percent": 20,
-    #         "stop_loss_percent": 15,
-    #     }
-    # }
 ]
 
 
@@ -72,14 +59,9 @@ CHANNEL_PROFILES = [
 # SECTION 3: TRADE SIZING & FILTERS
 # ==============================================================================
 
-# The maximum amount of funds to allocate for a single opening trade.
 PER_SIGNAL_FUNDS_ALLOCATION = 2000
-
-# Price filters: ignore trades for options outside this price range.
 MIN_PRICE = 0.20
 MAX_PRICE = 10.0
-
-# A list of tickers to ignore all signals for. Example: ['SPY', 'AMZN']
 RESTRICTED_SYMBOLS = []
 
 
@@ -87,30 +69,28 @@ RESTRICTED_SYMBOLS = []
 # SECTION 4: INTERACTIVE BROKERS (IBKR) CONNECTION
 # ==============================================================================
 
-# Set to True for paper trading, False for live trading.
 ENABLE_PAPER_TRADING = True
-
-# TWS is for manual oversight; Gateway is better for automated bots.
-# Set one to True and the other to False.
 USE_TWS = True
 USE_GATEWAY = not USE_TWS
-
 TWS_SETTINGS = {'IP': '127.0.0.1', 'PORT': 7497, 'CLIENT_ID': 53}
 GATEWAY_SETTINGS = {'IP': '127.0.0.1', 'PORT': 4002, 'CLIENT_ID': 50}
-
-# Your IBKR account number. Leave as an empty string ("") to use the default.
 ACCOUNT_NUMBER = ""
 
 
 # ==============================================================================
 # SECTION 5: KEYWORD CONFIGURATION
 # ==============================================================================
-# The parser uses these lists to understand the intent of a signal.
 
 BUY_KEYWORDS = ["BTO", "BUY", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE", "OPENING"]
 SELL_KEYWORDS = ["STC", "SELL", "SOLD", "OUT", "EXIT", "CLOSE", "CUT", "STOPPED", "LOSS", "PROFITS"]
 TRIM_KEYWORDS = ["TRIM", "SCALE", "LFG", "HOLDING", "TAKE", "UPDATE", "GAINS", "NOW", "REDUCE", "SECURE", "SAFETY"]
-
-# A list of tickers that typically have 0DTE or daily expiries.
 DAILY_EXPIRY_TICKERS = ["SPX", "SPY", "QQQ", "SPXW"]
 
+
+# ==============================================================================
+# SECTION 6: END-OF-DAY (EOD) AUTO-CLOSE
+# ==============================================================================
+
+EOD_CLOSE_ENABLED = True
+EOD_CLOSE_HOUR = 15
+EOD_CLOSE_MINUTE = 50
