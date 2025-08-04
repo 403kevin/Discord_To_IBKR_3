@@ -6,156 +6,173 @@ from math import floor, isnan
 from datetime import date, datetime, timezone, timedelta
 from typing import Dict
 
-import ib_insync
 from dotenv import load_dotenv
 
 import config
 import custom_logger
 import message_parsers
-import ib_interface
+from ib_interface import IBInterface, DiscordScraper
 from trailing_stop_manager import TrailingStopManager
 from trade_logger import log_trade
 
 RUNTIME_LOG_FILE = 'runtime.log'
 
+
 class Main:
     def __init__(self):
-        """
-        Initializes the bot, loading configurations and setting up interfaces.
-        """
         load_dotenv()
         self.DISCORD_AUTH_TOKEN = os.getenv("DISCORD_AUTH_TOKEN")
         if not self.DISCORD_AUTH_TOKEN:
             logging.critical("DISCORD_AUTH_TOKEN not found in .env file. Exiting.")
             exit()
 
-        # Build a lookup dictionary from channel profiles for quick access
-        self.channel_profiles = {
-            profile["channel_id"]: profile
-            for profile in config.CHANNEL_PROFILES if profile.get("enabled", True)
-        }
-        # Keep a simple list of channel IDs to iterate over
+        self.channel_profiles = {p["channel_id"]: p for p in config.CHANNEL_PROFILES if p.get("enabled", True)}
         self.channel_ids_to_poll = list(self.channel_profiles.keys())
+        self.last_message_ids = {cid: "0" for cid in self.channel_ids_to_poll}
 
-        # State management to track the last seen message ID for each channel
-        self.last_message_ids = {channel_id: "0" for channel_id in self.channel_ids_to_poll}
-
-        # Initialize interfaces
-        self.discord_client = ib_interface.DiscordScraper(self.DISCORD_AUTH_TOKEN)
-        self.ib_interface = ib_interface.IBInterface()
-        self.parser = getattr(message_parsers, 'CommonParser')()
+        self.discord_client = DiscordScraper(self.DISCORD_AUTH_TOKEN)
+        self.ib_interface = IBInterface()
+        self.parser = message_parsers.CommonParser()
         self.trailing_manager = TrailingStopManager(self.ib_interface)
 
-        # Start the trailing stop manager loop in a separate thread
         threading.Thread(target=self.run_trailing_loop, daemon=True).start()
+        if config.EOD_CLOSE_ENABLED:
+            threading.Thread(target=self.run_eod_close_loop, daemon=True).start()
 
-        logging.info(f'IBKR client and Scraper initiated.')
-        logging.info(f'Monitoring {len(self.channel_profiles)} enabled channel profiles.')
+        logging.info(f'IBKR client and Scraper initiated for {len(self.channel_profiles)} channels.')
 
     def run_trailing_loop(self):
-        """
-        Runs the trailing stop manager in a background thread.
-        """
         while True:
             try:
                 self.trailing_manager.check_trailing_stops()
             except Exception as e:
                 logging.error(f"[TRAIL LOOP ERROR] {e}", exc_info=True)
-            time.sleep(5) # Check stops every 5 seconds
+            time.sleep(5)
+
+    def run_eod_close_loop(self):
+        eod_time_str = f"{config.EOD_CLOSE_HOUR:02d}:{config.EOD_CLOSE_MINUTE:02d}"
+        while True:
+            if datetime.now().strftime("%H:%M") >= eod_time_str:
+                logging.info(f"EOD CLOSE TRIGGERED. Closing all positions.")
+                self.ib_interface.close_all_positions()
+                break
+            time.sleep(30)
 
     def run(self):
-        """
-        Main sequential polling loop.
-        Cycles through the configured channels, scrapes messages, and processes signals.
-        """
-        logging.info(f'Initiating sequential polling loop... BEHOLD!!')
+        logging.info('Initiating sequential polling loop... BEHOLD!!')
         while True:
-            # Iterate through each channel profile
             for channel_id in self.channel_ids_to_poll:
+                profile = self.channel_profiles[channel_id]
+                logging.debug(f"Polling channel: {profile.get('channel_name', channel_id)}")
                 try:
-                    profile = self.channel_profiles[channel_id]
-                    logging.debug(f"Polling channel: {profile.get('channel_name', channel_id)}")
+                    messages = self.discord_client.poll_new_messages(channel_id, limit=10)
+                    if not messages: continue
 
-                    # Scrape new messages
-                    all_messages = self.discord_client.poll_new_messages(channel_id, limit=10)
-                    if not all_messages:
-                        continue
-
-                    # Filter for messages that are actually new
                     last_id = self.last_message_ids[channel_id]
-                    new_messages = [msg for msg in all_messages if int(msg['id']) > int(last_id)]
+                    new_messages = [msg for msg in messages if int(msg['id']) > int(last_id)]
 
                     if new_messages:
-                        # Update the last seen message ID for this channel
                         self.last_message_ids[channel_id] = new_messages[0]['id']
-                        
-                        # Process newest to oldest
-                        new_messages.reverse()
-                        for message in new_messages:
+                        for message in reversed(new_messages):
                             self.process_signal(message, profile)
-
                 except Exception as e:
                     logging.error(f"Error polling channel {channel_id}: {e}", exc_info=True)
-
-                # Wait before polling the next channel
                 time.sleep(config.DELAY_BETWEEN_CHANNELS)
-
-            # Wait after completing a full cycle
             logging.debug("Full polling cycle complete. Pausing.")
             time.sleep(config.DELAY_AFTER_FULL_CYCLE)
 
     def process_signal(self, message: Dict, profile: Dict):
-        """
-        Processes a single scraped message based on the rules from its channel profile.
-        """
         signal_id = message['id']
         channel_name = profile.get('channel_name', message['channel_id'])
         log_prefix = f"Signal #{signal_id} from {channel_name}"
 
-        # Check for stale message
         msg_timestamp = datetime.fromisoformat(message['timestamp']).replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) - msg_timestamp > timedelta(seconds=config.SIGNAL_MAX_AGE_SECONDS):
             logging.info(f"[{log_prefix}] Skipping stale signal.")
             return
 
-        # Parse the message content
         try:
-            # Pass the profile-specific keywords to the parser
             parsed_signal = self.parser.parse_message(
                 message,
                 reject_keywords=profile.get('reject_if_contains', []),
                 assume_buy=profile.get('assume_buy_on_ambiguous', False)
             )
-            if not parsed_signal:
-                return # Parser rejected or found no valid signal
+            if not parsed_signal: return
         except Exception as e:
             logging.error(f'[{log_prefix}] Exception during parsing: {e}', exc_info=True)
             return
 
-        # --- Execution Logic (simplified for clarity, will be expanded) ---
         logging.info(f"[{log_prefix}] Successfully parsed signal: {parsed_signal}")
-        
-        # Here we would add the logic for:
-        # 1. Creating the contract
-        # 2. Getting the price
-        # 3. Calculating quantity
-        # 4. Placing the order based on the profile's exit_strategy
-        # 5. Logging the trade to the CSV
-        # 6. Adding to the trailing_stop_manager if needed
+
+        # --- EXECUTION LOGIC STARTS HERE ---
+        if parsed_signal['instr'] not in ["BUY", "ADD"]:
+            # For now, we only handle entry signals. Sell/Trim logic will be added later.
+            logging.info(f"[{log_prefix}] Skipping non-BUY signal.")
+            return
+
+        # 1. Create Contract
+        contract = self.ib_interface.create_contract_from_parsed_signal(parsed_signal)
+        if not contract:
+            logging.error(f"[{log_prefix}] Failed to create contract.")
+            return
+
+        # 2. Get Price
+        price = self.ib_interface.get_realtime_price(contract)
+        if not price or not (config.MIN_PRICE <= price <= config.MAX_PRICE):
+            logging.warning(f"[{log_prefix}] Skipping due to price {price} being invalid or outside limits.")
+            return
+
+        # 3. Calculate Quantity
+        qty = floor(config.PER_SIGNAL_FUNDS_ALLOCATION / (price * 100))
+        if qty <= 0:
+            logging.warning(f"[{log_prefix}] Skipping due to calculated quantity being <= 0.")
+            return
+
+        # 4. Place Order based on Strategy
+        exit_strategy = profile.get("exit_strategy", {})
+        strategy_type = exit_strategy.get("type")
+        order_details = {'parsed_symbol': parsed_signal, 'qty': qty}
+
+        logging.info(
+            f"[{log_prefix}] Placing {strategy_type.upper()} order for {qty}x {contract.localSymbol} @ MKT (Price: {price:.2f})")
+
+        # Note: We will build out the bracket and native_trail functions next.
+        # For now, all strategies will default to a market order with a dynamic trail.
+        trade = self.ib_interface.submit_buy_market_order(order_details)
+        if not trade:
+            logging.error(f"[{log_prefix}] Order submission failed.")
+            return
+
+        while trade.isActive():
+            self.ib_interface.ib.waitOnUpdate()
+
+        fill_price = trade.orderStatus.avgFillPrice if trade and trade.orderStatus.avgFillPrice > 0 else price
+        logging.info(f"[{log_prefix}] Order filled at average price: {fill_price:.2f}")
+
+        # 5. Log and Activate Trailing Stop
+        trader_name = profile.get("channel_name", "Unknown")
+        strategy_details_str = f"{strategy_type}_{exit_strategy.get('pullback_stop_percent', 15)}%"
+
+        log_trade(
+            symbol=contract.localSymbol, qty=qty, price=fill_price, action="BUY", reason="entry",
+            trader_name=trader_name, strategy_details=strategy_details_str
+        )
+
+        if strategy_type == "dynamic_trail":
+            self.trailing_manager.add_position(
+                symbol=contract.localSymbol, entry_price=fill_price, qty=qty, contract=contract,
+                rules=exit_strategy, trader_name=trader_name, strategy_details=strategy_details_str
+            )
 
 
 if __name__ == '__main__':
-    # Setup logging
     import colorama
+
     colorama.init()
     custom_logger.setup_logging(console_log_output="stdout", console_log_level="info",
                                 console_log_color=True, logfile_file=RUNTIME_LOG_FILE,
                                 logfile_log_level="info", logfile_log_color=False,
-                                log_line_template="%(color_on)s[%(asctime)s] [%(levelname)-8s]"
-                                                  " %(message)s%(color_off)s")
+                                log_line_template="%(color_on)s[%(asctime)s] [%(levelname)-8s] %(message)s%(color_off)s")
     logging.info(f'===================================================================\n')
-    
-    # Run the application
     main_app = Main()
     main_app.run()
-
