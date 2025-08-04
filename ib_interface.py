@@ -1,131 +1,159 @@
-# ib_interface.py
-
 import logging
-import ib_insync
-from ib_insync import Option, Stock, Order
+import requests
+from datetime import date
+from typing import Dict, Union
 
+import ib_insync
+from ib_insync import Option, Stock, Order, Ticker
+
+import config
+
+
+# ==============================================================================
+# DISCORD SCRAPER INTERFACE
+# ==============================================================================
+
+class DiscordScraper:
+    """
+    Handles the HTTP requests to scrape messages from a Discord channel.
+    """
+    BASE_URL = 'https://discord.com/api/v9/channels/{channel_id}/messages?limit={limit}'
+
+    def __init__(self, auth_token: str):
+        if not auth_token:
+            raise ValueError("Discord authentication token is required.")
+
+        self.headers = {
+            'authorization': auth_token,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+    def poll_new_messages(self, channel_id: str, limit: int = 10) -> list:
+        """
+        Polls a specific channel for the latest messages.
+        """
+        try:
+            url = self.BASE_URL.format(channel_id=channel_id, limit=limit)
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"Exception polling messages from Discord channel {channel_id}: {e}")
+            return []
+        except Exception as e:
+            logging.error(f"An unexpected error occurred during Discord poll: {e}")
+            return []
+
+
+# ==============================================================================
+# INTERACTIVE BROKERS INTERFACE
+# ==============================================================================
 
 class IBInterface:
-    def __init__(self, host: str = "127.0.0.1", port: int = 7497, clientId: int = 1, account_number: str = ""):
-        """
-        Initialize the IB connection.
-        """
+    """
+    Handles all communication with the Interactive Brokers TWS or Gateway.
+    """
+
+    def __init__(self):
         self.ib = ib_insync.IB()
-        self.account_number = account_number
-        self.ib.connect(host, port, clientId)
-        logging.info(f"[IB] Connected to {host}:{port} as clientId={clientId}")
-
-    def create_contract(self, parsed_symbol) -> ib_insync.Contract:
-        """
-        Build and qualify a Stock or Option contract from parsed_symbol.
-        """
-        # Case 1: parsed_symbol is a simple stock ticker string
-        if not hasattr(parsed_symbol, "underlying_symbol"):
-            contract = Stock(parsed_symbol, "SMART", "USD")
-            self.ib.qualifyContracts(contract)
-            logging.info(f"[CONTRACT] Qualified Stock: {contract.localSymbol}")
-            return contract
-
-        # Case 2: parsed_symbol is an OptionSymbol-like object
-        expiry_str = parsed_symbol.expiry.strftime("%Y%m%d")
-        contract = Option(
-            parsed_symbol.underlying_symbol,
-            expiry_str,
-            parsed_symbol.strike_price,
-            parsed_symbol.call_or_put,
-            "SMART",
-            currency="USD"
+        self.connection_settings = (
+            config.TWS_SETTINGS if config.USE_TWS else config.GATEWAY_SETTINGS
         )
+        try:
+            self.ib.connect(
+                self.connection_settings['IP'],
+                self.connection_settings['PORT'],
+                clientId=self.connection_settings['CLIENT_ID']
+            )
+            logging.info(f"[IB] Connected to {self.connection_settings['IP']}:{self.connection_settings['PORT']}")
+        except Exception as e:
+            logging.critical(f"[IB] Connection failed: {e}", exc_info=True)
+            raise
 
-        # Special handling for SPX vs. SPXW
-        if parsed_symbol.underlying_symbol.upper() == "SPX":
-            contract.tradingClass = "SPXW"
-
-        self.ib.qualifyContracts(contract)
-        logging.info(f"[CONTRACT] Qualified Option: {contract.localSymbol}")
-        return contract
-
-    def get_realtime_price(
-        self,
-        contract: ib_insync.Contract,
-        timeout: float = 3.0,
-        use_snapshot: bool = False
-    ) -> tuple[float, ib_insync.Contract]:
+    def create_contract_from_parsed_signal(self, parsed_signal: Dict) -> Union[Option, None]:
         """
-        Fetch a single real-time price for a qualified IB Contract.
+        Creates and qualifies an IBKR Option contract from a parsed signal dictionary.
         """
         try:
-            if not getattr(contract, "conId", None):
-                self.ib.qualifyContracts(contract)
+            symbol = parsed_signal.get("underlying")
+            if not symbol:
+                raise ValueError("Parsed signal must contain an 'underlying' symbol.")
 
-            if use_snapshot:
-                ticker = self.ib.reqMktData(contract, "", False, True)
-                self.ib.sleep(0.5)
-                price = ticker.last if (ticker.last not in [None, 0.0]) else None
-                try:
-                    self.ib.cancelMktData(contract)
-                except Exception:
-                    pass
-            else:
-                ticker = self.ib.reqMktData(contract, "", False, False)
-                self.ib.sleep(timeout)
-                self.ib.cancelMktData(contract)
-                price = ticker.last if ticker.last and (ticker.last not in [0.0]) else ticker.marketPrice()
+            exp_date = date(date.today().year, parsed_signal['exp_month'], parsed_signal['exp_day'])
+            if exp_date < date.today():
+                exp_date = date(date.today().year + 1, parsed_signal['exp_month'], parsed_signal['exp_day'])
 
-            if price in [None, 0.0]:
-                if hasattr(ticker, "bid") and hasattr(ticker, "ask") and ticker.bid and ticker.ask:
-                    price = (ticker.bid + ticker.ask) / 2
-                else:
-                    price = None
+            expiry_str = exp_date.strftime("%Y%m%d")
+            right = "P" if parsed_signal["p_or_c"].upper() == "P" else "C"
 
-            if price:
-                logging.info(f"[PRICE FETCH] {contract.localSymbol}: {price}")
-                return price, contract
-            else:
-                logging.warning(f"[PRICE FETCH FAIL] No valid price for {contract.localSymbol}")
-                return -1.0, contract
+            contract = Option(
+                symbol,
+                expiry_str,
+                parsed_signal["strike"],
+                right,
+                "SMART",
+                currency="USD"
+            )
 
-        except Exception as exc:
-            logging.error(f"[PRICE EXC] failed for {getattr(contract, 'localSymbol', contract)}: {exc}")
-            return -1.0, contract
+            if symbol.upper() == "SPX":
+                contract.tradingClass = "SPXW"
 
-    def place_native_trail_stop(self, order: dict) -> ib_insync.Trade:
-        """
-        Place a native IB trailing-stop order.
-        """
-        contract = self.create_contract(order["parsed_symbol"])
-        trailing_percent = order.get("trail_percent", 1.5) / 100.0
-        ib_order = Order(
-            orderType="TRAIL",
-            totalQuantity=order["qty"],
-            trailingPercent=trailing_percent,
-            action="SELL",
-            tif="GTC",
-            account=self.account_number if self.account_number else None,
+            self.ib.qualifyContracts(contract)
+            logging.info(f"[CONTRACT] Qualified: {contract.localSymbol}")
+            return contract
+        except Exception as e:
+            logging.error(f"[CONTRACT] Failed to create or qualify contract for {parsed_signal.get('underlying')}: {e}")
+            return None
+
+    def get_realtime_price(self, contract: Option) -> float:
+        if not contract or not contract.conId:
+            logging.error(f"[PRICE] Cannot fetch price for an invalid or unqualified contract.")
+            return None
+
+        ticker = self.ib.reqMktData(contract, "", snapshot=False, regulatorySnapshot=False)
+        self.ib.sleep(2)
+        price = ticker.last if Ticker.isne(ticker.last) else ticker.marketPrice()
+        self.ib.cancelMktData(contract)
+
+        if Ticker.isne(price):
+            logging.info(f"[PRICE] Fetched price for {contract.localSymbol}: {price}")
+            return price
+        else:
+            logging.warning(f"[PRICE] Could not fetch valid price for {contract.localSymbol}.")
+            return None
+
+    def submit_buy_market_order(self, order_details: Dict) -> ib_insync.Trade:
+        contract = self.create_contract_from_parsed_signal(order_details["parsed_symbol"])
+        if not contract: return None
+        order = Order(
+            action="BUY",
+            orderType="MKT",
+            totalQuantity=order_details["qty"],
+            account=config.ACCOUNT_NUMBER or ""
         )
-        trade = self.ib.placeOrder(contract, ib_order)
-        logging.info(
-            f"[TRAIL STOP] Placed TRAIL order on {contract.localSymbol} "
-            f"qty={order['qty']} trail%={trailing_percent*100}"
-        )
+        trade = self.ib.placeOrder(contract, order)
+        logging.info(f"Submitted market BUY order for {order_details['qty']}x {contract.localSymbol}")
         return trade
 
-    def unsub_market_data(self, contract: ib_insync.Contract):
-        """
-        Cancel any ongoing market data subscription for the given contract.
-        """
-        try:
-            self.ib.cancelMktData(contract)
-            logging.info(f"[UNSUBSCRIBE] Cancelled market data for {contract.localSymbol}")
-        except Exception as exc:
-            logging.warning(f"[UNSUBSCRIBE FAIL] Could not cancel data for {contract}: {exc}")
+    def close_all_positions(self):
+        positions = self.ib.positions(account=config.ACCOUNT_NUMBER or "")
+        if not positions:
+            logging.info("[EOD] No positions to close.")
+            return
+        logging.info(f"[EOD] Found {len(positions)} positions to close.")
+        for position in positions:
+            if position.position == 0:
+                continue
+
+            close_order = Order(
+                action="SELL" if position.position > 0 else "BUY",
+                orderType="MKT",
+                totalQuantity=abs(position.position)
+            )
+            self.ib.placeOrder(position.contract, close_order)
+            logging.info(f"[EOD] Submitted closing order for {abs(position.position)}x {position.contract.localSymbol}")
+            self.ib.sleep(0.5)
 
     def disconnect(self):
-        """
-        Disconnect the IB session cleanly.
-        """
-        try:
-            self.ib.disconnect()
-            logging.info("[IB] Disconnected from Interactive Brokers")
-        except Exception as exc:
-            logging.error(f"[IB DISCONNECT ERROR] {exc}")
+        logging.info("[IB] Disconnecting from Interactive Brokers.")
+        self.ib.disconnect()
