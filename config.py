@@ -24,7 +24,7 @@ SIGNAL_MAX_AGE_SECONDS = 60
 CHANNEL_PROFILES = [
     {
         "channel_id": 1392531225348014180,  # Replace with the actual Channel ID
-        "channel_name": "Test_Server_Trader",
+        "channel_name": "TEST CHANNEL",
         "enabled": True,  # Set to False to temporarily disable this profile
 
         # If a signal has no BUY/SELL keyword, assume it's a BUY.
@@ -33,23 +33,60 @@ CHANNEL_PROFILES = [
         # A list of words that, if found in a message, will cause the bot to ignore it.
         "reject_if_contains": ["lotto", "risky", "yolo", "swing"],
 
+        # --- NEW: Entry Order Configuration ---
+        "entry_order_type": "MKT",  # Options: "MKT", "PEG_MID", "ADAPTIVE_URGENT"
+        "fill_timeout_seconds": 30,  # Timeout for non-market orders
+
         # The exit strategy to use for trades from this channel.
         # The 'type' field determines which settings are used.
         "exit_strategy": {
-            "type": "dynamic_trail",  # Options: "dynamic_trail", "bracket", "native_trail", "none"
+            "type": "dynamic_trail",  # The primary strategy is our internal logic.
 
-            # --- Settings for "dynamic_trail" ---
-            "breakeven_trigger_percent": 10,
+            # --- Settings for the dynamic_trail ---
+            "breakeven_trigger_percent": 20,
             "pullback_stop_percent": 15,
             "hard_stop_loss_percent": 35,
-            "timeout_exit_minutes": 30,
+            "timeout_exit_minutes": 60,
 
-            # --- Settings for "bracket" ---
-            "take_profit_percent": 25,
-            "stop_loss_percent": 25,
+            # --- NEW: Optional Safety Net Settings ---
+            "safety_net": {
+                "enabled": False,  # Set to True to attach a wide native trail on entry
+                "native_trail_percent": 65  # The wide percentage for the safety net
+            }
+        }
+    },
+    # PROFILE 2
+    {
+        "channel_id": 1404464845419446322,  # Replace with the actual Channel ID
+        "channel_name": "PROFILE_2",
+        "enabled": True,  # Set to False to temporarily disable this profile
 
-            # --- Settings for "native_trail" ---
-            "trailing_percent": 25
+        # If a signal has no BUY/SELL keyword, assume it's a BUY.
+        "assume_buy_on_ambiguous": False,
+
+        # A list of words that, if found in a message, will cause the bot to ignore it.
+        "reject_if_contains": ["lotto", "risky", "yolo", "swing"],
+
+        # --- NEW: Entry Order Configuration ---
+        "entry_order_type": "MKT",  # Options: "MKT", "PEG_MID", "ADAPTIVE_URGENT"
+        "fill_timeout_seconds": 20,  # Timeout for non-market orders
+
+        # The exit strategy to use for trades from this channel.
+        # The 'type' field determines which settings are used.
+        "exit_strategy": {
+            "type": "dynamic_trail",  # The primary strategy is our internal logic.
+
+            # --- Settings for the dynamic_trail ---
+            "breakeven_trigger_percent": 20,
+            "pullback_stop_percent": 15,
+            "hard_stop_loss_percent": 35,
+            "timeout_exit_minutes": 60,
+
+            # --- NEW: Optional Safety Net Settings ---
+            "safety_net": {
+                "enabled": False,  # Set to True to attach a wide native trail on entry
+                "native_trail_percent": 40  # The wide percentage for the safety net
+            }
         }
     },
 ]
@@ -59,7 +96,7 @@ CHANNEL_PROFILES = [
 # SECTION 3: TRADE SIZING & FILTERS
 # ==============================================================================
 
-PER_SIGNAL_FUNDS_ALLOCATION = 2000
+PER_SIGNAL_FUNDS_ALLOCATION = 1000
 MIN_PRICE = 0.20
 MAX_PRICE = 10.0
 RESTRICTED_SYMBOLS = []
@@ -94,3 +131,15 @@ DAILY_EXPIRY_TICKERS = ["SPX", "SPY", "QQQ", "SPXW"]
 EOD_CLOSE_ENABLED = True
 EOD_CLOSE_HOUR = 15
 EOD_CLOSE_MINUTE = 50
+
+# In config.py, for example at the end of the file
+
+# ==============================================================================
+# SECTION 7: TELEGRAM NOTIFICATIONS
+# ==============================================================================
+
+TELEGRAM_SETTINGS = {
+    "enabled": True,
+    "bot_token_name": "TELEGRAM_BOT_TOKEN", # Name of the variable in your .env file
+    "chat_id_name": "TELEGRAM_CHAT_ID"    # Name of the variable in your .env file
+}
