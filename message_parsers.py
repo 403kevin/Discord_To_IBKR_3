@@ -1,7 +1,6 @@
 import logging
 import re
 from datetime import datetime
-
 import config
 import utils
 
@@ -23,70 +22,87 @@ class CommonParser:
                 logging.info(f"Signal rejected due to keyword: '{word}'")
                 return {}
 
-        # Use the more robust parsing logic from your original script
+        # This logic is adapted from your original, robust parser
         try:
-            # This is a simplified adaptation of your original logic.
-            # It can be further refined if needed.
             msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*]+|\*\*', full_content) if p.strip()]
             if not msg_parts: return {}
 
-            # Find Ticker, Strike, and Option Type
-            ticker, strike, p_or_c = None, None, None
-            for i, part in enumerate(msg_parts):
-                # Regex for patterns like: SPY, 500C, 450.5P, TSLA, 120CALL
-                match = re.match(r'^(\d+(\.\d+)?)(C|P|CALL|PUTS|PUT|CALLS)$', part)
-                if match and i > 0:
-                    # Check if the preceding part is a likely ticker (alphabetic)
-                    if msg_parts[i - 1].isalpha():
-                        strike = float(match.group(1))
-                        p_or_c = "C" if match.group(3).startswith('C') else "P"
-                        ticker = msg_parts[i - 1]
-                        break
+            instr, ticker, strike, p_or_c, exp_month, exp_day = None, None, None, None, None, None
 
-            if not all([ticker, strike, p_or_c]):
-                logging.debug("Parser could not find a valid Ticker/Strike/Type pattern.")
-                return {}
+            # --- Component Identification ---
+            temp_parts = list(msg_parts)  # Work on a copy
 
-            # Find Expiry
-            exp_month, exp_day = None, None
-            for part in msg_parts:
-                if "/" in part and len(part) >= 3:  # Basic check for MM/DD
+            # 1. Find Instruction
+            for part in temp_parts:
+                if part in config.BUY_KEYWORDS: instr = "BUY"; temp_parts.remove(part); break
+                if part in config.SELL_KEYWORDS: instr = "SELL"; temp_parts.remove(part); break
+                if part in config.TRIM_KEYWORDS: instr = "TRIM"; temp_parts.remove(part); break
+
+            # 2. Find Expiry (MM/DD or DTE)
+            for part in temp_parts:
+                if "/" in part and len(part) >= 3:
                     try:
-                        m_str, d_str = part.split('/')
-                        exp_month, exp_day = int(m_str), int(d_str)
-                        break
+                        m, d = part.split('/'); exp_month, exp_day = int(m), int(d); temp_parts.remove(part); break
                     except (ValueError, IndexError):
                         continue
                 elif "DTE" in part:
                     try:
                         expiry = utils.get_business_day(int(part.replace("DTE", "")))
-                        exp_month, exp_day = expiry.month, expiry.day
+                        exp_month, exp_day = expiry.month, expiry.day;
+                        temp_parts.remove(part);
                         break
                     except (ValueError, IndexError):
                         continue
+
+            # 3. Find Strike and Option Type (e.g., 500C, 450.5P)
+            for part in temp_parts:
+                match = re.match(r'^(\d+(\.\d+)?)(C|P|CALL|PUTS|PUT|CALLS)$', part)
+                if match:
+                    strike = float(match.group(1))
+                    p_or_c = "C" if match.group(3).startswith('C') else "P"
+                    temp_parts.remove(part);
+                    break
+
+            # If not found, try finding strike and type separately (e.g., SPY 500 C)
+            if not strike:
+                for i, part in enumerate(temp_parts):
+                    if part in ['C', 'P', 'CALL', 'PUT', 'CALLS', 'PUTS'] and i > 0:
+                        try:
+                            potential_strike = float(temp_parts[i - 1])
+                            strike = potential_strike
+                            p_or_c = "C" if part.startswith('C') else "P"
+                            # Remove both parts once found
+                            temp_parts.pop(i);
+                            temp_parts.pop(i - 1);
+                            break
+                        except (ValueError, IndexError):
+                            continue
+
+            # 4. Find Ticker (usually the longest remaining alphabetic part)
+            potential_tickers = [part for part in temp_parts if part.isalpha()]
+            if potential_tickers:
+                potential_tickers.sort(key=len, reverse=True)
+                ticker = potential_tickers[0]
+
+            # --- Validation and Defaults ---
+            if not instr and assume_buy: instr = "BUY"
+            if not all([instr, ticker, strike, p_or_c]):
+                logging.debug(
+                    f"Parser failed validation. Found: instr={instr}, ticker={ticker}, strike={strike}, p_or_c={p_or_c}")
+                return {}
 
             if not exp_month and ticker in config.DAILY_EXPIRY_TICKERS:
                 today = datetime.now()
                 exp_month, exp_day = today.month, today.day
 
             if not all([exp_month, exp_day]):
-                logging.debug("Parser could not find a valid expiry date.")
+                logging.debug(f"Parser failed to find expiry date for ticker {ticker}.")
                 return {}
-
-            # Find Instruction
-            instr = ""
-            for word in msg_parts:
-                if word in config.BUY_KEYWORDS: instr = "BUY"; break
-                if word in config.SELL_KEYWORDS: instr = "SELL"; break
-                if word in config.TRIM_KEYWORDS: instr = "TRIM"; break
-            if not instr and assume_buy: instr = "BUY"
-            if not instr: return {}
 
             return {
                 'underlying': ticker, 'exp_month': exp_month, 'exp_day': exp_day,
                 'strike': strike, 'p_or_c': p_or_c.upper(), 'instr': instr, 'id': message['id']
             }
-
         except Exception as e:
-            logging.error(f"An unexpected error occurred during parsing: {e}")
+            logging.error(f"An unexpected error occurred during parsing: {e}", exc_info=True)
             return {}
