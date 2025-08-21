@@ -1,0 +1,2 @@
+# signals_to_test.txt
+# Format: YYYY-MM-DD HH:MM:SS | The exact signal text from Discord
