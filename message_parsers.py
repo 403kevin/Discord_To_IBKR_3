@@ -22,23 +22,18 @@ class CommonParser:
                 logging.info(f"Signal rejected due to keyword: '{word}'")
                 return {}
 
-        # This logic is adapted from your original, robust parser
         try:
             msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*]+|\*\*', full_content) if p.strip()]
             if not msg_parts: return {}
 
             instr, ticker, strike, p_or_c, exp_month, exp_day = None, None, None, None, None, None
+            temp_parts = list(msg_parts)
 
-            # --- Component Identification ---
-            temp_parts = list(msg_parts)  # Work on a copy
-
-            # 1. Find Instruction
             for part in temp_parts:
                 if part in config.BUY_KEYWORDS: instr = "BUY"; temp_parts.remove(part); break
                 if part in config.SELL_KEYWORDS: instr = "SELL"; temp_parts.remove(part); break
                 if part in config.TRIM_KEYWORDS: instr = "TRIM"; temp_parts.remove(part); break
 
-            # 2. Find Expiry (MM/DD or DTE)
             for part in temp_parts:
                 if "/" in part and len(part) >= 3:
                     try:
@@ -54,7 +49,6 @@ class CommonParser:
                     except (ValueError, IndexError):
                         continue
 
-            # 3. Find Strike and Option Type (e.g., 500C, 450.5P)
             for part in temp_parts:
                 match = re.match(r'^(\d+(\.\d+)?)(C|P|CALL|PUTS|PUT|CALLS)$', part)
                 if match:
@@ -63,37 +57,40 @@ class CommonParser:
                     temp_parts.remove(part);
                     break
 
-            # If not found, try finding strike and type separately (e.g., SPY 500 C)
             if not strike:
                 for i, part in enumerate(temp_parts):
                     if part in ['C', 'P', 'CALL', 'PUT', 'CALLS', 'PUTS'] and i > 0:
                         try:
-                            potential_strike = float(temp_parts[i - 1])
-                            strike = potential_strike
+                            strike = float(temp_parts[i - 1])
                             p_or_c = "C" if part.startswith('C') else "P"
-                            # Remove both parts once found
                             temp_parts.pop(i);
                             temp_parts.pop(i - 1);
                             break
                         except (ValueError, IndexError):
                             continue
 
-            # 4. Find Ticker (usually the longest remaining alphabetic part)
             potential_tickers = [part for part in temp_parts if part.isalpha()]
             if potential_tickers:
                 potential_tickers.sort(key=len, reverse=True)
                 ticker = potential_tickers[0]
 
-            # --- Validation and Defaults ---
             if not instr and assume_buy: instr = "BUY"
             if not all([instr, ticker, strike, p_or_c]):
-                logging.debug(
-                    f"Parser failed validation. Found: instr={instr}, ticker={ticker}, strike={strike}, p_or_c={p_or_c}")
+                logging.debug(f"Parser failed validation. Found: {instr}, {ticker}, {strike}, {p_or_c}")
                 return {}
 
-            if not exp_month and ticker in config.DAILY_EXPIRY_TICKERS:
-                today = datetime.now()
-                exp_month, exp_day = today.month, today.day
+            # --- THIS IS THE NEW LOGIC ---
+            if not exp_month:  # If no date was found...
+                if ticker in config.DAILY_EXPIRY_TICKERS:
+                    # Rule Exception: Default to 0DTE for daily tickers
+                    logging.info(f"No expiry found for daily ticker {ticker}. Defaulting to 0DTE.")
+                    today = datetime.now()
+                    exp_month, exp_day = today.month, today.day
+                else:
+                    # Rule: Default to the next Friday for all other tickers
+                    logging.info(f"No expiry found for {ticker}. Defaulting to next Friday.")
+                    next_friday = utils.get_next_friday()
+                    exp_month, exp_day = next_friday.month, next_friday.day
 
             if not all([exp_month, exp_day]):
                 logging.debug(f"Parser failed to find expiry date for ticker {ticker}.")
