@@ -12,6 +12,9 @@ import config
 
 
 class DiscordScraper:
+    """
+    Handles the HTTP requests to scrape messages from a Discord channel.
+    """
     BASE_URL = 'https://discord.com/api/v9/channels/{channel_id}/messages?limit={limit}'
 
     def __init__(self, auth_token: str):
@@ -31,6 +34,10 @@ class DiscordScraper:
 
 
 class IBInterface:
+    """
+    Handles all communication with the Interactive Brokers TWS or Gateway.
+    """
+
     def __init__(self):
         self.ib = ib_insync.IB()
         self.connection_settings = (config.TWS_SETTINGS if config.USE_TWS else config.GATEWAY_SETTINGS)
@@ -43,17 +50,23 @@ class IBInterface:
             logging.critical(f"[IB] Connection failed: {e}", exc_info=True)
             raise
 
-    def create_contract_from_parsed_signal(self, parsed_signal: Dict) -> Union[Option, None]:
+    def create_contract_from_parsed_signal(self, parsed_signal: Dict, reference_date: date = None) -> Union[
+        Option, None]:
         try:
             symbol = parsed_signal.get("underlying")
             if not symbol: raise ValueError("Signal missing 'underlying' symbol.")
-            exp_date = date(date.today().year, parsed_signal['exp_month'], parsed_signal['exp_day'])
-            if exp_date < date.today(): exp_date = date(date.today().year + 1, parsed_signal['exp_month'],
-                                                        parsed_signal['exp_day'])
+
+            base_date = reference_date if reference_date else date.today()
+
+            exp_date = date(base_date.year, parsed_signal['exp_month'], parsed_signal['exp_day'])
+            if exp_date < base_date:
+                exp_date = date(base_date.year + 1, parsed_signal['exp_month'], parsed_signal['exp_day'])
+
             expiry_str = exp_date.strftime("%Y%m%d")
             right = "P" if parsed_signal["p_or_c"].upper() == "P" else "C"
             contract = Option(symbol, expiry_str, parsed_signal["strike"], right, "SMART", currency="USD")
             if symbol.upper() == "SPX": contract.tradingClass = "SPXW"
+
             self.ib.qualifyContracts(contract)
             logging.info(f"[CONTRACT] Qualified: {contract.localSymbol}")
             return contract
