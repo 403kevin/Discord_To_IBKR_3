@@ -22,7 +22,7 @@ CHANNEL_PROFILES = [
 
     # PROFILE 0 (template)
     {
-        "channel_id": 0000000000000000,  # Replace with the actual Channel ID
+        "channel_id": 1392531225348014180,  # Replace with the actual Channel ID
         "channel_name": "master template",
         "enabled": False,  # Set to False to temporarily disable this profile
 
