@@ -1,66 +1,55 @@
-Automated Options Trading Bot Suite
-An advanced, Python-based system for executing options trades on Interactive Brokers (IBKR). This repository contains the framework for two distinct but related trading bots: a real-time Discord Signal Scraper and a sophisticated, multi-layered Hybrid Strategy Bot.
+Project Revision 3: Discord to IBKR Bot
+This document serves as the internal "Source of Truth" for the project. Its purpose is to keep development focused and to provide essential context for any AI assisting with the code.
 
-🤖 Bot 1: The Discord Signal Scraper
-This bot is designed to parse and execute trading signals from designated Discord channels in real-time. It is built to be a stable, reliable foundation for following signal providers where official bot invitations are not possible.
+1. Core Architecture Overview
+This bot is a custom-built, Python-based automated options trading system. Its primary function is to connect a user account on Discord to an Interactive Brokers (IBKR) account to execute trades based on signals from specific channels.
 
-Key Features
-Efficient Sequential Polling: Utilizes a single user account to efficiently scrape multiple channels in a rapid, sequential loop, designed to fly under the radar.
+CRITICAL ARCHITECTURAL NOTE: The bot's method for scraping Discord is a custom polling engine located in discord_interface.py. It operates by making rapid, sequential HTTP GET requests to Discord's API to fetch recent messages.
 
-Per-Channel Strategy Assignment: Assign unique, custom exit strategies to each Discord channel via a flexible config.py, allowing for tailored risk management for each signal provider.
+It IS: A discreet, lightweight polling system designed to "fly under the radar."
 
-Modular Exit Logic: Supports multiple exit strategies out-of-the-box, including:
+It IS NOT: An event-driven bot that maintains a persistent websocket connection using a library like discord.py.
 
-Bracket Orders: Automatically set take-profit and stop-loss orders.
+All future development must respect this core architectural choice.
 
-Multi-Stage Dynamic Trail: An advanced trail with breakeven triggers and adaptive stops.
+2. Current Accomplishments (As of 2025-09-01)
+The following components of the system are considered functional and stable in the current codebase:
 
-"Modify-on-Condition" Native Trails: Places a wide, server-side trail on entry and intelligently tightens it once profit or sentiment targets are met.
+IBKR Connection: Successfully connects to TWS/Gateway and handles communication.
 
-End-of-Day Failsafe: Automatically closes all open positions at a configurable time to manage overnight risk.
+Trade Entry: A proven, reliable two-step entry logic is in place:
 
-🧠 Bot 2: The Hybrid Strategy Bot
-This is a more advanced system designed to execute trades based on a sophisticated, multi-layered strategy. It acts on a consensus of technical indicators, filtered by real-time market internals and sentiment analysis.
+Place a MarketOrder to enter the position.
 
-Strategy Overview: The Hybrid Model
-This bot's core strategy is a hybrid model that combines high-level technical analysis with low-latency market internals to identify and execute high-probability intraday trades. The process is a two-layer filter:
+Immediately place a separate TrailOrder as the safety net.
 
-The Strategic Filter (The "Setup"): First, the bot uses a consensus model of multiple TradingView indicators to identify a favorable strategic bias (bullish or bearish) for a given asset. This tells the bot what to look for.
+Discord Polling: The custom polling engine successfully scrapes new messages from target channels.
 
-The Tactical Trigger (The "Entry"): Once a strategic bias is established, the bot switches to a low-latency execution mode. It then waits for a tactical trigger based on real-time market internals (like the NYSE $TICK and the $VIX) and immediate price action, as used by professional scalpers. This tells the bot precisely when to enter.
+Position Monitoring: A basic monitoring loop is functional, which includes a dynamic breakeven stop adjustment.
 
-Signal Sources
-TradingView Indicators: A consensus model based on a wide array of indicators sent via webhooks:
+Telegram Notifications: The bot can successfully send trade confirmation messages.
 
-SuperTrend AI, Lorentzian Classification, AlphaTrend, Smart Money Concepts, Squeeze Momentum, Options Series, SPX Intraday Mood, and IV Rank/Percentile.
+Configuration: All settings are centrally managed within the config.py class.
 
-Alternative Data Events: Architecture will support signals from SEC filings (Form 4, 8-K), Unusual Options Activity (UOA), and real-time news headlines.
+3. Master To-Do List (Priority Order)
+All development will follow this prioritized roadmap.
 
-AI-Powered Sentiment Analysis: As a final sanity check, the bot will use a FinBERT model to analyze real-time news and social media sentiment (including niche sources like Donald Trump’s Truth Social posts), vetoing any trade that goes against strong, immediate market chatter.
+Priority 1: Refactor for Stability (HIGH)
+Goal: Break down the monolithic main.py into a modular, single-responsibility structure.
 
-🛠️ Shared Components & Technology
-Both bots are built upon a shared set of powerful, modular components:
+Action: Create a new file structure with bot_engine/, interfaces/, and services/ directories to isolate components and make future upgrades safer and simpler.
 
-Execution Core (ib_interface.py): A robust interface for all order submission and position management with Interactive Brokers.
+Priority 2: Integrate FinBERT Sentiment Filter (HIGH)
+Goal: Add a sentiment analysis step to the trade decision process.
 
-Risk Management (trailing_stop_manager.py): The advanced, multi-stage trailing stop logic is designed to be portable and usable by both bots.
+Action: Integrate the sentiment_analyzer.py module. Before executing a trade, the bot will fetch news, analyze sentiment, and veto the trade if the score is unfavorable. The score will be added to the Telegram notification.
 
-Infrastructure & Logging: Both bots will utilize a shared system for Telegram alerts and detailed CSV trade logging for performance analysis, including trader names and strategy details.
+Priority 3: Remove Internal Hard Stop (MEDIUM)
+Goal: Eliminate the risk of a race condition between the bot's internal stop and the broker's native trail order.
 
-Backtesting Engine: A dedicated engine will be built to simulate and validate strategies for both bots against historical IBKR data.
+Action: Surgically remove the hard_stop_loss_percent logic from the position_monitor component.
 
-🚀 General Setup & Installation
-Clone the Repository.
+Priority 4: Build Backtesting Engine (FUTURE)
+Goal: Create a robust system to test the trading strategy against historical data.
 
-Create a Virtual Environment (python -m venv venv).
-
-Install Dependencies (pip install -r requirements.txt).
-
-Configure Secrets: Create a .env file for your private Discord user token, IBKR account details, and Telegram keys.
-
-Configure Strategies: Adjust the config.py file to define your channel profiles, indicator settings, and strategy rules.
-
-Running the Bot
-The bot is initiated by running the main script, which will launch the appropriate listeners.
-
-python main.py
+Action: Develop a new, separate backtesting tool, likely using a professional data source like Databento. This is a future task to be addressed after the live bot is stable.
