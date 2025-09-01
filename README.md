@@ -1,3 +1,7 @@
+
+
+
+
 Project Revision 3: Discord to IBKR Bot (Internal "Source of Truth")
 This document serves as the binding directive for all development on this project. Its purpose is to provide essential context, define the project's philosophy, and prevent architectural drift. All AI assisting with this code must adhere strictly to the principles laid out herein.
 
@@ -104,3 +108,46 @@ Alternative to Pullback: Explore integrating TradingView indicators (e.g., ATR, 
 
 6. External Resources
 Interactive Brokers Order Types: Official documentation defining the behavior of all supported order types.
+
+
+
+
+
+Final Core File Structure
+main.py - The Boss. Its only job is to start the bot and manage the high-level application flow. It will be very short and simple.
+
+README.md - The Instruction Manual. Our complete, up-to-date project guide.
+
+requirements.txt - The Shopping List. All project dependencies.
+
+.gitignore - The Secret Keeper. Protects your sensitive files.
+
+bot_engine/ - The Specialist Team. This new folder will contain the core logic modules.
+
+signal_processor.py - The Decision Maker. Takes a raw signal and decides if it's a valid trade.
+
+position_monitor.py - The Watchtower. Monitors all live positions for stop-loss adjustments.
+
+trade_executor.py - The Trader. Takes a "GO" decision and executes the trade via the IB interface.
+
+interfaces/ - The Communications Hub. This new folder will contain all modules that talk to the outside world.
+
+discord_interface.py - The Ears. Polls Discord for new messages.
+
+ib_interface.py - The Hands. Communicates with Interactive Brokers.
+
+telegram_notifier.py - The Mouth. Sends you notifications.
+
+services/ - The Toolbox. This new folder will contain all the shared utilities and helper modules.
+
+config.py - The Settings. Loads and provides all configuration.
+
+sentiment_analyzer.py - The Vibe Checker. Analyzes news sentiment.
+
+custom_logger.py & trade_logger.py - The Diaries. Handle all logging.
+
+message_parsers.py - The Translator. Decodes raw Discord messages.
+
+trailing_stop_manager.py - The Safety Net. Manages stop-loss calculations.
+
+utils.py - The Gadgets. Contains various helper functions.
