@@ -58,5 +58,4 @@ Project Revision 3: Discord to IBKR Bot (Internal "Source of Truth")
 ​Alternative Sentiment Filters: Integrate additional sentiment sources (e.g., Reddit's r/wallstreetbets sentiment, StockTwits) to work alongside FinBERT.
 ​Alternative to Pullback: Explore integrating TradingView indicators (e.g., ATR, SuperTrend) via webhooks or an API as an alternative risk management strategy to a fixed pullback percentage.
 ​6. External Resources
-​Interactive Brokers Order Types: The official documentation defining the behavior of all supported order types.
-​https://www.interactivebrokers.com/en/trading/ordertypes.php
+​Interactive Brokers Order Types: Official documentation defining the behavior of all supported order types.
