@@ -1,111 +1,109 @@
-# ==============================================================================
-# SECTION 1: SCRAPER & POLLING SETTINGS
-# ==============================================================================
+# services/config.py
 
-# The delay, in seconds, between polling each individual channel in the list below.
-# A value between 1-2 seconds is recommended to avoid rate limiting.
-DELAY_BETWEEN_CHANNELS = 2
+class Config:
+    """
+    Central configuration class for the trading bot.
+    All settings, profiles, and strategies are defined here.
+    """
+    def __init__(self):
+        # =================================================================
+        # --- GLOBAL BOT SETTINGS ---
+        # =================================================================
 
-# The delay, in seconds, after the bot has completed a full cycle of polling
-# all channels. A value between 5-10 seconds is recommended.
-DELAY_AFTER_FULL_CYCLE = 5
+        # How often the bot checks Discord for new messages, in seconds.
+        self.polling_interval_seconds = 10
 
-# Ignore signals that are older than this many seconds when the bot first sees them.
-SIGNAL_MAX_AGE_SECONDS = 40
+        # Master shutdown command listener
+        self.master_shutdown_enabled = True
+        self.master_shutdown_channel_id = "YOUR_PRIVATE_DISCORD_CHANNEL_ID"
+        self.master_shutdown_command = "terminate"
 
+        # Global safety monitor for oversold/negative positions
+        self.oversold_monitor_enabled = True
 
-# ==============================================================================
-# SECTION 2: CHANNEL & STRATEGY PROFILES
-# ==============================================================================
+        # =================================================================
+        # --- IBKR CONNECTION SETTINGS ---
+        # =================================================================
+        self.ibkr_host = "127.0.0.1"
+        self.ibkr_port = 7497
+        self.ibkr_client_id = 1
 
-CHANNEL_PROFILES = [
+        # =================================================================
+        # --- TELEGRAM NOTIFIER SETTINGS ---
+        # =================================================================
+        self.telegram_bot_token = "YOUR_TELEGRAM_BOT_TOKEN"
+        self.telegram_chat_id = "YOUR_TELEGRAM_CHAT_ID"
 
-    # PROFILE 0 (template)
-    {
-        "channel_id": 1392531225348014180,  # Replace with the actual Channel ID
-        "channel_name": "master template",
-        "enabled": False,  # Set to False to temporarily disable this profile
+        # =================================================================
+        # --- CHANNEL PROFILES ---
+        # =================================================================
+        # Each dictionary in this list is a separate trading profile.
+        # The bot will apply these specific rules to the given channel_id.
+        self.profiles = [
+            {
+                "channel_id": "YOUR_TARGET_DISCORD_CHANNEL_ID", # Must be a string
+                "channel_name": "Pro Scalpers",
+                "enabled": True,
 
-        # If a signal has no BUY/SELL keyword, assume it's a BUY.
-        "assume_buy_on_ambiguous": True,
+                "assume_buy_on_ambiguous": True,
+                "reject_if_contains": ["RISK", "earnings", "play"],
 
-        # A list of words that, if found in a message, will cause the bot to ignore it.
-        "reject_if_contains": ["earnings"],
+                "consecutive_loss_monitor": {
+                    "enabled": True,
+                    "max_losses": 3,
+                    "cooldown_minutes": 60 # Stop trading this channel for 1 hour after 3 losses
+                },
 
-        # --- NEW: Entry Order Configuration ---
-        "entry_order_type": "MKT",  # Options: "MKT", "PEG_MID", "ADAPTIVE_URGENT"
-        "fill_timeout_seconds": 20,  # Timeout for non-market orders
+                # --- Entry Order Configuration ---
+                "entry_order_type": "MKT",  # Options: "MKT" for now
+                "fill_timeout_seconds": 20, # How long to wait for a fill confirmation
 
-        # The exit strategy to use for trades from this channel.
-        # The 'type' field determines which settings are used.
-        "exit_strategy": {
-            "type": "dynamic_trail",  # The primary strategy is our internal logic.
+                # --- Exit Strategy Configuration ---
+                "exit_strategy": {
+                    # This is the primary, bot-managed trailing stop.
+                    "breakeven_trigger_percent": 15,
+                    "timeout_exit_minutes": 15,
 
-            # --- Settings for the dynamic_trail ---
-            "breakeven_trigger_percent": 15,
-            "pullback_stop_percent": 10,
-            "hard_stop_loss_percent": 40, # <--- *Eliminate this*
-            "timeout_exit_minutes": 120,
+                    # --- Trailing Stop Method ---
+                    "trail_method": "atr",  # Options: "atr", "percentage"
+                    "trail_settings": {
+                        "percentage": 10,
+                        "atr_period": 14,       # Standard ATR setting
+                        "atr_multiplier": 1.5
+                    },
 
-            # --- NEW: Optional Safety Net Settings ---
-            "safety_net": {
-                "enabled": True,  # Set to True to attach a wide native trail on entry
-                "native_trail_percent": 50  # The wide percentage for the safety net
-            }
+                    # --- Momentum-Based Early Exits (Optional) ---
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {
+                            "start": 0.02,
+                            "increment": 0.02,
+                            "max": 0.2
+                        },
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {
+                            "period": 14,
+                            "overbought_level": 70
+                        }
+                    }
+                },
+
+                # --- Native Safety Net (Fail-Safe) ---
+                # This is a wide, broker-side trail order attached on entry.
+                # It only triggers if the bot crashes or the primary exit fails.
+                "safety_net": {
+                    "enabled": True,
+                    "native_trail_percent": 50
+                }
+            },
+            # You can add another profile for another channel here
+        ]
+
+        # =================================================================
+        # --- SENTIMENT ANALYSIS (FINBERT) ---
+        # =================================================================
+        self.sentiment_filter = {
+            "enabled": True,
+            "headlines_to_fetch": 20,
+            "sentiment_threshold": 0.1 # Veto CALLS if score is below this, veto PUTS if score is above -this.
         }
-    },
-
-]
-
-
-# ==============================================================================
-# SECTION 3: TRADE SIZING & FILTERS
-# ==============================================================================
-
-PER_SIGNAL_FUNDS_ALLOCATION = 2000
-MIN_PRICE = 0.20
-MAX_PRICE = 10.0
-RESTRICTED_SYMBOLS = []
-
-
-# ==============================================================================
-# SECTION 4: INTERACTIVE BROKERS (IBKR) CONNECTION
-# ==============================================================================
-
-ENABLE_PAPER_TRADING = True
-USE_TWS = True
-USE_GATEWAY = not USE_TWS
-TWS_SETTINGS = {'IP': '127.0.0.1', 'PORT': 7497, 'CLIENT_ID': 20}
-GATEWAY_SETTINGS = {'IP': '127.0.0.1', 'PORT': 4002, 'CLIENT_ID': 21}
-ACCOUNT_NUMBER = ""
-
-
-# ==============================================================================
-# SECTION 5: KEYWORD CONFIGURATION
-# ==============================================================================
-
-BUY_KEYWORDS = ["BTO", "BUY", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE", "OPENING"]
-SELL_KEYWORDS = ["STC", "SELL", "SOLD", "OUT", "EXIT", "CLOSE", "CUT", "STOPPED", "LOSS", "PROFITS"]
-TRIM_KEYWORDS = ["TRIM", "SCALE", "LFG", "HOLDING", "TAKE", "UPDATE", "GAINS", "NOW", "REDUCE", "SECURE", "SAFETY"]
-DAILY_EXPIRY_TICKERS = ["SPX", "SPY", "QQQ", "SPXW"]
-
-
-# ==============================================================================
-# SECTION 6: END-OF-DAY (EOD) AUTO-CLOSE
-# ==============================================================================
-
-EOD_CLOSE_ENABLED = True
-EOD_CLOSE_HOUR = 15
-EOD_CLOSE_MINUTE = 50
-
-# In config.py, for example at the end of the file
-
-# ==============================================================================
-# SECTION 7: TELEGRAM NOTIFICATIONS
-# ==============================================================================
-
-TELEGRAM_SETTINGS = {
-    "enabled": True,
-    "bot_token_name": "TELEGRAM_BOT_TOKEN", # Name of the variable in your .env file
-    "chat_id_name": "TELEGRAM_CHAT_ID"    # Name of the variable in your .env file
-}
