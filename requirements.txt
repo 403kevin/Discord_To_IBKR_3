@@ -1,18 +1,8 @@
-requirements.txt - Revision 3
---- Core IBKR API Connection ---
-The foundational library for communicating with TWS or Gateway.
 ib_insync
-
---- Data Handling & Technical Analysis ---
-Used for data manipulation and calculating indicators like ATR, PSAR, and RSI.
 pandas
 pandas_ta
-
---- Sentiment Analysis (FinBERT) ---
-The machine learning libraries for our news sentiment filter.
 transformers
 torch
 sentencepiece
-
---- Notifications & Discord Polling ---
-Used for making direct HTTP API calls to Telegram
+requests
+python-dotenv
