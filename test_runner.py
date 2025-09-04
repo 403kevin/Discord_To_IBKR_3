@@ -9,7 +9,6 @@ try:
     from interfaces.telegram_notifier import TelegramNotifier
     from interfaces.ib_interface import IBInterface
     from interfaces.discord_interface import DiscordInterface
-
     print("✅ [SUCCESS] All modules imported successfully.")
 except ImportError as e:
     print(f"❌ [FATAL] Failed to import a required module: {e}")
@@ -18,13 +17,17 @@ except ImportError as e:
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def partially_redact(token):
+    """Helper function to show the start and end of a token for debugging."""
+    if not token or not isinstance(token, str) or len(token) < 8:
+        return "Invalid or too short to display"
+    return f"{token[:4]}...{token[-4:]}"
 
 class TestRunner:
     """
-    The final, correct version of the test runner, designed to work with
-    the VADER sentiment engine and provide clear test results.
+    A smarter test runner with enhanced diagnostics to verify the values
+    being loaded from the .env file.
     """
-
     def __init__(self):
         self.config = None
         self.results = {}
@@ -32,7 +35,7 @@ class TestRunner:
     def run_all_tests(self):
         """Runs all checks in sequence and prints a final report."""
         print("\n--- Starting Pre-Flight System Checks ---")
-
+        
         tests = [
             self.test_01_config_and_env,
             self.test_02_sentiment_analyzer,
@@ -61,22 +64,29 @@ class TestRunner:
         self._print_final_report()
 
     def test_01_config_and_env(self):
-        """Checks if the .env file can be read and the Config class can be initialized."""
+        """
+        NEW: Now provides diagnostic output for the loaded tokens.
+        """
         try:
             self.config = Config()
+            
+            # Diagnostic prints
+            print(f"   [DIAGNOSTIC] Discord Token Loaded: {partially_redact(self.config.discord_user_token)}")
+            print(f"   [DIAGNOSTIC] Telegram Bot Token Loaded: {partially_redact(self.config.telegram_bot_token)}")
+            print(f"   [DIAGNOSTIC] Telegram Chat ID Loaded: {partially_redact(self.config.telegram_chat_id)}")
+
             if not all([self.config.discord_user_token, self.config.telegram_bot_token, self.config.telegram_chat_id]):
-                return False, "Config class loaded, but one or more critical tokens/IDs are missing. Check your .env file."
+                return False, "Config class loaded, but one or more critical tokens/IDs are empty or missing. Check your .env file formatting."
+            
             return True, "Successfully loaded .env file and initialized Config class."
         except Exception as e:
             return False, f"Failed to load configuration. Error: {e}. Ensure your .env file exists and is correctly formatted."
 
     def test_02_sentiment_analyzer(self):
-        """CORRECTED: Checks if the VADER sentiment analyzer can be initialized."""
         if not self.config: return False, "Skipped. Configuration failed to load."
         print("Initializing VADER sentiment analyzer... (This may require a one-time download)")
         try:
             analyzer = SentimentAnalyzer()
-            # The new VADER class has an 'analyzer' attribute, not 'model'.
             if analyzer.analyzer:
                 return True, "VADER sentiment analyzer initialized successfully."
             else:
@@ -85,7 +95,6 @@ class TestRunner:
             return False, f"Failed to initialize VADER. Error: {e}. Check your internet connection for the initial NLTK download."
 
     def test_03_telegram_notifier(self):
-        """Checks if a test message can be sent via Telegram."""
         if not self.config: return False, "Skipped. Configuration failed to load."
         try:
             notifier = TelegramNotifier(self.config)
@@ -94,12 +103,11 @@ class TestRunner:
             if success:
                 return True, "Successfully sent a test message to your Telegram chat."
             else:
-                return False, "Failed to send Telegram message. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file."
+                return False, "Failed to send Telegram message. The API rejected the request. Please verify the tokens displayed in the diagnostic check above."
         except Exception as e:
             return False, f"An error occurred while testing Telegram. Error: {e}"
 
     def test_04_ibkr_connection(self):
-        """Checks if a connection can be established with TWS/Gateway."""
         if not self.config: return False, "Skipped. Configuration failed to load."
         print(f"Attempting to connect to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
         ib_interface = IBInterface(self.config)
@@ -114,10 +122,8 @@ class TestRunner:
             return False, f"An error occurred while connecting to IBKR. Error: {e}. Is TWS/Gateway running?"
 
     def test_05_discord_connection(self):
-        """Checks if the Discord user token is valid."""
         if not self.config: return False, "Skipped. Configuration failed to load."
         try:
-            # We test one of the profile channel IDs from the config
             if not self.config.profiles:
                 return False, "No profiles found in config. Cannot test Discord connection."
             channel_id_to_test = self.config.profiles[0]['channel_id']
@@ -127,7 +133,7 @@ class TestRunner:
             if success:
                 return True, "Discord token appears to be valid. Connection successful."
             else:
-                return False, "Failed to connect to Discord API. Check your DISCORD_AUTH_TOKEN in your .env file."
+                return False, "Failed to connect to Discord API. Check the DISCORD_AUTH_TOKEN displayed in the diagnostic check above."
         except Exception as e:
             return False, f"An error occurred while testing Discord. Error: {e}"
 
@@ -140,14 +146,13 @@ class TestRunner:
             print(f"{status.ljust(8)} | {name}")
             if not result["success"]:
                 all_passed = False
-
+        
         print("-" * 37)
         if all_passed:
             print("✅ All systems nominal. The bot is ready for a full system test.")
         else:
             print("❌ One or more checks failed. Please review the errors above before proceeding.")
         print("-" * 37)
-
 
 if __name__ == "__main__":
     runner = TestRunner()
