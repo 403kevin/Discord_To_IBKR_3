@@ -1,50 +1,53 @@
-import os
+# interfaces/telegram_notifier.py
 import logging
 import requests
-import config
+
 
 class TelegramNotifier:
     """
-    Handles sending messages to a specified Telegram chat.
+    Handles all communication with the Telegram Bot API.
+    Responsible for sending formatted messages and alerts.
     """
-    def __init__(self):
-        """
-        Initializes the notifier, loading settings and secrets.
-        """
-        self.settings = config.TELEGRAM_SETTINGS
-        if not self.settings.get("enabled"):
-            self.bot_token = None
-            self.chat_id = None
-            logging.warning("[Telegram] Notifier is disabled in config.")
-            return
 
-        token_name = self.settings.get("bot_token_name")
-        chat_id_name = self.settings.get("chat_id_name")
+    def __init__(self, config):
+        self.bot_token = config.telegram_bot_token
+        self.chat_id = config.telegram_chat_id
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
 
-        self.bot_token = os.getenv(token_name)
-        self.chat_id = os.getenv(chat_id_name)
-
-        if not self.bot_token or not self.chat_id:
-            logging.error(f"[Telegram] Bot token ('{token_name}') or chat ID ('{chat_id_name}') not found in .env file.")
-            self.bot_token = None # Disable if secrets are missing
-
-    def send_message(self, text: str):
-        """
-        Sends a text message to the configured Telegram chat.
-        """
-        if not self.bot_token:
-            return
-
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+    def send_message(self, text):
+        """Sends a simple, general-purpose message to the Telegram chat."""
         payload = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "Markdown"
         }
         try:
-            response = requests.post(url, data=payload, timeout=10)
+            response = requests.post(self.base_url, json=payload)
             response.raise_for_status()
-            logging.info(f"[Telegram] Message sent successfully.")
+            logging.info("Successfully sent general message to Telegram.")
         except requests.exceptions.RequestException as e:
-            logging.error(f"[Telegram] Failed to send message: {e}")
+            logging.error(f"Failed to send message to Telegram: {e}")
+
+    def send_fill_confirmation(self, fill, pos_data):
+        """
+        NEW: Sends a detailed, formatted message upon a confirmed trade fill.
+        This is the new standard for entry notifications.
+        """
+        contract = fill.contract
+        execution = fill.execution
+        profile = pos_data["profile"]
+        sentiment_score = pos_data["sentiment_score"]
+
+        # Format the message with rich details
+        message = (
+            f"✅ *Trade Entry Confirmed* ✅\n\n"
+            f"*Symbol:* `{contract.localSymbol}`\n"
+            f"*Quantity:* `{int(execution.shares)}`\n"
+            f"*Fill Price:* `${execution.price:.2f}`\n\n"
+            f"*Source Channel:* `{profile['channel_name']}`\n"
+            f"*Sentiment Score:* `{sentiment_score:.4f}`"
+        )
+
+        # Use the general send_message method to dispatch it
+        self.send_message(message)
 
