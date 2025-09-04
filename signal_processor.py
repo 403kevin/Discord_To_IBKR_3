@@ -1,17 +1,53 @@
-# bot_engine/signal_processor.py
-# This module will contain the logic for processing a new Discord message,
-# running all checks (sentiment, keywords, etc.), and deciding if a
-# trade is a "GO" or "NO GO".
+# interfaces/telegram_notifier.py
+import logging
+import requests
 
-def process_new_message(message, channel_id, config, services, interfaces):
+
+class TelegramNotifier:
     """
-    The main entry point for processing a new signal from Discord.
+    Handles all communication with the Telegram Bot API.
+    Responsible for sending formatted messages and alerts.
     """
-    print(f"Processing message from channel {channel_id}: {message}")
-    # TODO:
-    # 1. Find the correct profile from config based on channel_id.
-    # 2. Use message_parsers to extract a signal.
-    # 3. If signal, run sentiment analysis.
-    # 4. Run all other checks from the profile (reject_if_contains, etc.).
-    # 5. If all checks pass, call the trade_executor.
-    pass
+
+    def __init__(self, config):
+        self.bot_token = config.telegram_bot_token
+        self.chat_id = config.telegram_chat_id
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+
+    def send_message(self, text):
+        """Sends a simple, general-purpose message to the Telegram chat."""
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        }
+        try:
+            response = requests.post(self.base_url, json=payload)
+            response.raise_for_status()
+            logging.info("Successfully sent general message to Telegram.")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to send message to Telegram: {e}")
+
+    def send_fill_confirmation(self, fill, pos_data):
+        """
+        NEW: Sends a detailed, formatted message upon a confirmed trade fill.
+        This is the new standard for entry notifications.
+        """
+        contract = fill.contract
+        execution = fill.execution
+        profile = pos_data["profile"]
+        sentiment_score = pos_data["sentiment_score"]
+
+        # Format the message with rich details
+        message = (
+            f"✅ *Trade Entry Confirmed* ✅\n\n"
+            f"*Symbol:* `{contract.localSymbol}`\n"
+            f"*Quantity:* `{int(execution.shares)}`\n"
+            f"*Fill Price:* `${execution.price:.2f}`\n\n"
+            f"*Source Channel:* `{profile['channel_name']}`\n"
+            f"*Sentiment Score:* `{sentiment_score:.4f}`"
+        )
+
+        # Use the general send_message method to dispatch it
+        self.send_message(message)
+
