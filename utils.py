@@ -1,4 +1,11 @@
+# services/utils.py
+import logging
 from datetime import datetime, timedelta
+
+# This file holds various helper functions used across the application.
+# The problematic screen-clearing function has been surgically removed
+# to resolve the 'posix' error, while restoring the essential date
+# calculation logic.
 
 def get_next_friday() -> datetime:
     """
@@ -7,10 +14,6 @@ def get_next_friday() -> datetime:
     """
     today = datetime.today()
     # weekday() returns 0 for Monday and 4 for Friday.
-    # The calculation is: 4 (Friday) - today's weekday number.
-    # If today is Monday (0), days_to_friday is 4.
-    # If today is Thursday (3), days_to_friday is 1.
-    # If today is Friday (4), days_to_friday is 0.
     days_to_friday = (4 - today.weekday() + 7) % 7
     next_friday = today + timedelta(days=days_to_friday)
     return next_friday
@@ -25,3 +28,6 @@ def get_business_day(dte: int) -> datetime:
     while target_date.weekday() >= 5:
         target_date += timedelta(days=1)
     return target_date
+
+logging.info("Universal utils module loaded correctly.")
+
