@@ -1,72 +1,42 @@
 # services/sentiment_analyzer.py
 import logging
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
+# This is the VADER-based sentiment analyzer. It is a lightweight, reliable,
+# and pure-Python alternative to the complex transformers library.
 
 class SentimentAnalyzer:
     """
-    A self-contained service for analyzing the sentiment of financial news headlines
-    using the FinBERT pre-trained model.
+    Analyzes sentiment using the VADER (Valence Aware Dictionary and sEntiment
+    Reasoner) model from the NLTK library. It is much lighter and more
+    reliable for cross-platform compatibility than FinBERT.
     """
-
     def __init__(self):
-        """
-        Initializes the tokenizer and model. This can take a moment on first run
-        as it may need to download the model files.
-        """
-        self.model_name = "ProsusAI/finbert"
-        logging.info(f"Initializing SentimentAnalyzer with model: {self.model_name}...")
+        self.analyzer = None
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
-            logging.info("FinBERT model and tokenizer loaded successfully.")
+            # VADER requires a one-time download of its lexicon.
+            nltk.download('vader_lexicon')
+            self.analyzer = SentimentIntensityAnalyzer()
+            logging.info("VADER sentiment analyzer initialized successfully.")
         except Exception as e:
-            logging.critical(f"FATAL: Could not load FinBERT model. This is a critical error. {e}")
-            # In a real application, you might want to handle this more gracefully,
-            # but for now, we'll log it as critical.
-            self.model = None
-            self.tokenizer = None
+            logging.error(f"Failed to initialize VADER sentiment analyzer: {e}")
+            logging.error("Please ensure you have an active internet connection for the initial download.")
 
-    def analyze_sentiment(self, headlines: list[str]) -> float:
+    def analyze_sentiment(self, headlines):
         """
-        Analyzes a list of headlines and returns an aggregated sentiment score.
-
-        The score is calculated based on the softmax probabilities of the 'positive',
-        'negative', and 'neutral' classes.
-        Score = (positive_prob - negative_prob)
-        This results in a score between -1.0 (very negative) and +1.0 (very positive).
-
-        Args:
-            headlines: A list of string headlines.
-
-        Returns:
-            An aggregated sentiment score as a float, or 0.0 if analysis fails.
+        Analyzes a list of headlines and returns a single compound sentiment score.
+        Scores range from -1 (most negative) to +1 (most positive).
         """
-        if not self.model or not self.tokenizer or not headlines:
+        if not self.analyzer or not headlines:
             return 0.0
 
-        try:
-            inputs = self.tokenizer(headlines, padding=True, truncation=True, return_tensors='pt', max_length=512)
-
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-
-            # Convert logits to probabilities
-            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-
-            # The model labels are: 0 (positive), 1 (negative), 2 (neutral)
-            positive_prob = predictions[:, 0].tolist()
-            negative_prob = predictions[:, 1].tolist()
-            # neutral_prob = predictions[:, 2].tolist() # Not used in the final score calculation
-
-            # Calculate the score for each headline and then average them
-            scores = [p - n for p, n in zip(positive_prob, negative_prob)]
-            aggregated_score = sum(scores) / len(scores) if scores else 0.0
-
-            return aggregated_score
-
-        except Exception as e:
-            logging.error(f"An error occurred during sentiment analysis: {e}")
-            return 0.0
+        total_score = 0
+        for headline in headlines:
+            # The 'compound' score is a normalized, single metric for sentiment.
+            vs = self.analyzer.polarity_scores(headline)
+            total_score += vs['compound']
+        
+        # Return the average compound score
+        return total_score / len(headlines) if headlines else 0.0
 
