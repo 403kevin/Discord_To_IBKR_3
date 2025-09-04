@@ -1,12 +1,7 @@
 # test_runner.py
 import logging
 import time
-import os
 import sys
-
-# This is crucial to allow the script to find our new modules
-# in the subdirectories.
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from services.config import Config
@@ -14,21 +9,22 @@ try:
     from interfaces.telegram_notifier import TelegramNotifier
     from interfaces.ib_interface import IBInterface
     from interfaces.discord_interface import DiscordInterface
+
     print("✅ [SUCCESS] All modules imported successfully.")
 except ImportError as e:
     print(f"❌ [FATAL] Failed to import a required module: {e}")
-    print("Please ensure you are running this script from the root project directory and all files are in place.")
     sys.exit(1)
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
 class TestRunner:
     """
-    A simple script to run pre-flight checks on all critical components
-    of the trading bot to ensure they are configured and working correctly
-    before launching the main application.
+    The final, correct version of the test runner, designed to work with
+    the VADER sentiment engine and provide clear test results.
     """
+
     def __init__(self):
         self.config = None
         self.results = {}
@@ -36,7 +32,7 @@ class TestRunner:
     def run_all_tests(self):
         """Runs all checks in sequence and prints a final report."""
         print("\n--- Starting Pre-Flight System Checks ---")
-        
+
         tests = [
             self.test_01_config_and_env,
             self.test_02_sentiment_analyzer,
@@ -75,17 +71,18 @@ class TestRunner:
             return False, f"Failed to load configuration. Error: {e}. Ensure your .env file exists and is correctly formatted."
 
     def test_02_sentiment_analyzer(self):
-        """Checks if the FinBERT model can be loaded."""
+        """CORRECTED: Checks if the VADER sentiment analyzer can be initialized."""
         if not self.config: return False, "Skipped. Configuration failed to load."
-        print("Loading FinBERT model... (This may take a moment)")
+        print("Initializing VADER sentiment analyzer... (This may require a one-time download)")
         try:
             analyzer = SentimentAnalyzer()
-            if analyzer.model and analyzer.tokenizer:
-                return True, "FinBERT model and tokenizer loaded successfully."
+            # The new VADER class has an 'analyzer' attribute, not 'model'.
+            if analyzer.analyzer:
+                return True, "VADER sentiment analyzer initialized successfully."
             else:
-                return False, "SentimentAnalyzer initialized, but model or tokenizer is missing."
+                return False, "SentimentAnalyzer initialized, but the core analyzer is missing."
         except Exception as e:
-            return False, f"Failed to load FinBERT model. Error: {e}. Check your internet connection and transformers installation."
+            return False, f"Failed to initialize VADER. Error: {e}. Check your internet connection for the initial NLTK download."
 
     def test_03_telegram_notifier(self):
         """Checks if a test message can be sent via Telegram."""
@@ -97,7 +94,7 @@ class TestRunner:
             if success:
                 return True, "Successfully sent a test message to your Telegram chat."
             else:
-                return False, "Failed to send Telegram message. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+                return False, "Failed to send Telegram message. Check your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file."
         except Exception as e:
             return False, f"An error occurred while testing Telegram. Error: {e}"
 
@@ -120,7 +117,9 @@ class TestRunner:
         """Checks if the Discord user token is valid."""
         if not self.config: return False, "Skipped. Configuration failed to load."
         try:
-            # We test one of the profile channel IDs
+            # We test one of the profile channel IDs from the config
+            if not self.config.profiles:
+                return False, "No profiles found in config. Cannot test Discord connection."
             channel_id_to_test = self.config.profiles[0]['channel_id']
             print(f"Testing Discord token by fetching info for channel {channel_id_to_test}...")
             discord_interface = DiscordInterface(self.config, callback=None)
@@ -128,7 +127,7 @@ class TestRunner:
             if success:
                 return True, "Discord token appears to be valid. Connection successful."
             else:
-                return False, "Failed to connect to Discord API. Check your DISCORD_AUTH_TOKEN."
+                return False, "Failed to connect to Discord API. Check your DISCORD_AUTH_TOKEN in your .env file."
         except Exception as e:
             return False, f"An error occurred while testing Discord. Error: {e}"
 
@@ -141,13 +140,14 @@ class TestRunner:
             print(f"{status.ljust(8)} | {name}")
             if not result["success"]:
                 all_passed = False
-        
+
         print("-" * 37)
         if all_passed:
             print("✅ All systems nominal. The bot is ready for a full system test.")
         else:
             print("❌ One or more checks failed. Please review the errors above before proceeding.")
         print("-" * 37)
+
 
 if __name__ == "__main__":
     runner = TestRunner()
