@@ -1,8 +1,6 @@
 ib_insync
 pandas
 pandas_ta
-transformers
-torch
-sentencepiece
 requests
 python-dotenv
+nltk
