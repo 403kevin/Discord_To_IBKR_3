@@ -1,15 +1,10 @@
-# Core library for communicating with the Interactive Brokers API
-ib_insync
+IBKR API
+ib-insync
 
-# Used to make HTTP requests to scrape messages from Discord
+For Sentiment Analysis
+transformers
+torch
+sentencepiece
+
+For Telegram Notifications & Discord Polling
 requests
-
-# Securely loads environment variables from the .env file (for your auth token)
-python-dotenv
-
-# Enables colored logging output in the console for better readability
-colorama
-
-# A helpful library for parsing date and time strings from Discord
-python-dateutil
-
