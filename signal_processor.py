@@ -1,53 +1,101 @@
-# interfaces/telegram_notifier.py
+# bot_engine/signal_processor.py
 import logging
-import requests
+from datetime import datetime, timezone
+
+# Import project modules
+from services.message_parsers import MessageParser
 
 
-class TelegramNotifier:
+class SignalProcessor:
     """
-    Handles all communication with the Telegram Bot API.
-    Responsible for sending formatted messages and alerts.
+    The Decision Maker. This class is the central nervous system for trade
+    decisions. It takes a raw message, runs it through a series of validation
+    gates, and if everything passes, hands it off to the trade_executor.
     """
 
-    def __init__(self, config):
-        self.bot_token = config.telegram_bot_token
-        self.chat_id = config.telegram_chat_id
-        self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+    def __init__(self, config, sentiment_analyzer, trade_executor, channel_states, state_lock):
+        self.config = config
+        self.sentiment_analyzer = sentiment_analyzer
+        self.trade_executor = trade_executor
+        self.parser = MessageParser(config)
 
-    def send_message(self, text):
-        """Sends a simple, general-purpose message to the Telegram chat."""
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        try:
-            response = requests.post(self.base_url, json=payload)
-            response.raise_for_status()
-            logging.info("Successfully sent general message to Telegram.")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to send message to Telegram: {e}")
+        # --- NEW: Receive the state tracker from main.py ---
+        self.channel_states = channel_states
+        self.state_lock = state_lock
 
-    def send_fill_confirmation(self, fill, pos_data):
+    def process_message(self, message_data):
         """
-        NEW: Sends a detailed, formatted message upon a confirmed trade fill.
-        This is the new standard for entry notifications.
+        The main entry point for processing a new message from Discord.
+        This function contains the multi-gate validation logic.
         """
-        contract = fill.contract
-        execution = fill.execution
-        profile = pos_data["profile"]
-        sentiment_score = pos_data["sentiment_score"]
+        channel_id = message_data["channel_id"]
+        message_content = message_data["content"]
 
-        # Format the message with rich details
-        message = (
-            f"✅ *Trade Entry Confirmed* ✅\n\n"
-            f"*Symbol:* `{contract.localSymbol}`\n"
-            f"*Quantity:* `{int(execution.shares)}`\n"
-            f"*Fill Price:* `${execution.price:.2f}`\n\n"
-            f"*Source Channel:* `{profile['channel_name']}`\n"
-            f"*Sentiment Score:* `{sentiment_score:.4f}`"
-        )
+        # === Gate 0: Kill Switch Check (NEW) ===
+        # Is this channel currently on a cooldown?
+        with self.state_lock:
+            state = self.channel_states.get(channel_id)
+            if state and state["cooldown_until"] and datetime.now(timezone.utc) < state["cooldown_until"]:
+                logging.info(
+                    f"Signal from channel {channel_id} ignored. Channel is on cooldown until {state['cooldown_until']}.")
+                return  # Stop processing immediately
 
-        # Use the general send_message method to dispatch it
-        self.send_message(message)
+        # === Gate 1: Profile Check ===
+        # Do we have a valid, enabled profile for this channel?
+        profile = self._get_profile_for_channel(channel_id)
+        if not profile:
+            return  # No active profile for this channel, ignore.
+
+        # === Gate 2: Keyword Filter ===
+        # Does the message contain any words that should cause a rejection?
+        for reject_word in profile.get("reject_if_contains", []):
+            if reject_word.lower() in message_content.lower():
+                logging.info(f"Signal rejected from {profile['channel_name']}. Contains reject word: '{reject_word}'.")
+                return
+
+        # === Gate 3: Translation Check ===
+        # Can our parser translate this into a valid trade signal?
+        signal = self.parser.parse(message_content)
+        if not signal:
+            logging.debug(f"Message from {profile['channel_name']} did not parse into a valid signal.")
+            return
+
+        logging.info(f"Successfully parsed signal from {profile['channel_name']}: {signal}")
+
+        # === Gate 4: Sentiment Check ===
+        # If enabled, does the news sentiment support this trade?
+        sentiment_score = 0.0
+        if self.config.sentiment_filter["enabled"]:
+            headlines = self.trade_executor.ib_interface.get_news_headlines(signal["symbol"])
+            sentiment_score = self.sentiment_analyzer.analyze_sentiment(headlines)
+
+            trade_veto = False
+            threshold = self.config.sentiment_filter["sentiment_threshold"]
+            if signal['right'] == 'C' and sentiment_score < threshold:
+                trade_veto = True
+                reason = f"Sentiment score {sentiment_score:.2f} is below threshold {threshold} for a CALL."
+            elif signal['right'] == 'P' and sentiment_score > -threshold:
+                trade_veto = True
+                reason = f"Sentiment score {sentiment_score:.2f} is above threshold {-threshold} for a PUT."
+
+            if trade_veto:
+                logging.warning(
+                    f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
+                self.trade_executor.notifier.send_message(
+                    f"❌ *Trade Vetoed* ❌\nSymbol: `{signal['symbol']} {signal['strike']}{signal['right']}`\nReason: {reason}")
+                return
+
+        signal["sentiment_score"] = sentiment_score
+
+        # === Gate 5: Final Approval ===
+        # If all gates passed, hand off to the Trader for execution.
+        logging.info(f"Signal approved. Handing off to trade executor: {signal}")
+        self.trade_executor.execute_trade(signal, profile)
+
+    def _get_profile_for_channel(self, channel_id):
+        """Finds the active profile for a given channel ID."""
+        for profile in self.config.profiles:
+            if str(profile["channel_id"]) == str(channel_id) and profile["enabled"]:
+                return profile
+        return None
 
