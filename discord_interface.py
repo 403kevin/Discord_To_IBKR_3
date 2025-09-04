@@ -1,66 +1,91 @@
 # interfaces/discord_interface.py
-import requests
 import logging
+import requests
 import time
-
+from threading import Thread
 
 class DiscordInterface:
     """
-    A custom polling engine to scrape messages from specific Discord channels.
-    It operates by making direct HTTP GET requests to Discord's API.
+    The bot's "Ears." This class is responsible for polling target Discord
+    channels for new messages using a custom, lightweight polling engine
+    based on direct HTTP requests. This version is guaranteed to be
+    cross-platform and compatible with Windows.
     """
+    def __init__(self, config, callback):
+        self.config = config
+        self.callback = callback
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": self.config.discord_user_token,
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        })
+        self._polling_thread = None
+        self._is_polling = False
+        self.last_message_ids = {str(p["channel_id"]): None for p in self.config.profiles}
 
-    def __init__(self, config):
-        self.token = config.discord_user_token
-        self.headers = {"Authorization": self.token}
-        self.last_message_ids = {}  # Stores the last seen message ID for each channel
-
-    def poll_new_messages(self, channel_id: str) -> list:
-        """
-        Polls a single channel for new messages since the last poll.
-        """
-        if not self.token:
-            logging.error("Discord token not set. Polling is disabled.")
-            return []
-
-        # Construct the API URL
+    def _poll_channel(self, profile):
+        """Fetches the latest messages from a single channel."""
+        channel_id = str(profile["channel_id"])
         url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=10"
-
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            messages = response.json()
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                messages = response.json()
+                if not messages:
+                    return
 
-            if not messages:
-                return []
+                # Process messages from oldest to newest
+                new_messages = []
+                last_id = self.last_message_ids.get(channel_id)
+                for msg in reversed(messages):
+                    if not last_id or msg['id'] > last_id:
+                        new_messages.append(msg)
 
-            last_id = self.last_message_ids.get(channel_id)
-            newest_message_id = messages[0]['id']  # The first message is the newest
+                if new_messages:
+                    self.last_message_ids[channel_id] = new_messages[-1]['id']
+                    for msg in new_messages:
+                        message_data = {
+                            "channel_id": msg["channel"]["id"],
+                            "content": msg["content"]
+                        }
+                        if self.callback:
+                            self.callback(message_data)
+            else:
+                logging.error(f"Error polling channel {channel_id}: {response.status_code} - {response.text}")
+        except requests.RequestException as e:
+            logging.error(f"Network error while polling channel {channel_id}: {e}")
 
-            # If we've never seen this channel, we only process the very last message
-            if not last_id:
-                self.last_message_ids[channel_id] = newest_message_id
-                # Return only the content of the single most recent message
-                return [messages[0]]
+    def _polling_loop(self):
+        """The main loop that cycles through all target channels."""
+        logging.info("Discord polling thread started.")
+        while self._is_polling:
+            for profile in self.config.profiles:
+                if profile["enabled"]:
+                    self._poll_channel(profile)
+                    time.sleep(self.config.delay_between_channels)
+            
+            time.sleep(self.config.delay_after_full_cycle)
+        logging.info("Discord polling thread stopped.")
 
-            new_messages = []
-            # Iterate from oldest to newest in the fetched batch
-            for msg in reversed(messages):
-                if msg['id'] > last_id:
-                    new_messages.append(msg)
+    def check_connection(self):
+        """A simple check to validate the user token."""
+        url = "https://discord.com/api/v9/users/@me"
+        try:
+            response = self.session.get(url, timeout=10)
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
 
-            # Update the last seen message ID for the next poll
-            self.last_message_ids[channel_id] = newest_message_id
+    def start_polling(self):
+        if not self._is_polling:
+            self._is_polling = True
+            self._polling_thread = Thread(target=self._polling_loop, name="DiscordPollingThread", daemon=True)
+            self._polling_thread.start()
 
-            if new_messages:
-                logging.info(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
-
-            return new_messages
-
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to fetch messages from Discord channel {channel_id}: {e}")
-            return []
-        except Exception as e:
-            logging.error(f"An unexpected error occurred during Discord polling: {e}")
-            return []
+    def stop_polling(self):
+        logging.info("Stopping Discord polling.")
+        self._is_polling = False
+        if self._polling_thread and self._polling_thread.is_alive():
+            self._polling_thread.join(timeout=10)
 
