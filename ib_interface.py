@@ -3,15 +3,17 @@ import logging
 from ib_insync import IB, Stock, Option, MarketOrder, Order
 from datetime import datetime
 import pandas as pd
-from technical_analysis import TechnicalAnalysis
+# --- CORRECTED IMPORT ---
+# We import the library directly, not a specific class from it.
+import technical_analysis as ta
 
 from services.config import Config
 
 class IBInterface:
     """
     The bot's "Hands." This class manages all communication with the
-    Interactive Brokers API. This is the final, stable version with a
-    reliable, pure-Python technical analysis engine.
+    Interactive Brokers API. This is the final, corrected version with the
+    proper usage for the 'technical-analysis' library.
     """
     def __init__(self, config: Config):
         self.config = config
@@ -76,7 +78,6 @@ class IBInterface:
         Calculates ATR, PSAR, and RSI using the reliable 'technical-analysis' library.
         """
         try:
-            # Request 1-minute bars for the last day to get enough data
             bars = self.ib.reqHistoricalData(
                 contract,
                 endDateTime='',
@@ -93,11 +94,12 @@ class IBInterface:
             df = pd.DataFrame(bars)
             df.set_index('date', inplace=True)
             
-            # Use the new, reliable library
-            ta = TechnicalAnalysis(df)
-            atr = ta.get_atr()['ATR'][-1]
-            psar = ta.get_psar()['PSAR'][-1]
-            rsi = ta.get_rsi()['RSI'][-1]
+            # --- CORRECTED USAGE ---
+            # We call the functions directly on the imported library (ta),
+            # passing the dataframe to them.
+            atr = ta.get_atr(df)['ATR'][-1]
+            psar = ta.get_psar(df)['PSAR'][-1]
+            rsi = ta.get_rsi(df)['RSI'][-1]
 
             return {'atr': atr, 'psar': psar, 'rsi': rsi}
 
