@@ -5,21 +5,17 @@ from datetime import datetime, timezone
 # Import project modules
 from services.message_parsers import MessageParser
 
-
 class SignalProcessor:
     """
     The Decision Maker. This class is the central nervous system for trade
     decisions. It takes a raw message, runs it through a series of validation
     gates, and if everything passes, hands it off to the trade_executor.
     """
-
     def __init__(self, config, sentiment_analyzer, trade_executor, channel_states, state_lock):
         self.config = config
         self.sentiment_analyzer = sentiment_analyzer
         self.trade_executor = trade_executor
         self.parser = MessageParser(config)
-
-        # --- NEW: Receive the state tracker from main.py ---
         self.channel_states = channel_states
         self.state_lock = state_lock
 
@@ -30,21 +26,20 @@ class SignalProcessor:
         """
         channel_id = message_data["channel_id"]
         message_content = message_data["content"]
-
-        # === Gate 0: Kill Switch Check (NEW) ===
+        
+        # === Gate 0: Kill Switch Check ===
         # Is this channel currently on a cooldown?
         with self.state_lock:
             state = self.channel_states.get(channel_id)
             if state and state["cooldown_until"] and datetime.now(timezone.utc) < state["cooldown_until"]:
-                logging.info(
-                    f"Signal from channel {channel_id} ignored. Channel is on cooldown until {state['cooldown_until']}.")
-                return  # Stop processing immediately
+                logging.info(f"Signal from channel {channel_id} ignored. Channel is on cooldown until {state['cooldown_until']}.")
+                return # Stop processing immediately
 
         # === Gate 1: Profile Check ===
         # Do we have a valid, enabled profile for this channel?
         profile = self._get_profile_for_channel(channel_id)
         if not profile:
-            return  # No active profile for this channel, ignore.
+            return # No active profile for this channel, ignore.
 
         # === Gate 2: Keyword Filter ===
         # Does the message contain any words that should cause a rejection?
@@ -54,12 +49,12 @@ class SignalProcessor:
                 return
 
         # === Gate 3: Translation Check ===
-        # Can our parser translate this into a valid trade signal?
-        signal = self.parser.parse(message_content)
+        # Pass the profile to the parser so it knows how to handle ambiguity.
+        signal = self.parser.parse(message_content, profile)
         if not signal:
             logging.debug(f"Message from {profile['channel_name']} did not parse into a valid signal.")
             return
-
+        
         logging.info(f"Successfully parsed signal from {profile['channel_name']}: {signal}")
 
         # === Gate 4: Sentiment Check ===
@@ -79,10 +74,8 @@ class SignalProcessor:
                 reason = f"Sentiment score {sentiment_score:.2f} is above threshold {-threshold} for a PUT."
 
             if trade_veto:
-                logging.warning(
-                    f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
-                self.trade_executor.notifier.send_message(
-                    f"❌ *Trade Vetoed* ❌\nSymbol: `{signal['symbol']} {signal['strike']}{signal['right']}`\nReason: {reason}")
+                logging.warning(f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
+                self.trade_executor.notifier.send_message(f"❌ *Trade Vetoed* ❌\nSymbol: `{signal['symbol']} {signal['strike']}{signal['right']}`\nReason: {reason}")
                 return
 
         signal["sentiment_score"] = sentiment_score
