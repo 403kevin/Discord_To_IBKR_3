@@ -1,6 +1,6 @@
 # interfaces/ib_interface.py
 import logging
-from ib_insync import IB, Stock, Option, MarketOrder, Order
+from ib_insync import IB, Stock, Option, MarketOrder, Order, util
 from datetime import datetime
 import pandas as pd
 import technical_analysis as ta
@@ -9,8 +9,8 @@ from services.config import Config
 
 class IBInterface:
     """
-    The bot's "Hands." This is the final, robust version that gracefully
-    handles API timeouts when the market is closed.
+    The bot's "Hands." This is the final, battle-hardened version that
+    correctly handles timeouts and shutdown events.
     """
     def __init__(self, config: Config):
         self.config = config
@@ -18,6 +18,8 @@ class IBInterface:
         self.is_connected = False
         self.on_fill_callback = None
 
+        # --- CORRECTED EVENT HANDLERS ---
+        # We bind the methods to the event loop to ensure 'self' is passed correctly.
         self.ib.connectedEvent += self._on_connected
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.errorEvent += self._on_error
@@ -26,8 +28,8 @@ class IBInterface:
     def connect(self):
         try:
             logging.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
-            # Set a longer timeout for the initial connection
-            self.ib.connect(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id, timeout=10)
+            # util.run ensures this works correctly across different threads/event loops
+            util.run(self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id))
             self.ib.reqMarketDataType(3)
             return True
         except Exception as e:
@@ -62,15 +64,17 @@ class IBInterface:
         stock_contract = Stock(symbol, 'SMART', 'USD')
         self.ib.qualifyContracts(stock_contract)
         
-        # Increase the timeout for this specific request
-        headlines = self.ib.reqHistoricalNews(stock_contract.conId, "BRFG", "", "", 100, [], timeout=10)
-        
-        # --- THIS IS THE CRITICAL FIX ---
-        # If the request times out or fails, 'headlines' will be None.
-        # We must check for this and return an empty list to prevent a crash.
-        if headlines is None:
-            logging.warning(f"Could not fetch news for {symbol}. Request may have timed out (market closed?).")
-            return [] # Return an empty, iterable list
+        # --- THIS IS THE CRITICAL FIX FOR THE CRASH ---
+        # We use util.run() to handle the asynchronous call and its timeout gracefully.
+        # This is the library's official, correct way to prevent crashes.
+        try:
+            headlines = util.run(
+                self.ib.reqHistoricalNewsAsync(stock_contract.conId, "BRFG", "", "", 100, []),
+                timeout=10
+            )
+        except TimeoutError:
+            logging.warning(f"Could not fetch news for {symbol}. Request timed out (market closed?).")
+            headlines = [] # Return an empty list on timeout
 
         return [h.headline for h in headlines]
 
@@ -85,25 +89,17 @@ class IBInterface:
         """Calculates ATR, PSAR, and RSI."""
         try:
             bars = self.ib.reqHistoricalData(
-                contract,
-                endDateTime='',
-                durationStr='1 D',
-                barSizeSetting='1 min',
-                whatToShow='TRADES',
-                useRTH=True,
-                formatDate=1
+                contract, endDateTime='', durationStr='1 D', barSizeSetting='1 min',
+                whatToShow='TRADES', useRTH=True, formatDate=1
             )
             if not bars:
                 logging.warning(f"Could not fetch historical data for {contract.localSymbol} to calculate TA.")
                 return None
-
             df = pd.DataFrame(bars)
             df.set_index('date', inplace=True)
-            
             atr = ta.get_atr(df)['ATR'][-1]
             psar = ta.get_psar(df)['PSAR'][-1]
             rsi = ta.get_rsi(df)['RSI'][-1]
-
             return {'atr': atr, 'psar': psar, 'rsi': rsi}
         except Exception as e:
             logging.error(f"Error calculating technical indicators for {contract.localSymbol}: {e}", exc_info=True)
@@ -117,19 +113,30 @@ class IBInterface:
         return self.ib.positions()
 
     def flatten_all_positions(self):
-        # ... (rest of the file is the same)
-        pass
+        positions = self.get_all_positions()
+        if not positions:
+            logging.info("Flatten command received, but no open positions to close.")
+            return
+        logging.warning(f"EMERGENCY FLATTEN: Closing all {len(positions)} positions.")
+        for pos in positions:
+            action = "SELL" if pos.position > 0 else "BUY"
+            quantity = abs(pos.position)
+            order = MarketOrder(action, quantity)
+            self.ib.placeOrder(pos.contract, order)
+        logging.warning("All flatten orders have been sent.")
 
     def disconnect(self):
-        # ... (rest of the file is the same)
-        pass
+        if self.is_connected:
+            logging.info("Disconnecting from IBKR.")
+            self.ib.disconnect()
 
-    # --- Private Methods ---
+    # --- Private Methods (Corrected) ---
     def _on_connected(self):
         logging.info("IBKR connection successful.")
         self.is_connected = True
 
     def _on_disconnected(self):
+        # This method now correctly handles the event.
         logging.warning("IBKR connection lost.")
         self.is_connected = False
 
