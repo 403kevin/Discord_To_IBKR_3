@@ -7,9 +7,8 @@ from services.message_parsers import MessageParser
 
 class SignalProcessor:
     """
-    The Decision Maker. This class is the central nervous system for trade
-    decisions. It takes a raw message, runs it through a series of validation
-    gates, and if everything passes, hands it off to the trade_executor.
+    The Decision Maker. This is the final version with enhanced,
+    detailed notifications for vetoed trades.
     """
     def __init__(self, config, sentiment_analyzer, trade_executor, channel_states, state_lock):
         self.config = config
@@ -22,34 +21,29 @@ class SignalProcessor:
     def process_message(self, message_data):
         """
         The main entry point for processing a new message from Discord.
-        This function contains the multi-gate validation logic.
         """
         channel_id = message_data["channel_id"]
         message_content = message_data["content"]
         
-        # === Gate 0: Kill Switch Check ===
-        # Is this channel currently on a cooldown?
+        # Gate 0: Kill Switch Check
         with self.state_lock:
             state = self.channel_states.get(channel_id)
             if state and state["cooldown_until"] and datetime.now(timezone.utc) < state["cooldown_until"]:
-                logging.info(f"Signal from channel {channel_id} ignored. Channel is on cooldown until {state['cooldown_until']}.")
-                return # Stop processing immediately
+                logging.info(f"Signal from channel {channel_id} ignored. Channel is on cooldown.")
+                return
 
-        # === Gate 1: Profile Check ===
-        # Do we have a valid, enabled profile for this channel?
+        # Gate 1: Profile Check
         profile = self._get_profile_for_channel(channel_id)
         if not profile:
-            return # No active profile for this channel, ignore.
+            return
 
-        # === Gate 2: Keyword Filter ===
-        # Does the message contain any words that should cause a rejection?
+        # Gate 2: Keyword Filter
         for reject_word in profile.get("reject_if_contains", []):
             if reject_word.lower() in message_content.lower():
                 logging.info(f"Signal rejected from {profile['channel_name']}. Contains reject word: '{reject_word}'.")
                 return
 
-        # === Gate 3: Translation Check ===
-        # Pass the profile to the parser so it knows how to handle ambiguity.
+        # Gate 3: Translation Check
         signal = self.parser.parse(message_content, profile)
         if not signal:
             logging.debug(f"Message from {profile['channel_name']} did not parse into a valid signal.")
@@ -57,8 +51,7 @@ class SignalProcessor:
         
         logging.info(f"Successfully parsed signal from {profile['channel_name']}: {signal}")
 
-        # === Gate 4: Sentiment Check ===
-        # If enabled, does the news sentiment support this trade?
+        # Gate 4: Sentiment Check
         sentiment_score = 0.0
         if self.config.sentiment_filter["enabled"]:
             headlines = self.trade_executor.ib_interface.get_news_headlines(signal["symbol"])
@@ -66,22 +59,32 @@ class SignalProcessor:
 
             trade_veto = False
             threshold = self.config.sentiment_filter["sentiment_threshold"]
+            reason = ""
             if signal['right'] == 'C' and sentiment_score < threshold:
                 trade_veto = True
-                reason = f"Sentiment score {sentiment_score:.2f} is below threshold {threshold} for a CALL."
+                reason = f"Sentiment score {sentiment_score:.4f} is below threshold {threshold} for a CALL."
             elif signal['right'] == 'P' and sentiment_score > -threshold:
                 trade_veto = True
-                reason = f"Sentiment score {sentiment_score:.2f} is above threshold {-threshold} for a PUT."
+                reason = f"Sentiment score {sentiment_score:.4f} is above threshold {-threshold} for a PUT."
 
             if trade_veto:
                 logging.warning(f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
-                self.trade_executor.notifier.send_message(f"❌ *Trade Vetoed* ❌\nSymbol: `{signal['symbol']} {signal['strike']}{signal['right']}`\nReason: {reason}")
+                
+                # --- THIS IS THE UPGRADED NOTIFICATION ---
+                veto_message = (
+                    f"❌ *Trade Vetoed* ❌\n\n"
+                    f"*Ticker:* `{signal['symbol']}`\n"
+                    f"*Option:* `{signal['strike']}{signal['right']}`\n"
+                    f"*Expiry:* `{signal['expiry']}`\n"
+                    f"*Source Channel:* `{profile['channel_name']}`\n\n"
+                    f"*Reason:* {reason}"
+                )
+                self.trade_executor.notifier.send_message(veto_message)
                 return
 
         signal["sentiment_score"] = sentiment_score
 
-        # === Gate 5: Final Approval ===
-        # If all gates passed, hand off to the Trader for execution.
+        # Gate 5: Final Approval
         logging.info(f"Signal approved. Handing off to trade executor: {signal}")
         self.trade_executor.execute_trade(signal, profile)
 
