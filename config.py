@@ -26,8 +26,11 @@ class Config:
 
         # The delay, in seconds, after the bot has completed a full cycle.
         self.delay_after_full_cycle = 6
-
         self.signal_max_age_seconds = 60
+
+        self.buzzwords_buy = ["BTO", "BUY"]
+        self.buzzwords_sell = ["STC", "SELL"]
+        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
 
         self.master_shutdown_enabled = True
         self.master_shutdown_channel_id = "1392531225348014180"
@@ -57,7 +60,7 @@ class Config:
         # Settings for the pre-trade news sentiment analysis filter.
         # =================================================================
         self.sentiment_filter = {
-            "enabled": True,  # Master switch to turn the sentiment filter on or off.
+            "enabled": False,  # Master switch to turn the sentiment filter on or off.
             "headlines_to_fetch": 20,  # The number of recent news headlines to analyze.
             "sentiment_threshold": 0.05  # VADER's compound score is also -1 to +1.
             # Vetoes CALLS if score < threshold, Vetoes PUTS if score > -threshold.
