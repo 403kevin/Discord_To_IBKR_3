@@ -1,88 +1,92 @@
 # services/message_parsers.py
+import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
+
+from services.utils import get_next_friday
 
 class MessageParser:
     """
-    The Translator. This service's only job is to take a raw string of text
-    from a Discord message and attempt to translate it into a structured
-    trade signal dictionary.
+    The bot's "Translator." This is the final, intelligent version that
+    correctly distinguishes between action words (like BTO) and the actual
+    ticker symbol.
     """
     def __init__(self, config):
-        # We can pre-compile regex patterns here for efficiency if needed
         self.config = config
 
-    def parse(self, message_content, profile): # MODIFIED: Now accepts the profile
-        """
-        Parses a message to find a trade signal.
+    def _parse_expiry(self, text):
+        """Parses various expiry date formats."""
+        # Simple mm/dd format
+        match = re.search(r'(\d{1,2}/\d{1,2})', text)
+        if match:
+            current_year = datetime.now().year
+            return datetime.strptime(f"{current_year}/{match.group(1)}", "%Y/%m/%d").strftime("%Y%m%d")
+
+        # 0DTE format
+        if "0dte" in text.lower():
+            return datetime.now().strftime("%Y%m%d")
         
-        Returns:
-            A dictionary with signal details or None if no valid signal is found.
+        # Next Friday for ambiguous signals (e.g., "weekly")
+        if any(keyword in text.lower() for keyword in ["next week", "weekly"]):
+            return get_next_friday().strftime("%Y%m%d")
+
+        return None
+
+    def parse(self, message_content, profile):
         """
-        # --- 1. Find Action (BUY/SELL) ---
-        # This is a simple example; a real implementation would be more robust
+        The main parsing logic. It now correctly identifies the action first,
+        then finds the ticker that follows it.
+        """
+        text = message_content.upper()
+        
+        # --- THIS IS THE CRITICAL FIX ---
+        # The new regex now looks for an action word, then captures the ticker
+        # that comes AFTER it, preventing the action word from being mistaken
+        # for the ticker symbol.
+        action_pattern = r'\b(BTO|STC|BUY|SELL)\b\s+([A-Z]{1,5})'
+        action_match = re.search(action_pattern, text)
+
         action = None
-        if re.search(r'\b(bto|buy|long)\b', message_content, re.IGNORECASE):
-            action = "BUY"
-        elif re.search(r'\b(stc|sell|short)\b', message_content, re.IGNORECASE):
-            action = "SELL"
+        symbol = None
         
-        # --- NEW LOGIC: Handle Ambiguous Signals ---
-        if not action and profile.get("assume_buy_on_ambiguous", False):
-            action = "BUY"
+        if action_match:
+            action_word = action_match.group(1)
+            symbol = action_match.group(2)
+            action = "BUY" if action_word in ["BTO", "BUY"] else "SELL"
+        elif profile["assume_buy_on_ambiguous"]:
+            # If no action word, find the first likely ticker
+            symbol_match = re.search(r'\b([A-Z]{1,5})\b', text)
+            if symbol_match:
+                symbol = symbol_match.group(1)
+                action = "BUY"
+        
+        if not action or not symbol:
+            return None # Could not determine a valid action and symbol
+
+        # Now, find the strike and right (e.g., 5000C, 150P)
+        option_pattern = re.search(r'(\d+\.?\d*)\s*([CP])', text)
+        if not option_pattern:
+            return None
             
-        if not action:
-            return None # If we still have no action, we can't proceed.
+        strike = float(option_pattern.group(1))
+        right = option_pattern.group(2)
 
-        # --- 2. Find Ticker ---
-        # Looks for a 2-5 letter all-caps word, common for tickers
-        ticker_match = re.search(r'\b([A-Z]{2,5})\b', message_content)
-        ticker = ticker_match.group(1) if ticker_match else None
-        if not ticker:
-            return None
-
-        # --- 3. Find Strike and Right (e.g., 5000C, 150.5P) ---
-        strike_right_match = re.search(r'(\d+\.?\d*)\s*([CP])', message_content, re.IGNORECASE)
-        if not strike_right_match:
-            return None
-        strike = float(strike_right_match.group(1))
-        right = strike_right_match.group(2).upper()
-
-        # --- 4. Find Expiry ---
-        # Looks for MM/DD, MM-DD, or "0dte"
-        expiry_match = re.search(r'(\d{1,2}[/-]\d{1,2})|0dte', message_content, re.IGNORECASE)
-        expiry_date_str = self._format_expiry(expiry_match.group(0) if expiry_match else None)
+        # Find the expiry date
+        expiry = self._parse_expiry(text)
         
-        # If no expiry is found, we could add logic here to get next week's expiry
-        # based on another config toggle, as per our README.md
-        if not expiry_date_str:
+        # Handle ambiguous expiry toggle from config
+        if not expiry and profile.get("ambiguous_expiry_enabled"):
+            expiry = get_next_friday().strftime("%Y%m%d")
+            logging.info(f"No expiry found, defaulting to next Friday: {expiry}")
+        
+        if not expiry:
             return None
 
-        signal = {
+        return {
             "action": action,
-            "symbol": ticker,
+            "symbol": symbol,
             "strike": strike,
             "right": right,
-            "expiry": expiry_date_str
+            "expiry": expiry
         }
-        return signal
-
-    def _format_expiry(self, date_str):
-        """Helper to format found date strings into YYYYMMDD format."""
-        if not date_str:
-            return None
-        
-        date_str = date_str.lower()
-        if date_str == '0dte':
-            return datetime.now().strftime('%Y%m%d')
-
-        # Handle MM/DD or MM-DD
-        try:
-            # Normalize separator
-            date_str = date_str.replace('-', '/')
-            dt = datetime.strptime(date_str, '%m/%d')
-            # Assume current year
-            return dt.replace(year=datetime.now().year).strftime('%Y%m%d')
-        except ValueError:
-            return None
 
