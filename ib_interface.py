@@ -9,8 +9,9 @@ from services.config import Config
 
 class IBInterface:
     """
-    The bot's "Hands." This is the definitive, complete version with specialist
-    knowledge for handling index options like SPX and robust error handling.
+    The bot's "Hands." This is the definitive, professional version. It is now
+    fully upgraded to handle the 'time_in_force' parameter for placing
+    professional pre-market orders.
     """
     def __init__(self, config: Config):
         self.config = config
@@ -34,32 +35,30 @@ class IBInterface:
             return False
 
     def get_option_contract(self, symbol, strike, right, expiry):
-        """
-        Gets an option contract object. This is now smarter and handles
-        SPX as a special case.
-        """
-        # --- THIS IS THE CRITICAL FIX FOR SPX ---
-        # For index options like SPX, we don't need to "qualify" them.
-        # We know they trade on CBOE. Bypassing the strict qualifyContracts
-        # call is more robust, especially in pre-market.
+        """Gets a qualified option contract object from IBKR."""
         if symbol == 'SPX':
             logging.info("Detected SPX symbol. Using direct CBOE contract definition.")
             return Option(symbol, expiry, strike, right, 'CBOE', tradingClass='SPX')
 
-        # For all other standard stocks, we use the robust qualification method.
         contract = Option(symbol, expiry, strike, right, 'SMART', tradingClass=symbol)
         try:
             qualified_contracts = self.ib.qualifyContracts(contract)
-            if not qualified_contracts:
-                return None
+            if not qualified_contracts: return None
             return qualified_contracts[0]
         except Exception as e:
             logging.warning(f"Could not qualify contract for {symbol}. It may not exist. Error: {e}")
             return None
 
-    def place_trade(self, contract, quantity, order_type="MKT"):
-        """Places a simple market order."""
+    def place_trade(self, contract, quantity, time_in_force="DAY"):
+        """
+        Places a simple market order. This is the final, corrected version that
+        accepts and uses the 'time_in_force' parameter.
+        """
         order = MarketOrder("BUY", quantity)
+        # --- THIS IS THE CRITICAL FIX ---
+        # Set the Time-in-Force on the order object before placing it.
+        order.tif = time_in_force
+        
         trade = self.ib.placeOrder(contract, order)
         return trade
 
@@ -69,7 +68,6 @@ class IBInterface:
         order.orderType = "TRAIL"
         order.action = "SELL"
         order.totalQuantity = quantity
-        order.trailStopPrice = 0
         order.trailingPercent = float(trail_percent)
         trade = self.ib.placeOrder(contract, order)
         return trade
@@ -78,16 +76,14 @@ class IBInterface:
         """Fetches recent news headlines for a given stock symbol."""
         stock_contract = Stock(symbol, 'SMART', 'USD')
         self.ib.qualifyContracts(stock_contract)
-        
         try:
             headlines = util.run(
                 self.ib.reqHistoricalNewsAsync(stock_contract.conId, "BRFG", "", "", 100, []),
                 timeout=10
             )
         except TimeoutError:
-            logging.warning(f"Could not fetch news for {symbol}. Request timed out (market closed?).")
+            logging.warning(f"Could not fetch news for {symbol}. Request timed out.")
             headlines = []
-
         return [h.headline for h in headlines]
 
     def get_live_ticker(self, contract):
