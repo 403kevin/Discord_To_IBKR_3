@@ -25,6 +25,17 @@ class Config:
         self.buzzwords_sell = ["STC", "SELL"]
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
 
+        self.pre_market_trading = {
+            "enabled": True,
+            "# NOTE: Times are in US/Eastern timezone": "",
+            "start_time": "04:00", # 4:00 AM ET
+            "end_time": "09:30",   # 9:30 AM ET
+            # Symbols that should use the special pre-market logic.
+            "symbols": ["SPX", "SPY"],
+            # Use a fixed, small quantity for pre-market trades instead of capital allocation.
+            "trade_quantity": 1
+        }
+
         self.master_shutdown_enabled = True
         self.master_shutdown_channel_id = "1392531225348014180"
         self.master_shutdown_command = "terminate"
