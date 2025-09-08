@@ -21,6 +21,8 @@ class Config:
         self.delay_after_full_cycle = 6
         self.signal_max_age_seconds = 60
 
+        self.processed_message_cache_size = 25
+
         self.buzzwords_buy = ["BTO", "BUY"]
         self.buzzwords_sell = ["STC", "SELL"]
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
@@ -57,7 +59,7 @@ class Config:
                 "One or more required environment variables (tokens/IDs) are missing. Please check your .env file.")
 
         self.sentiment_filter = {
-            "enabled": False,
+            "enabled": True,
             "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05
         }
@@ -91,8 +93,8 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 15,
-                    "timeout_exit_minutes": 15,
+                    "breakeven_trigger_percent": 10,
+                    "timeout_exit_minutes": 30,
                     "trail_method": "atr",
                     "trail_settings": {"percentage": 10, "atr_period": 14, "atr_multiplier": 1.5},
                     "momentum_exits": {
@@ -102,7 +104,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70}
                     }
                 },
-                "safety_net": {"enabled": False, "native_trail_percent": 50}
+                "safety_net": {"enabled": True, "native_trail_percent": 50}
             },
         ]
 
