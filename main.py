@@ -18,7 +18,6 @@ from bot_engine.trade_executor import TradeExecutor
 
 class MainApp:
     def __init__(self):
-        # Setup logging first, so all components can use it
         from services.custom_logger import setup_logger
         setup_logger()
 
@@ -43,7 +42,6 @@ class MainApp:
         self.is_running = False
 
     def _initialize_channel_states(self):
-        """Creates the initial state tracker for each channel profile."""
         states = {}
         for profile in self.config.profiles:
             channel_id = profile["channel_id"]
@@ -54,41 +52,46 @@ class MainApp:
     def _handle_fill_event(self, trade, fill):
         """
         The central switchboard. This is the definitive, battle-hardened version
-        that includes a strategic pause to ensure the native trail attaches.
+        that uses an intelligent retry loop to fetch TA data.
         """
         conId = fill.contract.conId
         side = fill.execution.side
         
-        if side == 'BOT': # --- Handle Entry Fills ---
+        if side == 'BOT':
             pos_data = self.position_monitor.get_position_data(conId)
-            if not pos_data: return # Guard against duplicate fill events
+            if not pos_data or pos_data.get("status") != "pending_fill": return
 
-            # Activate full monitoring now that we have a real entry price
-            self.position_monitor.activate_monitoring(conId, fill.execution.price, None) # TA indicators fetched later
-
+            # --- THIS IS THE CRITICAL, "INTELLIGENT RETRY" FIX ---
+            initial_indicators = None
+            for i in range(3): # Try up to 3 times
+                logging.info(f"Fill confirmed for {trade.contract.localSymbol}. Fetching initial TA indicators (Attempt {i+1}/3)...")
+                initial_indicators = self.ib_interface.get_technical_indicators(trade.contract)
+                if initial_indicators:
+                    break # Success, exit the loop
+                logging.warning(f"Attempt {i+1} failed to fetch TA data. Retrying in 2 seconds...")
+                time.sleep(2)
+            
+            self.position_monitor.activate_monitoring(conId, fill.execution.price, initial_indicators)
+            
             self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
             self.market_data_manager.subscribe_to_contract(trade.contract)
 
             safety_net_settings = pos_data.get("safety_net_settings", {})
             if safety_net_settings.get("enabled"):
-                # We take a strategic 1-second pause to allow the broker's
-                # systems to fully register the new position. This eliminates the race condition.
-                logging.info("Entry fill confirmed. Pausing for 1 second before attaching safety net...")
+                logging.info("Pausing for 1 second before attaching safety net...")
                 time.sleep(1)
-
                 logging.info("Placing native safety net trail order...")
                 self.ib_interface.place_native_trail_stop(
-                    trade.contract,
-                    trade.order.totalQuantity,
+                    trade.contract, trade.order.totalQuantity,
                     safety_net_settings["native_trail_percent"]
                 )
                 logging.info("Native safety net trail order placed successfully.")
 
-        elif side == 'SLD': # --- Handle Exit Fills ---
+        elif side == 'SLD':
             self._process_exit_fill(fill)
 
     def _process_exit_fill(self, fill):
-        """Contains the logic for the consecutive loss kill switch."""
+        # ... (This function is the same) ...
         conId = fill.contract.conId
         pos_data = self.position_monitor.get_position_data(conId)
         if not pos_data or not pos_data.get("entry_price"): return
@@ -115,27 +118,21 @@ class MainApp:
         self.position_monitor.remove_position(conId)
 
     def run(self):
-        """Starts all components and the main application loop."""
+        # ... (This function is the same) ...
         self.is_running = True
         try:
             self.ib_interface.connect()
             self.ib_interface.on_fill_callback = self._handle_fill_event
-            
             self.position_monitor.start_monitoring()
             self.discord_interface.start_polling()
-
             logging.info("Main application loop started. Bot is now live.")
             while self.is_running:
-                # This is the "intelligent wait" that allows the bot to process broker events.
                 self.ib_interface.ib.sleep(1)
-                
                 try:
-                    # Check the mailbox for any new signals that arrived during the wait
                     message_data = self.message_queue.get_nowait()
                     self.signal_processor.process_message(message_data)
                 except queue.Empty:
-                    pass # It's normal for the queue to be empty
-
+                    pass
                 if self.config.oversold_monitor_enabled:
                     positions = self.ib_interface.get_all_positions()
                     for pos in positions:
@@ -145,7 +142,6 @@ class MainApp:
                             self.stop()
                             self.ib_interface.flatten_all_positions()
                             return
-                            
         except KeyboardInterrupt:
             logging.info("Shutdown signal received.")
         except Exception as e:
@@ -154,7 +150,7 @@ class MainApp:
             self.stop()
 
     def stop(self):
-        """Gracefully stops all components."""
+        # ... (This function is the same) ...
         if not self.is_running: return
         logging.info("Shutting down bot...")
         self.is_running = False
