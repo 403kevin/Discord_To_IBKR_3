@@ -86,6 +86,7 @@ class Config:
                     "max_price_per_contract": 10.0,  # e.g., $1000 per contract
 
                     "entry_order_type": "MKT",
+                    "time_in_force": "DAY",
                     "fill_timeout_seconds": 20,
                 },
 
