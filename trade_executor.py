@@ -3,12 +3,13 @@ import logging
 import math
 from datetime import datetime
 import pytz
+import time # The library for our strategic pause
 
 class TradeExecutor:
     """
-    The "Trader." This is the definitive, professional version. It is now
-    fully aware of the 'time_in_force' setting from the config and can
-    place specific "At the Opening" orders.
+    The "Trader." This is the definitive, battle-hardened version. It now
+    includes the critical strategic pause between entry and the safety net
+    order, taken from the proven logic of the original script.
     """
     def __init__(self, ib_interface, position_monitor, notifier):
         self.ib_interface = ib_interface
@@ -33,7 +34,7 @@ class TradeExecutor:
     def execute_trade(self, signal, profile):
         """
         The main entry point for executing a trade, now with session awareness
-        and correct time-in-force handling.
+        and the critical strategic pause.
         """
         try:
             contract = self.ib_interface.get_option_contract(
@@ -44,8 +45,6 @@ class TradeExecutor:
             logging.info(f"Retrieved contract for trade execution: {contract.localSymbol}")
 
             trade_quantity = 0
-            # --- THIS IS THE CRITICAL FIX ---
-            # Get the default time_in_force from the profile's trading config
             time_in_force = profile["trading"]["time_in_force"] 
             
             is_pm = self._is_pre_market()
@@ -55,7 +54,7 @@ class TradeExecutor:
                 # --- Pre-Market Path ---
                 pm_config = self.config.pre_market_trading
                 trade_quantity = pm_config["trade_quantity"]
-                time_in_force = 'OPG' # Override to "At the Opening"
+                time_in_force = 'OPG'
                 logging.info(f"PRE-MARKET MODE: Using fixed quantity of {trade_quantity} and TIF='OPG' for {signal['symbol']}.")
             else:
                 # --- Regular Hours Path ---
@@ -87,11 +86,16 @@ class TradeExecutor:
 
             # --- Execute the trade with the determined quantity and TIF ---
             if trade_quantity > 0:
-                # The 'place_trade' function needs to accept the time_in_force
                 entry_trade = self.ib_interface.place_trade(
                     contract, trade_quantity, time_in_force=time_in_force
                 )
                 logging.info(f"Entry order for {trade_quantity} contracts placed. OrderId: {entry_trade.order.orderId}, TIF: {time_in_force}")
+
+                # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
+                # Pause to allow the broker's servers to process the entry fill.
+                # This prevents the trail order from being rejected.
+                logging.info("Pausing for 2 seconds to allow entry order to process...")
+                time.sleep(2)
 
                 if profile["safety_net"]["enabled"]:
                     self.ib_interface.place_native_trail_stop(
