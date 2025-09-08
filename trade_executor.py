@@ -4,9 +4,10 @@ import math
 
 class TradeExecutor:
     """
-    The "Trader." This is the final, intelligent version that calculates
-    position size based on a fixed capital allocation and performs pre-trade
-    price checks, rather than using a static trade quantity.
+    The "Trader." This is the definitive, battle-hardened version. It calculates
+    position size based on capital allocation, performs pre-trade price checks,
+    and has a robust safety net to prevent any single trade failure from
+    crashing the bot.
     """
     def __init__(self, ib_interface, position_monitor, notifier):
         self.ib_interface = ib_interface
@@ -15,19 +16,24 @@ class TradeExecutor:
 
     def execute_trade(self, signal, profile):
         """
-        The main entry point for executing a trade. It now includes pre-trade
-        checks and dynamic position sizing.
+        The main entry point for executing a trade, wrapped in a master
+        error handler for maximum stability.
         """
         try:
             trading_config = profile["trading"]
 
-            # 1. Get the official contract from IBKR
+            # 1. Get the official contract from IBKR using our new, smarter interface
             contract = self.ib_interface.get_option_contract(
                 symbol=signal["symbol"],
                 strike=signal["strike"],
                 right=signal["right"],
                 expiry=signal["expiry"]
             )
+            
+            # If the contract could not be found, raise an error to be caught below
+            if not contract:
+                raise ValueError(f"No security definition found for the request.")
+
             logging.info(f"Retrieved contract for trade execution: {contract.localSymbol}")
 
             # 2. Get the live market price for the contract
@@ -53,32 +59,27 @@ class TradeExecutor:
             funds_to_allocate = trading_config["funds_allocation"]
             cost_per_contract = live_price * 100
             
-            # Use math.floor to ensure we don't try to buy a fraction of a contract
             trade_quantity = math.floor(funds_to_allocate / cost_per_contract)
 
             if trade_quantity == 0:
-                logging.warning(f"TRADE REJECTED for {contract.localSymbol}. Allocated funds of ${funds_to_allocate} is not enough to buy a single contract at ${cost_per_contract:.2f}.")
+                logging.warning(f"TRADE REJECTED for {contract.localSymbol}. Allocated funds of ${funds_to_allocate} is not enough to buy one contract at ${cost_per_contract:.2f}.")
                 self.notifier.send_message(f"⚠️ *Trade Rejected* ⚠️\n\nSymbol: `{contract.localSymbol}`\nReason: Not enough allocated funds to purchase one contract.")
                 return
 
-            logging.info(f"Calculated trade quantity: {trade_quantity} contracts based on ${funds_to_allocate} allocation and live price of ${live_price:.2f}.")
+            logging.info(f"Calculated trade quantity: {trade_quantity} contracts for {contract.localSymbol}.")
 
-            # 5. Place the primary Market Order with the calculated quantity
+            # 5. Place the primary Market Order
             entry_trade = self.ib_interface.place_trade(
-                contract,
-                trade_quantity,
-                trading_config["entry_order_type"]
+                contract, trade_quantity, trading_config["entry_order_type"]
             )
-            logging.info(f"Entry order for {trade_quantity} contracts placed for {contract.localSymbol}. OrderId: {entry_trade.order.orderId}")
+            logging.info(f"Entry order for {trade_quantity} contracts placed. OrderId: {entry_trade.order.orderId}")
 
-            # 6. If enabled, place the native safety net trail order
+            # 6. Place the native safety net trail order
             if profile["safety_net"]["enabled"]:
                 self.ib_interface.place_native_trail_stop(
-                    contract,
-                    trade_quantity,
-                    profile["safety_net"]["native_trail_percent"]
+                    contract, trade_quantity, profile["safety_net"]["native_trail_percent"]
                 )
-                logging.info(f"Native safety net trail order placed for {contract.localSymbol}.")
+                logging.info(f"Native safety net trail order placed.")
 
             # 7. Add the position to the monitor's watchlist
             self.position_monitor.add_position_to_monitor(
@@ -89,6 +90,14 @@ class TradeExecutor:
             )
 
         except Exception as e:
+            # This is the master safety net. It catches ANY error during execution.
             logging.error(f"Failed to execute trade for signal {signal}. Error: {e}", exc_info=True)
-            self.notifier.send_message(f"🚨 *Trade Execution Error* 🚨\n\nSymbol: `{signal.get('symbol', 'N/A')}`\nError: `{e}`")
+            # It then sends a detailed notification WITHOUT crashing the bot.
+            error_message = (
+                f"🚨 *Trade Execution Error* 🚨\n\n"
+                f"*Ticker:* `{signal.get('symbol', 'N/A')}`\n"
+                f"*Option:* `{signal.get('strike', 'N/A')}{signal.get('right', 'N/A')}`\n\n"
+                f"*Error:* `{e}`"
+            )
+            self.notifier.send_message(error_message)
 
