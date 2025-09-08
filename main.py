@@ -11,6 +11,7 @@ from interfaces.ib_interface import IBInterface
 from interfaces.telegram_notifier import TelegramNotifier
 from interfaces.discord_interface import DiscordInterface
 from services.sentiment_analyzer import SentimentAnalyzer
+from services.market_data_manager import MarketDataManager # NEW: The Master Watchmaker
 from bot_engine.signal_processor import SignalProcessor
 from bot_engine.position_monitor import PositionMonitor
 from bot_engine.trade_executor import TradeExecutor
@@ -27,16 +28,21 @@ class MainApp:
         self.ib_interface = IBInterface(self.config)
         self.notifier = TelegramNotifier(self.config)
         self.sentiment_analyzer = SentimentAnalyzer()
-        self.channel_states = self._initialize_channel_states()
-        self.state_lock = Lock()
         
-        self.position_monitor = PositionMonitor(self.ib_interface, self.notifier)
+        # --- NEW: Hire the Master Watchmaker ---
+        self.market_data_manager = MarketDataManager(self.ib_interface)
+
+        # The Position Monitor now gets the data manager to read prices from
+        self.position_monitor = PositionMonitor(self.ib_interface, self.notifier, self.market_data_manager)
         
         self.trade_executor = TradeExecutor(
             self.ib_interface, 
             self.position_monitor, 
             self.notifier
         )
+
+        self.channel_states = self._initialize_channel_states()
+        self.state_lock = Lock()
         
         self.signal_processor = SignalProcessor(
             self.config,
@@ -63,9 +69,9 @@ class MainApp:
 
     def _handle_fill_event(self, trade, fill):
         """
-        The central switchboard for all confirmed fills. This is the definitive,
-        intelligent version that places the native trail order ONLY after a
-        fill is confirmed, creating a "Listen, Then Act" system.
+        The central switchboard. This is the final, intelligent version that
+        subscribes to market data and places the native trail order ONLY
+        after a fill is confirmed.
         """
         conId = fill.contract.conId
         side = fill.execution.side
@@ -75,8 +81,10 @@ class MainApp:
             if pos_data:
                 self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
 
-                # --- THIS IS THE CRITICAL, "LISTEN, THEN ACT" FIX ---
-                # Now that the fill is 100% confirmed, we place the safety net.
+                # --- NEW: Tell the Watchmaker to subscribe to the data stream ---
+                self.market_data_manager.subscribe_to_contract(trade.contract)
+
+                # --- The "Listen, Then Act" fix for the safety net ---
                 safety_net_settings = pos_data.get("safety_net_settings", {})
                 if safety_net_settings.get("enabled"):
                     logging.info("Entry fill confirmed. Placing native safety net trail order...")
@@ -107,13 +115,10 @@ class MainApp:
 
         with self.state_lock:
             state = self.channel_states[channel_id]
-            if profit_loss <= 0: # Loss or breakeven
+            if profit_loss <= 0:
                 state["consecutive_losses"] += 1
-                logging.warning(f"Loss recorded for channel {channel_id}. Consecutive losses: {state['consecutive_losses']}")
-            else: # Win
-                if state["consecutive_losses"] > 0:
-                    logging.info(f"Win recorded for channel {channel_id}. Resetting consecutive loss count from {state['consecutive_losses']} to 0.")
-                    state["consecutive_losses"] = 0
+            else:
+                state["consecutive_losses"] = 0
             
             if state["consecutive_losses"] >= monitor_config["max_losses"]:
                 cooldown_minutes = monitor_config["cooldown_minutes"]
@@ -141,6 +146,8 @@ class MainApp:
                 except queue.Empty:
                     pass
 
+                # The oversold check should be less frequent to avoid spamming IBKR.
+                # A proper implementation would use a timer. For now, it runs in the loop.
                 if self.config.oversold_monitor_enabled:
                     positions = self.ib_interface.get_all_positions()
                     for pos in positions:
