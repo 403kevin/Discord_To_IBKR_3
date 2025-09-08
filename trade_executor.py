@@ -3,13 +3,13 @@ import logging
 import math
 from datetime import datetime
 import pytz
-import time # The library for our strategic pause
 
 class TradeExecutor:
     """
-    The "Trader." This is the definitive, battle-hardened version. It now
-    includes the critical strategic pause between entry and the safety net
-    order, taken from the proven logic of the original script.
+    The "Trader." This is the definitive, event-driven version. Its sole
+    responsibility is to place the entry order. The responsibility for attaching
+    the safety net trail order has been promoted to the main fill handler
+    to create a more robust, "Listen, Then Act" system.
     """
     def __init__(self, ib_interface, position_monitor, notifier):
         self.ib_interface = ib_interface
@@ -33,8 +33,8 @@ class TradeExecutor:
 
     def execute_trade(self, signal, profile):
         """
-        The main entry point for executing a trade, now with session awareness
-        and the critical strategic pause.
+        The main entry point for executing a trade, now simplified to only
+        handle the entry order.
         """
         try:
             contract = self.ib_interface.get_option_contract(
@@ -84,25 +84,18 @@ class TradeExecutor:
                 trade_quantity = calculated_quantity
                 logging.info(f"REGULAR HOURS: Calculated trade quantity: {trade_quantity} for {contract.localSymbol}.")
 
-            # --- Execute the trade with the determined quantity and TIF ---
+            # --- Execute the trade ---
             if trade_quantity > 0:
+                # The Trader's job is now complete after this one call.
                 entry_trade = self.ib_interface.place_trade(
                     contract, trade_quantity, time_in_force=time_in_force
                 )
                 logging.info(f"Entry order for {trade_quantity} contracts placed. OrderId: {entry_trade.order.orderId}, TIF: {time_in_force}")
 
-                # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
-                # Pause to allow the broker's servers to process the entry fill.
-                # This prevents the trail order from being rejected.
-                logging.info("Pausing for 2 seconds to allow entry order to process...")
-                time.sleep(2)
+                # The "dumb pause" and direct call to place the trail are gone.
+                # The main.py fill handler is now responsible for the safety net.
 
-                if profile["safety_net"]["enabled"]:
-                    self.ib_interface.place_native_trail_stop(
-                        contract, trade_quantity, profile["safety_net"]["native_trail_percent"]
-                    )
-                    logging.info(f"Native safety net trail order placed.")
-
+                # We still notify the position monitor to expect a fill.
                 self.position_monitor.add_position_to_monitor(
                     conId=contract.conId, entry_trade=entry_trade, profile=profile,
                     sentiment_score=signal.get("sentiment_score", 0.0)
