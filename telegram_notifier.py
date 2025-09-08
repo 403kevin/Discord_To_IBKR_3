@@ -5,7 +5,7 @@ import requests
 class TelegramNotifier:
     """
     The bot's "Mouth." This is the definitive, corrected version that can
-    handle the sentiment score in fill confirmations.
+    handle the sentiment score and channel name in fill confirmations.
     """
     def __init__(self, config):
         self.config = config
