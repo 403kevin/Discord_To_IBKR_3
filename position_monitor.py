@@ -4,12 +4,14 @@ import time
 from threading import Thread, Lock
 from datetime import datetime, timezone
 
+
 class PositionMonitor:
     """
     The intelligent guardian of our live trades. This class runs in a dedicated thread
     to monitor all active positions and execute the sophisticated, dynamic exit
     strategies defined in the config.
     """
+
     def __init__(self, ib_interface, notifier):
         self.ib_interface = ib_interface
         self.notifier = notifier
@@ -25,7 +27,8 @@ class PositionMonitor:
                 logging.warning(f"Attempted to add an already monitored position with conId: {conId}")
                 return
 
-            logging.info(f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending, awaiting fill.")
+            logging.info(
+                f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending, awaiting fill.")
             self._live_positions[conId] = {
                 "entry_trade": entry_trade,
                 "profile": profile,
@@ -36,7 +39,8 @@ class PositionMonitor:
                 "trailing_stop_price": 0,
                 "breakeven_set": False,
                 "status": "pending_fill",
-                "previous_rsi": None # For RSI hook detection
+                "previous_rsi": None  # For RSI hook detection
+                "safety_net_settings": profile["safety_net"]  # NEW: Store the safety net rules
             }
 
     def update_position_on_fill(self, conId, entry_price):
@@ -51,7 +55,7 @@ class PositionMonitor:
             pos_data["status"] = "live"
             logging.info(f"Monitoring fully activated for conId {conId} at entry price ${entry_price:.2f}")
             return pos_data
-    
+
     def get_position_data(self, conId):
         with self._lock:
             return self._live_positions.get(conId)
@@ -76,13 +80,13 @@ class PositionMonitor:
                 for conId in active_conIds:
                     self._check_single_position(conId)
 
-                time.sleep(3) # Check positions every 3 seconds
+                time.sleep(3)  # Check positions every 3 seconds
 
             except Exception as e:
                 logging.error(f"Error in position monitor loop: {e}", exc_info=True)
                 time.sleep(15)
         logging.info("Position monitor thread stopped.")
-    
+
     def _check_single_position(self, conId):
         with self._lock:
             pos_data = self._live_positions.get(conId)
@@ -94,7 +98,7 @@ class PositionMonitor:
         if not ticker or not ticker.last:
             logging.warning(f"Could not get live price for {contract.localSymbol}. Skipping check.")
             return
-        
+
         current_price = ticker.last
         pos_data["high_water_mark"] = max(pos_data["high_water_mark"], current_price)
         exit_strategy = pos_data["profile"]["exit_strategy"]
@@ -108,7 +112,7 @@ class PositionMonitor:
             logging.info(f"TIMEOUT EXIT for {contract.localSymbol}. Trade exceeded {timeout_minutes} minutes.")
             self._execute_exit(conId, "Timeout")
             return
-        
+
         # --- NEW: Check for Momentum-Based Early Exits ---
         momentum_exits = exit_strategy.get("momentum_exits", {})
         indicators = None
@@ -127,18 +131,20 @@ class PositionMonitor:
                 rsi_settings = momentum_exits["rsi_settings"]
                 current_rsi = indicators['rsi']
                 previous_rsi = pos_data.get("previous_rsi")
-                if previous_rsi and previous_rsi > rsi_settings["overbought_level"] and current_rsi < rsi_settings["overbought_level"]:
+                if previous_rsi and previous_rsi > rsi_settings["overbought_level"] and current_rsi < rsi_settings[
+                    "overbought_level"]:
                     logging.info(f"RSI HOOK EXIT for {contract.localSymbol}. RSI crossed down from overbought.")
                     self._execute_exit(conId, "RSI Hook")
                     return
-                pos_data["previous_rsi"] = current_rsi # Update for next check
+                pos_data["previous_rsi"] = current_rsi  # Update for next check
 
         # 2. Calculate and Check Trailing Stop
         new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data, indicators)
         pos_data["trailing_stop_price"] = new_trailing_stop_price
 
         if current_price <= pos_data["trailing_stop_price"]:
-            logging.info(f"TRAILING STOP EXIT for {contract.localSymbol}. Price {current_price:.2f} hit stop at {pos_data['trailing_stop_price']:.2f}.")
+            logging.info(
+                f"TRAILING STOP EXIT for {contract.localSymbol}. Price {current_price:.2f} hit stop at {pos_data['trailing_stop_price']:.2f}.")
             self._execute_exit(conId, "Trailing Stop")
             return
 
@@ -162,12 +168,12 @@ class PositionMonitor:
         if trail_method == "percentage":
             pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["percentage"] / 100)
             return high_water_mark - pullback_amount
-        
+
         elif trail_method == "atr":
             # Use indicators if we already fetched them, otherwise fetch them now
             if not indicators:
                 indicators = self.ib_interface.get_technical_indicators(pos_data["entry_trade"].contract)
-            
+
             if indicators and 'atr' in indicators:
                 pullback_amount = indicators['atr'] * exit_strategy["trail_settings"]["atr_multiplier"]
                 return high_water_mark - pullback_amount
@@ -176,7 +182,7 @@ class PositionMonitor:
                 logging.warning("ATR calculation failed. Falling back to percentage stop.")
                 pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["percentage"] / 100)
                 return high_water_mark - pullback_amount
-        
+
         return 0
 
     def _execute_exit(self, conId, reason):
@@ -185,13 +191,13 @@ class PositionMonitor:
             if not pos_data or pos_data["status"] != "live":
                 return
             pos_data["status"] = "exit_sent"
-        
+
         contract = pos_data["entry_trade"].contract
         quantity = pos_data["entry_trade"].order.totalQuantity
-        
+
         logging.info(f"Executing market close for {contract.localSymbol} (Reason: {reason}).")
         self.ib_interface.close_position(contract, quantity)
-        
+
     def start_monitoring(self):
         if not self._is_monitoring:
             self._is_monitoring = True
