@@ -1,190 +1,152 @@
-# bot_engine/position_monitor.py
+# main.py
 import logging
 import time
-from threading import Thread, Lock
-from datetime import datetime, timezone
+import queue
+from threading import Lock
+from datetime import datetime, timedelta, timezone
 
-class PositionMonitor:
-    """
-    The "Watchtower." This is the definitive, stream-aware version. It no longer
-    fetches its own market data. Instead, it gets instantaneous price updates
-    from the central MarketDataManager, making it faster, more reliable, and
-    truly professional.
-    """
+# Import project modules
+from services.config import Config
+from interfaces.ib_interface import IBInterface
+from interfaces.telegram_notifier import TelegramNotifier
+from interfaces.discord_interface import DiscordInterface
+from services.sentiment_analyzer import SentimentAnalyzer
+from services.market_data_manager import MarketDataManager
+from bot_engine.signal_processor import SignalProcessor
+from bot_engine.position_monitor import PositionMonitor
+from bot_engine.trade_executor import TradeExecutor
 
-    def __init__(self, ib_interface, notifier, market_data_manager):
-        self.ib_interface = ib_interface
-        self.notifier = notifier
-        self.market_data_manager = market_data_manager  # NEW: Gets the Master Watchmaker
-        self._live_positions = {}
-        self._lock = Lock()
-        self._monitoring_thread = None
-        self._is_monitoring = False
+class MainApp:
+    def __init__(self):
+        from services.custom_logger import setup_logger
+        setup_logger()
 
-    def add_position_to_monitor(self, conId, entry_trade, profile, sentiment_score):
-        """Called by the trade_executor to put a new position under watch."""
-        with self._lock:
-            if conId in self._live_positions:
-                logging.warning(f"Attempted to add an already monitored position with conId: {conId}")
-                return
+        self.config = Config()
+        self.message_queue = queue.Queue()
 
-            logging.info(f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending, awaiting fill.")
-            self._live_positions[conId] = {
-                "entry_trade": entry_trade,
-                "profile": profile,
-                "sentiment_score": sentiment_score,
-                "safety_net_settings": profile["safety_net"],
-                "entry_price": None,
-                "entry_timestamp": None,
-                "high_water_mark": 0,
-                "trailing_stop_price": 0,
-                "breakeven_set": False,
-                "status": "pending_fill",
-                "previous_rsi": None
-            }
+        self.ib_interface = IBInterface(self.config)
+        self.notifier = TelegramNotifier(self.config)
+        self.sentiment_analyzer = SentimentAnalyzer()
+        self.market_data_manager = MarketDataManager(self.ib_interface)
+        self.position_monitor = PositionMonitor(self.ib_interface, self.notifier, self.market_data_manager)
+        self.trade_executor = TradeExecutor(self.ib_interface, self.position_monitor, self.notifier)
+        self.channel_states = self._initialize_channel_states()
+        self.state_lock = Lock()
+        
+        self.signal_processor = SignalProcessor(
+            self.config, self.sentiment_analyzer, self.trade_executor,
+            self.channel_states, self.state_lock
+        )
+        
+        self.discord_interface = DiscordInterface(self.config, self.message_queue)
+        self.is_running = False
 
-    def update_position_on_fill(self, conId, entry_price):
-        """Called by main.py's fill handler to activate full monitoring."""
-        with self._lock:
-            if conId not in self._live_positions:
-                return None
-            pos_data = self._live_positions[conId]
-            pos_data["entry_price"] = entry_price
-            pos_data["high_water_mark"] = entry_price
-            pos_data["entry_timestamp"] = datetime.now(timezone.utc)
-            pos_data["status"] = "live"
-            logging.info(f"Monitoring fully activated for conId {conId} at entry price ${entry_price:.2f}")
-            return pos_data
+    def _initialize_channel_states(self):
+        states = {}
+        for profile in self.config.profiles:
+            channel_id = profile["channel_id"]
+            states[channel_id] = {"consecutive_losses": 0, "cooldown_until": None}
+        logging.info(f"Initialized channel state tracker: {states}")
+        return states
 
-    def get_position_data(self, conId):
-        with self._lock:
-            return self._live_positions.get(conId)
+    def _handle_fill_event(self, trade, fill):
+        conId = fill.contract.conId
+        side = fill.execution.side
+        
+        if side == 'BOT':
+            pos_data = self.position_monitor.update_position_on_fill(conId, fill.execution.price)
+            if pos_data:
+                self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
+                self.market_data_manager.subscribe_to_contract(trade.contract)
+                safety_net_settings = pos_data.get("safety_net_settings", {})
+                if safety_net_settings.get("enabled"):
+                    logging.info("Entry fill confirmed. Placing native safety net trail order...")
+                    self.ib_interface.place_native_trail_stop(
+                        trade.contract, trade.order.totalQuantity,
+                        safety_net_settings["native_trail_percent"]
+                    )
+                    logging.info("Native safety net trail order placed successfully.")
+        elif side == 'SLD':
+            self._process_exit_fill(fill)
 
-    def remove_position(self, conId):
-        with self._lock:
-            if conId in self._live_positions:
-                logging.info(f"Removing conId {conId} from monitoring. Trade lifecycle complete.")
-                self._live_positions.pop(conId)
+    def _process_exit_fill(self, fill):
+        conId = fill.contract.conId
+        pos_data = self.position_monitor.get_position_data(conId)
+        if not pos_data or not pos_data.get("entry_price"): return
 
-    def _monitor_loop(self):
-        logging.info("Position monitor thread started.")
-        while self._is_monitoring:
-            try:
-                with self._lock:
-                    active_conIds = list(self._live_positions.keys())
-
-                if not active_conIds:
-                    time.sleep(1)
-                    continue
-
-                for conId in active_conIds:
-                    self._check_single_position(conId)
-
-                time.sleep(1)  # Can check very frequently now
-
-            except Exception as e:
-                logging.error(f"Error in position monitor loop: {e}", exc_info=True)
-                time.sleep(15)
-        logging.info("Position monitor thread stopped.")
-
-    def _check_single_position(self, conId):
-        with self._lock:
-            pos_data = self._live_positions.get(conId)
-            if not pos_data or pos_data["status"] != "live":
-                return
-
-        # --- THIS IS THE CRITICAL FIX ---
-        # Get the latest price from the central data manager's price board.
-        # This is an instantaneous lookup, not a slow API call.
-        ticker = self.market_data_manager.get_ticker(conId)
-        if not ticker or not ticker.last:
-            logging.debug(f"No live price data yet for conId {conId}. Waiting for stream to start.")
+        profit_loss = fill.execution.price - pos_data["entry_price"]
+        channel_id = pos_data["profile"]["channel_id"]
+        monitor_config = pos_data["profile"]["consecutive_loss_monitor"]
+        
+        if not monitor_config["enabled"]:
+            self.position_monitor.remove_position(conId)
             return
 
-        current_price = ticker.last
-        pos_data["high_water_mark"] = max(pos_data["high_water_mark"], current_price)
-        exit_strategy = pos_data["profile"]["exit_strategy"]
+        with self.state_lock:
+            state = self.channel_states[channel_id]
+            if profit_loss <= 0:
+                state["consecutive_losses"] += 1
+            else:
+                state["consecutive_losses"] = 0
+            if state["consecutive_losses"] >= monitor_config["max_losses"]:
+                cooldown_minutes = monitor_config["cooldown_minutes"]
+                state["cooldown_until"] = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
+                self.notifier.send_message(f"🚨 *Kill Switch Activated* 🚨\n\nChannel: `{pos_data['profile']['channel_name']}`\nReason: Reached max consecutive losses ({monitor_config['max_losses']}).\nCooldown: `{cooldown_minutes}` minutes.")
+                state["consecutive_losses"] = 0
+        self.position_monitor.remove_position(conId)
 
-        # --- Execute Exit Logic (in order of priority) ---
-        # 1. Time-Based Exit
-        timeout_minutes = exit_strategy["timeout_exit_minutes"]
-        time_in_trade = (datetime.now(timezone.utc) - pos_data["entry_timestamp"]).total_seconds() / 60
-        if time_in_trade > timeout_minutes:
-            reason = f"Timeout ({timeout_minutes}m)"
-            logging.info(f"EXIT TRIGGER: {reason} for {ticker.contract.localSymbol}.")
-            self._execute_exit(conId, reason)
-            return
-        
-        # 2. Momentum-Based Early Exits
-        # Note: This logic now needs to be adapted to get TA data from a different source
-        # as the position_monitor no longer fetches historical bars. For now, it's disabled.
-        # We can build a TA service later if desired.
+    def run(self):
+        self.is_running = True
+        try:
+            self.ib_interface.connect()
+            self.ib_interface.on_fill_callback = self._handle_fill_event
+            
+            self.position_monitor.start_monitoring()
+            self.discord_interface.start_polling()
 
-        # 3. Trailing Stop
-        new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data)
-        pos_data["trailing_stop_price"] = new_trailing_stop_price
+            logging.info("Main application loop started. Bot is now live.")
+            while self.is_running:
+                # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
+                # We replace the "dumb pause" with the library's "intelligent wait."
+                # This allows the bot to process incoming broker events (like fills)
+                # while it also checks the Discord message queue.
+                self.ib_interface.ib.sleep(1) # Actively listen for broker events for 1 second.
+                
+                try:
+                    # Check the mailbox for any new signals that arrived during the wait
+                    message_data = self.message_queue.get_nowait()
+                    self.signal_processor.process_message(message_data)
+                except queue.Empty:
+                    pass # It's normal for the queue to be empty
 
-        if current_price <= pos_data["trailing_stop_price"]:
-            reason = f"Trailing Stop ({pos_data['trailing_stop_price']:.2f})"
-            logging.info(f"EXIT TRIGGER: {reason} for {ticker.contract.localSymbol}. Price hit {current_price:.2f}.")
-            self._execute_exit(conId, reason)
-            return
-        
-        # Log the check for visibility, similar to your old script
-        logging.info(f"[TRAIL CHECK] {ticker.contract.localSymbol} | Price: {current_price:.2f} | High: {pos_data['high_water_mark']:.2f} | Stop: {pos_data['trailing_stop_price']:.2f}")
+                # The oversold check can remain, but happens less frequently now.
+                if self.config.oversold_monitor_enabled:
+                    positions = self.ib_interface.get_all_positions()
+                    for pos in positions:
+                        if pos.position < 0:
+                            logging.critical(f"OVERSOLD CONDITION DETECTED: {pos.contract.localSymbol} shows position of {pos.position}. INITIATING EMERGENCY FLATTEN.")
+                            self.notifier.send_message(f"🆘 *OVERSOLD POSITION DETECTED* 🆘\n\nEmergency flatten initiated for all positions.")
+                            self.stop()
+                            self.ib_interface.flatten_all_positions()
+                            return
+                            
+        except KeyboardInterrupt:
+            logging.info("Shutdown signal received.")
+        except Exception as e:
+            logging.error(f"A critical error occurred in the main loop: {e}", exc_info=True)
+        finally:
+            self.stop()
 
+    def stop(self):
+        if not self.is_running: return
+        logging.info("Shutting down bot...")
+        self.is_running = False
+        self.discord_interface.stop_polling()
+        self.position_monitor.stop_monitoring()
+        self.ib_interface.disconnect()
+        logging.info("Bot has been shut down.")
 
-    def _calculate_trailing_stop(self, current_price, pos_data):
-        entry_price = pos_data["entry_price"]
-        high_water_mark = pos_data["high_water_mark"]
-        exit_strategy = pos_data["profile"]["exit_strategy"]
-
-        # Check for Breakeven first
-        profit_percent = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
-        if not pos_data["breakeven_set"] and profit_percent >= exit_strategy["breakeven_trigger_percent"]:
-            logging.info(f"BREAKEVEN TRIGGERED for {pos_data['entry_trade'].contract.localSymbol}.")
-            pos_data["breakeven_set"] = True
-            return entry_price
-
-        if pos_data["breakeven_set"]:
-            return max(pos_data.get("trailing_stop_price", 0), entry_price)
-
-        # Main Trailing Logic (currently only percentage, as ATR requires historical data)
-        trail_method = exit_strategy["trail_method"]
-        if trail_method == "percentage":
-            pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["percentage"] / 100)
-            return high_water_mark - pullback_amount
-        
-        # NOTE: ATR logic is removed from here because this monitor no longer fetches
-        # historical data bars. It would need a separate TA service to work.
-        # For now, it defaults to a wide percentage stop if ATR is selected.
-        else: # Default/fallback for ATR
-            logging.debug("ATR trail method selected, but not implemented in this version. Using 50% fallback trail.")
-            pullback_amount = high_water_mark * 0.50
-            return high_water_mark - pullback_amount
-
-    def _execute_exit(self, conId, reason):
-        with self._lock:
-            pos_data = self._live_positions.get(conId)
-            if not pos_data or pos_data["status"] != "live":
-                return
-            pos_data["status"] = "exit_sent"
-        
-        contract = pos_data["entry_trade"].contract
-        quantity = pos_data["entry_trade"].order.totalQuantity
-        
-        logging.info(f"Executing market close for {contract.localSymbol} (Reason: {reason}).")
-        self.ib_interface.close_position(contract, quantity)
-        
-    def start_monitoring(self):
-        if not self._is_monitoring:
-            self._is_monitoring = True
-            self._monitoring_thread = Thread(target=self._monitor_loop, name="PositionMonitorThread", daemon=True)
-            self._monitoring_thread.start()
-
-    def stop_monitoring(self):
-        logging.info("Stopping position monitor.")
-        self._is_monitoring = False
-        if self._monitoring_thread and self._monitoring_thread.is_alive():
-            self._monitoring_thread.join(timeout=10)
+if __name__ == "__main__":
+    app = MainApp()
+    app.run()
 
