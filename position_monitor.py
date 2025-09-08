@@ -9,7 +9,7 @@ class PositionMonitor:
     The "Watchtower." This is the definitive, professional version. It no longer
     fetches its own TA data. It receives a "mission briefing" with the initial
     indicators and uses that for the life of the trade, resolving the event
-    loop threading error.
+    loop threading error and providing full transparency.
     """
     def __init__(self, ib_interface, notifier, market_data_manager):
         self.ib_interface = ib_interface
@@ -51,6 +51,8 @@ class PositionMonitor:
             logging.info(f"Monitoring fully activated for conId {conId} at entry price ${entry_price:.2f}")
             if initial_indicators:
                 logging.info(f"[MISSION BRIEFING] {pos_data['entry_trade'].contract.localSymbol} | Initial ATR: {initial_indicators.get('atr', 'N/A'):.2f}, PSAR: {initial_indicators.get('psar', 'N/A'):.2f}")
+            else:
+                logging.warning(f"No initial indicators provided for {pos_data['entry_trade'].contract.localSymbol}. ATR/PSAR will not function.")
             return pos_data
 
     def get_position_data(self, conId):
@@ -92,10 +94,10 @@ class PositionMonitor:
         exit_strategy = pos_data["profile"]["exit_strategy"]
         contract_symbol = ticker.contract.localSymbol
         
-        # Get the mission briefing from our stored dossier
+        # --- THIS IS THE CRITICAL FIX ---
+        # Get the mission briefing from our stored dossier. Do NOT make a new API call.
         indicators = pos_data["initial_indicators"]
         
-        # --- Execute Exit Logic (in order of priority) ---
         # 1. Time-Based Exit
         timeout_minutes = exit_strategy["timeout_exit_minutes"]
         time_in_trade = (datetime.now(timezone.utc) - pos_data["entry_timestamp"]).total_seconds() / 60
@@ -111,11 +113,11 @@ class PositionMonitor:
             if momentum_exits.get("psar_enabled"):
                 psar_val = indicators['psar']
                 logging.info(f"[PSAR CHECK] {contract_symbol} | Price: {current_price:.2f} vs PSAR: {psar_val:.2f}")
-                if psar_val > current_price:
+                if psar_val > current_price: # For a CALL option
                     logging.info(f"EXIT TRIGGER: PSAR Flip for {contract_symbol}.")
                     self._execute_exit(conId, "PSAR Flip")
                     return
-            # RSI Hook logic would go here if needed
+            # RSI Hook logic can be added here
         
         # 3. Trailing Stop
         new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data, indicators)
@@ -127,7 +129,7 @@ class PositionMonitor:
             self._execute_exit(conId, reason)
             return
         
-        # Final consolidated log line
+        # Final consolidated log line for visibility
         logging.info(f"[MONITOR] {contract_symbol} | Price: {current_price:.2f} | High: {pos_data['high_water_mark']:.2f} | Stop: {pos_data['trailing_stop_price']:.2f}")
 
     def _calculate_trailing_stop(self, current_price, pos_data, indicators):
