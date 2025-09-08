@@ -39,7 +39,7 @@ class PositionMonitor:
                 "trailing_stop_price": 0,
                 "breakeven_set": False,
                 "status": "pending_fill",
-                "previous_rsi": None  # For RSI hook detection
+                "previous_rsi": None,  # For RSI hook detection
                 "safety_net_settings": profile["safety_net"]  # NEW: Store the safety net rules
             }
 
