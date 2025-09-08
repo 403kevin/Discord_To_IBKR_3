@@ -18,6 +18,7 @@ from bot_engine.trade_executor import TradeExecutor
 
 class MainApp:
     def __init__(self):
+        # Setup logging first, so all components can use it
         from services.custom_logger import setup_logger
         setup_logger()
 
@@ -42,6 +43,7 @@ class MainApp:
         self.is_running = False
 
     def _initialize_channel_states(self):
+        """Creates the initial state tracker for each channel profile."""
         states = {}
         for profile in self.config.profiles:
             channel_id = profile["channel_id"]
@@ -58,32 +60,35 @@ class MainApp:
         side = fill.execution.side
         
         if side == 'BOT': # --- Handle Entry Fills ---
-            pos_data = self.position_monitor.update_position_on_fill(conId, fill.execution.price)
-            if pos_data:
-                self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
-                self.market_data_manager.subscribe_to_contract(trade.contract)
+            pos_data = self.position_monitor.get_position_data(conId)
+            if not pos_data: return # Guard against duplicate fill events
 
-                # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
-                safety_net_settings = pos_data.get("safety_net_settings", {})
-                if safety_net_settings.get("enabled"):
-                    # We take a strategic 1-second pause to allow the broker's
-                    # systems to fully register the new position. This eliminates the race condition.
-                    logging.info("Entry fill confirmed. Pausing for 1 second before attaching safety net...")
-                    time.sleep(1)
+            # Activate full monitoring now that we have a real entry price
+            self.position_monitor.activate_monitoring(conId, fill.execution.price, None) # TA indicators fetched later
 
-                    logging.info("Placing native safety net trail order...")
-                    self.ib_interface.place_native_trail_stop(
-                        trade.contract,
-                        trade.order.totalQuantity,
-                        safety_net_settings["native_trail_percent"]
-                    )
-                    logging.info("Native safety net trail order placed successfully.")
+            self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
+            self.market_data_manager.subscribe_to_contract(trade.contract)
+
+            safety_net_settings = pos_data.get("safety_net_settings", {})
+            if safety_net_settings.get("enabled"):
+                # We take a strategic 1-second pause to allow the broker's
+                # systems to fully register the new position. This eliminates the race condition.
+                logging.info("Entry fill confirmed. Pausing for 1 second before attaching safety net...")
+                time.sleep(1)
+
+                logging.info("Placing native safety net trail order...")
+                self.ib_interface.place_native_trail_stop(
+                    trade.contract,
+                    trade.order.totalQuantity,
+                    safety_net_settings["native_trail_percent"]
+                )
+                logging.info("Native safety net trail order placed successfully.")
 
         elif side == 'SLD': # --- Handle Exit Fills ---
             self._process_exit_fill(fill)
 
     def _process_exit_fill(self, fill):
-        # ... (This function is the same) ...
+        """Contains the logic for the consecutive loss kill switch."""
         conId = fill.contract.conId
         pos_data = self.position_monitor.get_position_data(conId)
         if not pos_data or not pos_data.get("entry_price"): return
@@ -110,21 +115,27 @@ class MainApp:
         self.position_monitor.remove_position(conId)
 
     def run(self):
-        # ... (This function is the same) ...
+        """Starts all components and the main application loop."""
         self.is_running = True
         try:
             self.ib_interface.connect()
             self.ib_interface.on_fill_callback = self._handle_fill_event
+            
             self.position_monitor.start_monitoring()
             self.discord_interface.start_polling()
+
             logging.info("Main application loop started. Bot is now live.")
             while self.is_running:
+                # This is the "intelligent wait" that allows the bot to process broker events.
                 self.ib_interface.ib.sleep(1)
+                
                 try:
+                    # Check the mailbox for any new signals that arrived during the wait
                     message_data = self.message_queue.get_nowait()
                     self.signal_processor.process_message(message_data)
                 except queue.Empty:
-                    pass
+                    pass # It's normal for the queue to be empty
+
                 if self.config.oversold_monitor_enabled:
                     positions = self.ib_interface.get_all_positions()
                     for pos in positions:
@@ -134,6 +145,7 @@ class MainApp:
                             self.stop()
                             self.ib_interface.flatten_all_positions()
                             return
+                            
         except KeyboardInterrupt:
             logging.info("Shutdown signal received.")
         except Exception as e:
@@ -142,7 +154,7 @@ class MainApp:
             self.stop()
 
     def stop(self):
-        # ... (This function is the same) ...
+        """Gracefully stops all components."""
         if not self.is_running: return
         logging.info("Shutting down bot...")
         self.is_running = False
