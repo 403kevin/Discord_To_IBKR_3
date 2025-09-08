@@ -9,8 +9,8 @@ from services.config import Config
 
 class IBInterface:
     """
-    The bot's "Hands." This is the final, battle-hardened version that
-    correctly handles timeouts and shutdown events.
+    The bot's "Hands." This is the definitive, complete version with specialist
+    knowledge for handling index options like SPX and robust error handling.
     """
     def __init__(self, config: Config):
         self.config = config
@@ -18,8 +18,6 @@ class IBInterface:
         self.is_connected = False
         self.on_fill_callback = None
 
-        # --- CORRECTED EVENT HANDLERS ---
-        # We bind the methods to the event loop to ensure 'self' is passed correctly.
         self.ib.connectedEvent += self._on_connected
         self.ib.disconnectedEvent += self._on_disconnected
         self.ib.errorEvent += self._on_error
@@ -28,7 +26,6 @@ class IBInterface:
     def connect(self):
         try:
             logging.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
-            # util.run ensures this works correctly across different threads/event loops
             util.run(self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id))
             self.ib.reqMarketDataType(3)
             return True
@@ -37,10 +34,28 @@ class IBInterface:
             return False
 
     def get_option_contract(self, symbol, strike, right, expiry):
-        """Gets a qualified option contract object from IBKR."""
+        """
+        Gets an option contract object. This is now smarter and handles
+        SPX as a special case.
+        """
+        # --- THIS IS THE CRITICAL FIX FOR SPX ---
+        # For index options like SPX, we don't need to "qualify" them.
+        # We know they trade on CBOE. Bypassing the strict qualifyContracts
+        # call is more robust, especially in pre-market.
+        if symbol == 'SPX':
+            logging.info("Detected SPX symbol. Using direct CBOE contract definition.")
+            return Option(symbol, expiry, strike, right, 'CBOE', tradingClass='SPX')
+
+        # For all other standard stocks, we use the robust qualification method.
         contract = Option(symbol, expiry, strike, right, 'SMART', tradingClass=symbol)
-        [qualified_contract] = self.ib.qualifyContracts(contract)
-        return qualified_contract
+        try:
+            qualified_contracts = self.ib.qualifyContracts(contract)
+            if not qualified_contracts:
+                return None
+            return qualified_contracts[0]
+        except Exception as e:
+            logging.warning(f"Could not qualify contract for {symbol}. It may not exist. Error: {e}")
+            return None
 
     def place_trade(self, contract, quantity, order_type="MKT"):
         """Places a simple market order."""
@@ -64,9 +79,6 @@ class IBInterface:
         stock_contract = Stock(symbol, 'SMART', 'USD')
         self.ib.qualifyContracts(stock_contract)
         
-        # --- THIS IS THE CRITICAL FIX FOR THE CRASH ---
-        # We use util.run() to handle the asynchronous call and its timeout gracefully.
-        # This is the library's official, correct way to prevent crashes.
         try:
             headlines = util.run(
                 self.ib.reqHistoricalNewsAsync(stock_contract.conId, "BRFG", "", "", 100, []),
@@ -74,7 +86,7 @@ class IBInterface:
             )
         except TimeoutError:
             logging.warning(f"Could not fetch news for {symbol}. Request timed out (market closed?).")
-            headlines = [] # Return an empty list on timeout
+            headlines = []
 
         return [h.headline for h in headlines]
 
@@ -130,13 +142,11 @@ class IBInterface:
             logging.info("Disconnecting from IBKR.")
             self.ib.disconnect()
 
-    # --- Private Methods (Corrected) ---
     def _on_connected(self):
         logging.info("IBKR connection successful.")
         self.is_connected = True
 
     def _on_disconnected(self):
-        # This method now correctly handles the event.
         logging.warning("IBKR connection lost.")
         self.is_connected = False
 
