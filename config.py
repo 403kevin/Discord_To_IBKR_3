@@ -16,7 +16,7 @@ class Config:
         # =================================================================
         # --- GLOBAL BOT SETTINGS ---
         # =================================================================
-        self.polling_interval_seconds = 10
+        self.polling_interval_seconds = 5
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 6
         self.signal_max_age_seconds = 60
@@ -26,7 +26,7 @@ class Config:
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
 
         self.master_shutdown_enabled = True
-        self.master_shutdown_channel_id = "YOUR_PRIVATE_DISCORD_CHANNEL_ID"
+        self.master_shutdown_channel_id = "1392531225348014180"
         self.master_shutdown_command = "terminate"
         self.oversold_monitor_enabled = False
 
@@ -47,7 +47,7 @@ class Config:
 
         self.sentiment_filter = {
             "enabled": False,
-            "headlines_to_fetch": 20,
+            "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05
         }
 
@@ -90,7 +90,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 50}
+                "safety_net": {"enabled": False, "native_trail_percent": 50}
             },
         ]
 
