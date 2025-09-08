@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 
 class PositionMonitor:
     """
-    The "Watchtower." This is the definitive, fully transparent version.
-    It now provides rich, detailed logging for every aspect of its
-    decision-making process, from breakeven triggers to live indicator values.
+    The "Watchtower." This is the definitive, professional version. It no longer
+    fetches its own TA data. It receives a "mission briefing" with the initial
+    indicators and uses that for the life of the trade, resolving the event
+    loop threading error.
     """
     def __init__(self, ib_interface, notifier, market_data_manager):
         self.ib_interface = ib_interface
@@ -20,26 +21,36 @@ class PositionMonitor:
         self._is_monitoring = False
 
     def add_position_to_monitor(self, conId, entry_trade, profile, sentiment_score):
+        """Called by the trade_executor to put a new position under watch, pending a fill."""
         with self._lock:
             if conId in self._live_positions: return
-            logging.info(f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending, awaiting fill.")
+            logging.info(f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending, awaiting mission briefing.")
             self._live_positions[conId] = {
                 "entry_trade": entry_trade, "profile": profile,
                 "sentiment_score": sentiment_score, "safety_net_settings": profile["safety_net"],
                 "entry_price": None, "entry_timestamp": None,
                 "high_water_mark": 0, "trailing_stop_price": 0,
-                "breakeven_set": False, "status": "pending_fill", "previous_rsi": None
+                "breakeven_set": False, "status": "pending_fill",
+                "initial_indicators": None, # The dossier for this mission
+                "previous_rsi": None
             }
 
-    def update_position_on_fill(self, conId, entry_price):
+    def activate_monitoring(self, conId, entry_price, initial_indicators):
+        """
+        Called by main.py's fill handler to activate full monitoring
+        with the complete mission briefing.
+        """
         with self._lock:
             if conId not in self._live_positions: return None
             pos_data = self._live_positions[conId]
             pos_data["entry_price"] = entry_price
             pos_data["high_water_mark"] = entry_price
             pos_data["entry_timestamp"] = datetime.now(timezone.utc)
+            pos_data["initial_indicators"] = initial_indicators # Store the dossier
             pos_data["status"] = "live"
             logging.info(f"Monitoring fully activated for conId {conId} at entry price ${entry_price:.2f}")
+            if initial_indicators:
+                logging.info(f"[MISSION BRIEFING] {pos_data['entry_trade'].contract.localSymbol} | Initial ATR: {initial_indicators.get('atr', 'N/A'):.2f}, PSAR: {initial_indicators.get('psar', 'N/A'):.2f}")
             return pos_data
 
     def get_position_data(self, conId):
@@ -80,10 +91,11 @@ class PositionMonitor:
         pos_data["high_water_mark"] = max(pos_data["high_water_mark"], current_price)
         exit_strategy = pos_data["profile"]["exit_strategy"]
         contract_symbol = ticker.contract.localSymbol
-
-        # --- NEW: Full Instrument Panel Logging ---
-        indicators = self.ib_interface.get_technical_indicators(ticker.contract)
         
+        # Get the mission briefing from our stored dossier
+        indicators = pos_data["initial_indicators"]
+        
+        # --- Execute Exit Logic (in order of priority) ---
         # 1. Time-Based Exit
         timeout_minutes = exit_strategy["timeout_exit_minutes"]
         time_in_trade = (datetime.now(timezone.utc) - pos_data["entry_timestamp"]).total_seconds() / 60
@@ -103,11 +115,8 @@ class PositionMonitor:
                     logging.info(f"EXIT TRIGGER: PSAR Flip for {contract_symbol}.")
                     self._execute_exit(conId, "PSAR Flip")
                     return
-
-            if momentum_exits.get("rsi_hook_enabled"):
-                # Logic for RSI hook can be added here if needed
-                pass
-
+            # RSI Hook logic would go here if needed
+        
         # 3. Trailing Stop
         new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data, indicators)
         pos_data["trailing_stop_price"] = new_trailing_stop_price
@@ -151,14 +160,13 @@ class PositionMonitor:
                 logging.info(f"[ATR CALC] {contract_symbol} | ATR: {atr_val:.2f} * {atr_mult}x => Pullback: ${pullback_amount:.2f}")
                 return high_water_mark - pullback_amount
             else:
-                logging.warning(f"ATR calculation failed for {contract_symbol}. Using fallback.")
-                pullback_amount = high_water_mark * 0.50 # Fallback
+                logging.warning(f"ATR data not available for {contract_symbol}. Using fallback percentage.")
+                pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["percentage"] / 100)
                 return high_water_mark - pullback_amount
         
         return 0
 
     def _execute_exit(self, conId, reason):
-        # ... (This function is the same)
         with self._lock:
             pos_data = self._live_positions.get(conId)
             if not pos_data or pos_data["status"] != "live": return
@@ -171,14 +179,12 @@ class PositionMonitor:
         self.ib_interface.close_position(contract, quantity)
         
     def start_monitoring(self):
-        # ... (This function is the same)
         if not self._is_monitoring:
             self._is_monitoring = True
             self._monitoring_thread = Thread(target=self._monitor_loop, name="PositionMonitorThread", daemon=True)
             self._monitoring_thread.start()
 
     def stop_monitoring(self):
-        # ... (This function is the same)
         logging.info("Stopping position monitor.")
         self._is_monitoring = False
         if self._monitoring_thread and self._monitoring_thread.is_alive():
