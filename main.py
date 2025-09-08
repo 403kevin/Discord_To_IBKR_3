@@ -1,6 +1,7 @@
 # main.py
 import logging
 import time
+import queue
 from threading import Lock
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,8 @@ class MainApp:
         setup_logger()
 
         self.config = Config()
+        self.message_queue = queue.Queue()
+
         self.ib_interface = IBInterface(self.config)
         self.notifier = TelegramNotifier(self.config)
         self.sentiment_analyzer = SentimentAnalyzer()
@@ -43,7 +46,7 @@ class MainApp:
             self.state_lock
         )
         
-        self.discord_interface = DiscordInterface(self.config, self.signal_processor.process_message)
+        self.discord_interface = DiscordInterface(self.config, self.message_queue)
         self.is_running = False
 
     def _initialize_channel_states(self):
@@ -59,16 +62,32 @@ class MainApp:
         return states
 
     def _handle_fill_event(self, trade, fill):
-        """The central switchboard for all confirmed fills from the broker."""
+        """
+        The central switchboard for all confirmed fills. This is the definitive,
+        intelligent version that places the native trail order ONLY after a
+        fill is confirmed, creating a "Listen, Then Act" system.
+        """
         conId = fill.contract.conId
         side = fill.execution.side
         
-        if side == 'BOT':
+        if side == 'BOT': # --- Handle Entry Fills ---
             pos_data = self.position_monitor.update_position_on_fill(conId, fill.execution.price)
             if pos_data:
                 self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
-        
-        elif side == 'SLD':
+
+                # --- THIS IS THE CRITICAL, "LISTEN, THEN ACT" FIX ---
+                # Now that the fill is 100% confirmed, we place the safety net.
+                safety_net_settings = pos_data.get("safety_net_settings", {})
+                if safety_net_settings.get("enabled"):
+                    logging.info("Entry fill confirmed. Placing native safety net trail order...")
+                    self.ib_interface.place_native_trail_stop(
+                        trade.contract,
+                        trade.order.totalQuantity,
+                        safety_net_settings["native_trail_percent"]
+                    )
+                    logging.info("Native safety net trail order placed successfully.")
+
+        elif side == 'SLD': # --- Handle Exit Fills ---
             self._process_exit_fill(fill)
 
     def _process_exit_fill(self, fill):
@@ -116,6 +135,12 @@ class MainApp:
 
             logging.info("Main application loop started. Bot is now live.")
             while self.is_running:
+                try:
+                    message_data = self.message_queue.get(timeout=1)
+                    self.signal_processor.process_message(message_data)
+                except queue.Empty:
+                    pass
+
                 if self.config.oversold_monitor_enabled:
                     positions = self.ib_interface.get_all_positions()
                     for pos in positions:
@@ -126,7 +151,7 @@ class MainApp:
                             self.ib_interface.flatten_all_positions()
                             return
                 
-                time.sleep(self.config.polling_interval_seconds)
+                time.sleep(0.1)
 
         except KeyboardInterrupt:
             logging.info("Shutdown signal received.")
