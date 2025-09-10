@@ -9,8 +9,8 @@ from collections import deque
 class DiscordInterface:
     """
     The bot's "Ears." This is the definitive, battle-hardened version.
-    It now correctly applies the "max age" filter to the master shutdown
-    command, preventing false triggers from old messages.
+    It now correctly processes the master shutdown command by checking for
+    the keyword in recent, fresh messages, independent of the last-seen ID.
     """
     def __init__(self, config, message_queue, shutdown_event: Event):
         self.config = config
@@ -26,9 +26,6 @@ class DiscordInterface:
         self._polling_thread = None
         self._is_polling = False
         self.last_message_ids = {str(p["channel_id"]): "INIT" for p in config.profiles}
-        # Also track the last ID for the shutdown channel
-        if self.config.master_shutdown_enabled:
-            self.last_message_ids[self.config.master_shutdown_channel_id] = "INIT"
 
     def _poll_channel(self, profile, is_shutdown_channel=False):
         """Fetches and filters messages from a single channel."""
@@ -39,7 +36,7 @@ class DiscordInterface:
         else:
             channel_id = str(profile["channel_id"])
 
-        url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=10"
+        url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=5"
         
         try:
             response = self.session.get(url, timeout=10)
@@ -48,40 +45,45 @@ class DiscordInterface:
             messages = response.json()
             if not messages: return
 
-            last_id = self.last_message_ids.get(channel_id)
-            if last_id == "INIT":
-                self.last_message_ids[channel_id] = messages[0]['id']
-                logging.info(f"Initial poll for channel {channel_id}. Set last message ID to {messages[0]['id']}.")
-                return
-
-            new_messages = []
-            for msg in reversed(messages):
-                if msg['id'] > last_id:
-                    new_messages.append(msg)
-
-            if new_messages:
-                self.last_message_ids[channel_id] = new_messages[-1]['id']
-                for msg in new_messages:
-                    if msg['id'] in self.processed_ids: continue
-
-                    # --- THIS IS THE CRITICAL, UNIVERSAL FIX ---
-                    # Check the timestamp for ALL new messages, including shutdown commands.
+            # --- THIS IS THE CRITICAL, DEFINITIVE FIX ---
+            if is_shutdown_channel:
+                # For the shutdown channel, we don't care about the last_id.
+                # We just check the most recent messages for the command.
+                for msg in messages:
                     msg_time = datetime.fromisoformat(msg['timestamp'].replace("Z", "+00:00"))
                     age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
                     
-                    if age_seconds > self.config.signal_max_age_seconds:
-                        logging.debug(f"Ignoring stale message (age: {age_seconds:.0f}s) from {channel_id}.")
-                        continue
+                    if age_seconds <= self.config.signal_max_age_seconds:
+                        if self.config.master_shutdown_command.lower() in msg['content'].lower():
+                            if msg['id'] not in self.processed_ids:
+                                logging.critical("MASTER SHUTDOWN COMMAND DETECTED. Signaling termination.")
+                                self.shutdown_event.set() # Pull the emergency cord
+                                self.processed_ids.append(msg['id'])
+                                return # Exit immediately
+            else:
+                # For regular signal channels, we use the robust last_id logic.
+                last_id = self.last_message_ids.get(channel_id)
+                if last_id == "INIT":
+                    self.last_message_ids[channel_id] = messages[0]['id']
+                    logging.info(f"Initial poll for channel {channel_id}. Set last message ID to {messages[0]['id']}.")
+                    return
 
-                    # Now, handle the message's content
-                    if is_shutdown_channel and self.config.master_shutdown_command.lower() in msg['content'].lower():
-                        logging.critical("MASTER SHUTDOWN COMMAND DETECTED. Signaling termination.")
-                        self.shutdown_event.set()
-                        self.processed_ids.append(msg['id'])
-                        return
-                    elif not is_shutdown_channel:
-                        self.queue.put({"channel_id": msg["channel_id"], "content": msg["content"]})
-                        self.processed_ids.append(msg['id'])
+                new_messages = []
+                for msg in reversed(messages):
+                    if msg['id'] > last_id:
+                        new_messages.append(msg)
+
+                if new_messages:
+                    self.last_message_ids[channel_id] = new_messages[-1]['id']
+                    for msg in new_messages:
+                        if msg['id'] in self.processed_ids: continue
+                        
+                        msg_time = datetime.fromisoformat(msg['timestamp'].replace("Z", "+00:00"))
+                        age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
+                        
+                        if age_seconds <= self.config.signal_max_age_seconds:
+                            self.queue.put({"channel_id": msg["channel_id"], "content": msg["content"]})
+                            self.processed_ids.append(msg['id'])
 
         except requests.RequestException as e:
             logging.error(f"Network error while polling Discord: {e}")
