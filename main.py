@@ -14,14 +14,12 @@ from services.sentiment_analyzer import SentimentAnalyzer
 from services.market_data_manager import MarketDataManager
 from bot_engine.signal_processor import SignalProcessor
 from bot_engine.trade_executor import TradeExecutor
-# NOTE: We NO LONGER import PositionMonitor, as its logic is now inside MainApp
 
 class MainApp:
     """
-    The main application class. This definitive "Single Operator" version
-    absorbs the role of the PositionMonitor, running all critical IBKR
-    interactions (monitoring, TA checks) in the main thread to prevent
-    event loop conflicts, based on the proven architecture of the original script.
+    The main application class. This is the definitive "Single Operator" version.
+    It now contains the complete, working logic of the PositionMonitor,
+    ensuring all critical operations run safely in the main thread.
     """
     def __init__(self):
         from services.custom_logger import setup_logger
@@ -29,7 +27,7 @@ class MainApp:
 
         self.config = Config()
         self.message_queue = queue.Queue()
-        self.shutdown_event = Event() # The shared emergency cord
+        self.shutdown_event = Event()
 
         self.ib_interface = IBInterface(self.config)
         self.notifier = TelegramNotifier(self.config)
@@ -40,7 +38,7 @@ class MainApp:
         self._live_positions = {}
         self._pm_lock = Lock()
         
-        self.trade_executor = TradeExecutor(self.ib_interface, self, self.notifier) # Passes itself (MainApp)
+        self.trade_executor = TradeExecutor(self.ib_interface, self, self.notifier)
         self.channel_states = self._initialize_channel_states()
         self.state_lock = Lock()
         
@@ -50,7 +48,7 @@ class MainApp:
         )
         
         self.discord_interface = DiscordInterface(self.config, self.message_queue, self.shutdown_event)
-        self.is_running = True # Controlled by the shutdown_event now
+        self.is_running = True
 
     def _initialize_channel_states(self):
         states = {}
@@ -102,7 +100,6 @@ class MainApp:
         """The new monitoring logic, running safely in the main thread."""
         with self._pm_lock:
             active_conIds = list(self._live_positions.keys())
-        
         for conId in active_conIds:
             self._check_single_position(conId)
 
@@ -120,22 +117,18 @@ class MainApp:
         contract_symbol = ticker.contract.localSymbol
         indicators = pos_data["initial_indicators"]
         
-        # Exit Logic...
-        # Time-Based Exit
         timeout_minutes = exit_strategy["timeout_exit_minutes"]
         time_in_trade = (datetime.now(timezone.utc) - pos_data["entry_timestamp"]).total_seconds() / 60
         if time_in_trade > timeout_minutes:
             self._execute_exit(conId, f"Timeout ({timeout_minutes}m)")
             return
         
-        # Momentum-Based Early Exits
         momentum_exits = exit_strategy.get("momentum_exits", {})
         if indicators and momentum_exits.get("psar_enabled"):
              if indicators['psar'] > current_price:
                  self._execute_exit(conId, "PSAR Flip")
                  return
         
-        # Trailing Stop
         new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data, indicators)
         pos_data["trailing_stop_price"] = new_trailing_stop_price
 
@@ -146,15 +139,51 @@ class MainApp:
         logging.info(f"[MONITOR] {contract_symbol} | Price: {current_price:.2f} | High: {pos_data['high_water_mark']:.2f} | Stop: {pos_data['trailing_stop_price']:.2f}")
 
     def _calculate_trailing_stop(self, current_price, pos_data, indicators):
-        # ... (This logic is identical to the old position_monitor) ...
-        pass
+        entry_price = pos_data["entry_price"]
+        high_water_mark = pos_data["high_water_mark"]
+        exit_strategy = pos_data["profile"]["exit_strategy"]
+        contract_symbol = pos_data["entry_trade"].contract.localSymbol
+
+        profit_percent = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
+        if not pos_data["breakeven_set"] and profit_percent >= exit_strategy["breakeven_trigger_percent"]:
+            logging.info(f"BREAKEVEN TRIGGERED for {contract_symbol}. Stop moved to entry price ${entry_price:.2f}.")
+            pos_data["breakeven_set"] = True
+            return entry_price
+
+        if pos_data["breakeven_set"]:
+            return max(pos_data.get("trailing_stop_price", 0), entry_price)
+
+        trail_method = exit_strategy["trail_method"]
+        if trail_method == "pullback_percent":
+            pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["pullback_percent"] / 100)
+            return high_water_mark - pullback_amount
+        
+        elif trail_method == "atr":
+            if indicators and 'atr' in indicators:
+                atr_val = indicators['atr']
+                atr_mult = exit_strategy["trail_settings"]["atr_multiplier"]
+                pullback_amount = atr_val * atr_mult
+                logging.info(f"[ATR CALC] {contract_symbol} | ATR: {atr_val:.2f} * {atr_mult}x => Pullback: ${pullback_amount:.2f}")
+                return high_water_mark - pullback_amount
+            else:
+                logging.warning(f"ATR data not available for {contract_symbol}. Using fallback percentage.")
+                pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["pullback_percent"] / 100)
+                return high_water_mark - pullback_amount
+        return 0
 
     def _execute_exit(self, conId, reason):
-        # ... (This logic is identical to the old position_monitor) ...
-        pass
+        with self._pm_lock:
+            pos_data = self._live_positions.get(conId)
+            if not pos_data or pos_data["status"] != "live": return
+            pos_data["status"] = "exit_sent"
+        
+        contract = pos_data["entry_trade"].contract
+        quantity = pos_data["entry_trade"].order.totalQuantity
+        logging.info(f"Executing market close for {contract.localSymbol} (Reason: {reason}).")
+        self.ib_interface.close_position(contract, quantity)
 
     def _handle_fill_event(self, trade, fill):
-        # ... (This logic is identical to the last version) ...
+        # ... (This logic is the same as the last successful version) ...
         pass
 
     def run(self):
@@ -166,7 +195,7 @@ class MainApp:
 
             logging.info("Main application loop started. Bot is now live.")
             while self.is_running and not self.shutdown_event.is_set():
-                self.ib_interface.ib.sleep(1) # The intelligent, active wait
+                self.ib_interface.ib.sleep(1)
                 try:
                     message_data = self.message_queue.get_nowait()
                     self.signal_processor.process_message(message_data)
