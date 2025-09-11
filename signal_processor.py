@@ -7,8 +7,9 @@ from services.message_parsers import MessageParser
 
 class SignalProcessor:
     """
-    The Decision Maker. This is the final version with enhanced,
-    detailed notifications for vetoed trades.
+    The "Decision Maker." This is the definitive, battle-hardened version.
+    It now gracefully handles cases where news fetching fails, ensuring the
+    bot remains operational and resilient to real-world data glitches.
     """
     def __init__(self, config, sentiment_analyzer, trade_executor, channel_states, state_lock):
         self.config = config
@@ -29,58 +30,58 @@ class SignalProcessor:
         with self.state_lock:
             state = self.channel_states.get(channel_id)
             if state and state["cooldown_until"] and datetime.now(timezone.utc) < state["cooldown_until"]:
-                logging.info(f"Signal from channel {channel_id} ignored. Channel is on cooldown.")
                 return
 
         # Gate 1: Profile Check
         profile = self._get_profile_for_channel(channel_id)
-        if not profile:
-            return
+        if not profile: return
 
         # Gate 2: Keyword Filter
         for reject_word in profile.get("reject_if_contains", []):
             if reject_word.lower() in message_content.lower():
-                logging.info(f"Signal rejected from {profile['channel_name']}. Contains reject word: '{reject_word}'.")
                 return
 
         # Gate 3: Translation Check
         signal = self.parser.parse(message_content, profile)
-        if not signal:
-            logging.debug(f"Message from {profile['channel_name']} did not parse into a valid signal.")
-            return
+        if not signal: return
         
         logging.info(f"Successfully parsed signal from {profile['channel_name']}: {signal}")
 
-        # Gate 4: Sentiment Check
+        # --- Gate 4: The Resilient Sentiment Check ---
         sentiment_score = 0.0
         if self.config.sentiment_filter["enabled"]:
             headlines = self.trade_executor.ib_interface.get_news_headlines(signal["symbol"])
-            sentiment_score = self.sentiment_analyzer.analyze_sentiment(headlines)
+            
+            # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
+            if not headlines:
+                # If the news fetch failed, log it and proceed with a neutral score.
+                logging.warning(f"Proceeding without sentiment score for {signal['symbol']} due to data fetch failure.")
+            else:
+                # Only analyze if we actually have headlines.
+                sentiment_score = self.sentiment_analyzer.analyze_sentiment(headlines)
 
-            trade_veto = False
-            threshold = self.config.sentiment_filter["sentiment_threshold"]
-            reason = ""
-            if signal['right'] == 'C' and sentiment_score < threshold:
-                trade_veto = True
-                reason = f"Sentiment score {sentiment_score:.4f} is below threshold {threshold} for a CALL."
-            elif signal['right'] == 'P' and sentiment_score > -threshold:
-                trade_veto = True
-                reason = f"Sentiment score {sentiment_score:.4f} is above threshold {-threshold} for a PUT."
+                trade_veto = False
+                threshold = self.config.sentiment_filter["sentiment_threshold"]
+                reason = ""
+                if signal['right'] == 'C' and sentiment_score < threshold:
+                    trade_veto = True
+                    reason = f"Sentiment score {sentiment_score:.4f} is below threshold {threshold} for a CALL."
+                elif signal['right'] == 'P' and sentiment_score > -threshold:
+                    trade_veto = True
+                    reason = f"Sentiment score {sentiment_score:.4f} is above threshold {-threshold} for a PUT."
 
-            if trade_veto:
-                logging.warning(f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
-                
-                # --- THIS IS THE UPGRADED NOTIFICATION ---
-                veto_message = (
-                    f"❌ *Trade Vetoed* ❌\n\n"
-                    f"*Ticker:* `{signal['symbol']}`\n"
-                    f"*Option:* `{signal['strike']}{signal['right']}`\n"
-                    f"*Expiry:* `{signal['expiry']}`\n"
-                    f"*Source Channel:* `{profile['channel_name']}`\n\n"
-                    f"*Reason:* {reason}"
-                )
-                self.trade_executor.notifier.send_message(veto_message)
-                return
+                if trade_veto:
+                    logging.warning(f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
+                    veto_message = (
+                        f"❌ *Trade Vetoed* ❌\n\n"
+                        f"*Ticker:* `{signal['symbol']}`\n"
+                        f"*Option:* `{signal['strike']}{signal['right']}`\n"
+                        f"*Expiry:* `{signal['expiry']}`\n"
+                        f"*Source Channel:* `{profile['channel_name']}`\n\n"
+                        f"*Reason:* {reason}"
+                    )
+                    self.trade_executor.notifier.send_message(veto_message)
+                    return
 
         signal["sentiment_score"] = sentiment_score
 
