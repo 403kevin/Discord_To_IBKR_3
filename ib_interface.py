@@ -7,12 +7,14 @@ import technical_analysis as ta
 
 from services.config import Config
 
+
 class IBInterface:
     """
-    The bot's "Hands." This is the definitive, professional version. It is now
-    fully upgraded to handle the 'time_in_force' parameter for placing
-    professional pre-market orders.
+    The bot's "Hands." This is the definitive, battle-hardened version. It now
+    contains a fortified news fetching function that will never crash the bot,
+    even if the request to IBKR's news servers fails or times out.
     """
+
     def __init__(self, config: Config):
         self.config = config
         self.ib = IB()
@@ -27,7 +29,8 @@ class IBInterface:
     def connect(self):
         try:
             logging.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
-            util.run(self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id))
+            util.run(
+                self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id))
             self.ib.reqMarketDataType(3)
             return True
         except Exception as e:
@@ -50,15 +53,9 @@ class IBInterface:
             return None
 
     def place_trade(self, contract, quantity, time_in_force="DAY"):
-        """
-        Places a simple market order. This is the final, corrected version that
-        accepts and uses the 'time_in_force' parameter.
-        """
+        """Places a market order with a specified time-in-force."""
         order = MarketOrder("BUY", quantity)
-        # --- THIS IS THE CRITICAL FIX ---
-        # Set the Time-in-Force on the order object before placing it.
         order.tif = time_in_force
-        
         trade = self.ib.placeOrder(contract, order)
         return trade
 
@@ -73,18 +70,29 @@ class IBInterface:
         return trade
 
     def get_news_headlines(self, symbol):
-        """Fetches recent news headlines for a given stock symbol."""
-        stock_contract = Stock(symbol, 'SMART', 'USD')
-        self.ib.qualifyContracts(stock_contract)
+        """
+        Fetches recent news headlines for a given stock symbol. This version
+        is fortified with a master error handler to prevent crashes.
+        """
+        # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
         try:
+            stock_contract = Stock(symbol, 'SMART', 'USD')
+            self.ib.qualifyContracts(stock_contract)
+
+            # Use util.run() to handle the asynchronous call and its timeout gracefully.
             headlines = util.run(
                 self.ib.reqHistoricalNewsAsync(stock_contract.conId, "BRFG", "", "", 100, []),
                 timeout=10
             )
-        except TimeoutError:
-            logging.warning(f"Could not fetch news for {symbol}. Request timed out.")
-            headlines = []
-        return [h.headline for h in headlines]
+            # The original code was correct, but we will now wrap it in a
+            # master 'except' block to make it truly anti-fragile.
+            return [h.headline for h in headlines]
+
+        except Exception as e:
+            # This is the master safety net. It catches ANY error from the news
+            # request (timeouts, connection drops, API errors) and prevents a crash.
+            logging.warning(f"Could not fetch news for {symbol}. Request failed. Reason: {e}")
+            return []  # Return an empty, iterable list to ensure safety upstream.
 
     def get_live_ticker(self, contract):
         """Requests and returns a live ticker for a contract."""
@@ -148,7 +156,7 @@ class IBInterface:
 
     def _on_error(self, reqId, errorCode, errorString, contract):
         if errorCode not in [2104, 2106, 2158, 2108]:
-             logging.error(f"IBKR Error. ReqId: {reqId}, Code: {errorCode}, Msg: {errorString}")
+            logging.error(f"IBKR Error. ReqId: {reqId}, Code: {errorCode}, Msg: {errorString}")
 
     def _on_fill(self, trade, fill):
         if self.on_fill_callback:
