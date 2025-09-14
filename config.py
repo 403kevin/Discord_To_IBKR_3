@@ -5,11 +5,13 @@ from dotenv import load_dotenv
 # This line finds and loads the variables from your .env file.
 load_dotenv()
 
+
 class Config:
     """
     Central configuration class for the trading bot. This is the definitive,
     final version based on the master GitHub file.
     """
+
     def __init__(self):
         # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
@@ -36,8 +38,8 @@ class Config:
             "trade_quantity": 1
         }
 
-        self.master_shutdown_enabled = True
-        self.master_shutdown_channel_id = "YOUR_PRIVATE_DISCORD_CHANNEL_ID"
+        self.master_shutdown_enabled = False
+        self.master_shutdown_channel_id = "1392531225348014180"
         self.master_shutdown_command = "terminate"
         self.oversold_monitor_enabled = True
 
@@ -45,7 +47,7 @@ class Config:
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 7497
+        self.ibkr_port = 4002 #4002 GATEWAY 7497 TWS
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -53,14 +55,15 @@ class Config:
         self.discord_user_token = os.getenv("DISCORD_AUTH_TOKEN")
 
         if not all([self.telegram_bot_token, self.telegram_chat_id, self.discord_user_token]):
-            raise ValueError("One or more required environment variables (tokens/IDs) are missing. Please check your .env file.")
+            raise ValueError(
+                "One or more required environment variables (tokens/IDs) are missing. Please check your .env file.")
 
         # =================================================================
         # --- LEGEND: SENTIMENT ANALYSIS (VADER) ---
         # =================================================================
         self.sentiment_filter = {
-            "enabled": True,
-            "headlines_to_fetch": 20,
+            "enabled": False,
+            "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05
         }
 
@@ -69,13 +72,13 @@ class Config:
         # =================================================================
         self.profiles = [
             {
-                "channel_id": "YOUR_TARGET_DISCORD_CHANNEL_ID",
-                "channel_name": "Test Server",
+                "channel_id": "916540757236678706",
+                "channel_name": "QIQO",
                 "enabled": True,
-                "assume_buy_on_ambiguous": True,
-                "ambiguous_expiry_enabled": True,
+                "assume_buy_on_ambiguous": True, # NO buy buzzword
+                "ambiguous_expiry_enabled": True, # next available expiry
                 "reject_if_contains": ["RISK", "earnings", "play"],
-                "consecutive_loss_monitor": { "enabled": True, "max_losses": 3, "cooldown_minutes": 60 },
+                "consecutive_loss_monitor": {"enabled": True, "max_losses": 3, "cooldown_minutes": 60},
 
                 "trading": {
                     "funds_allocation": 1000,
@@ -88,13 +91,13 @@ class Config:
 
                 "exit_strategy": {
                     "breakeven_trigger_percent": 15,
-                    "timeout_exit_minutes": 30,
-                    
+                    "timeout_exit_minutes": 120,
+
                     # --- UPDATED: Graceful Exit Strategy Toggle ---
                     # Defines the primary trailing stop method.
                     # Options: "atr", "pullback_percent"
                     "trail_method": "atr",
-                    
+
                     "trail_settings": {
                         "pullback_percent": 10,
                         "atr_period": 14,
@@ -102,12 +105,12 @@ class Config:
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
-                        "psar_settings": { "start": 0.02, "increment": 0.02, "max": 0.2 },
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
                         "rsi_hook_enabled": False,
-                        "rsi_settings": { "period": 14, "overbought_level": 70 }
+                        "rsi_settings": {"period": 14, "overbought_level": 70}
                     }
                 },
-                "safety_net": { "enabled": True, "native_trail_percent": 50 }
+                "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
         ]
 
