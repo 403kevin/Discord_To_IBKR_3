@@ -1,6 +1,5 @@
-ib_insync
-pandas
-pandas_ta
-requests
-python-dotenv
-nltk
+ib-insync==0.9.82 
+discord.py==2.3.2 
+vaderSentiment==3.3.2 
+pytz==2024.1 
+python-dotenv==1.0.1 
