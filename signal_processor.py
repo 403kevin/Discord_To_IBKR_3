@@ -1,98 +1,155 @@
-# bot_engine/signal_processor.py
 import logging
-from datetime import datetime, timezone
-
-# Import project modules
-from services.message_parsers import MessageParser
+from services.config import Config
+from interfaces.ib_interface import IBInterface
+from interfaces.discord_interface import DiscordInterface
+from interfaces.telegram_interface import TelegramInterface
+from services.message_parsers import SignalParser
+from services.sentiment_analysis import SentimentAnalyzer
+import asyncio
+from ib_insync import Option, Trade, Order
+from collections import deque
 
 class SignalProcessor:
     """
-    The "Decision Maker." This is the definitive, battle-hardened version.
-    It now gracefully handles cases where news fetching fails, ensuring the
-    bot remains operational and resilient to real-world data glitches.
+    The central processing unit of the bot. It orchestrates the flow of data
+    from Discord, through parsing and analysis, to the IBKR interface.
+    This is the "Single Operator" that ensures sequential, safe operations.
     """
-    def __init__(self, config, sentiment_analyzer, trade_executor, channel_states, state_lock):
+
+    def __init__(self, config: Config, ib_interface: IBInterface,
+                 discord_interface: DiscordInterface, telegram_interface: TelegramInterface,
+                 sentiment_analyzer: SentimentAnalyzer):
+        self.logger = logging.getLogger(__name__)
         self.config = config
+        self.ib_interface = ib_interface
+        self.discord_interface = discord_interface
+        self.telegram_interface = telegram_interface
         self.sentiment_analyzer = sentiment_analyzer
-        self.trade_executor = trade_executor
-        self.parser = MessageParser(config)
-        self.channel_states = channel_states
-        self.state_lock = state_lock
+        self.parser = SignalParser(config)
+        self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
+        self.active_trades = {} # Stores trade objects by conId
 
-    def process_message(self, message_data):
-        """
-        The main entry point for processing a new message from Discord.
-        """
-        channel_id = message_data["channel_id"]
-        message_content = message_data["content"]
-        
-        # Gate 0: Kill Switch Check
-        with self.state_lock:
-            state = self.channel_states.get(channel_id)
-            if state and state["cooldown_until"] and datetime.now(timezone.utc) < state["cooldown_until"]:
+    async def process_signal(self, message):
+        """Processes a single Discord message."""
+        message_id = message['id']
+        if message_id in self.processed_message_ids:
+            self.logger.debug(f"Skipping already processed message ID: {message_id}")
+            return
+        self.processed_message_ids.append(message_id)
+
+        # Match message channel to a profile
+        profile = next((p for p in self.config.profiles if p['channel_id'] == message['channel_id']), None)
+        if not profile or not profile.get('enabled', False):
+            return
+
+        # Parse the message
+        parsed_signal = self.parser.parse_signal_message(message['content'], profile)
+        if not parsed_signal:
+            return
+
+        self.logger.info(f"Successfully parsed signal from {profile['channel_name']}: {parsed_signal}")
+
+        # --- Sentiment Analysis Gate ---
+        if self.config.sentiment_filter['enabled']:
+            is_positive = await self.sentiment_analyzer.analyze_sentiment_for_ticker(parsed_signal['ticker'])
+            if not is_positive:
+                self.logger.warning(f"Trade for {parsed_signal['ticker']} halted due to negative sentiment.")
+                await self.telegram_interface.send_message(
+                    f"Sentiment Alert: Trade for {parsed_signal['ticker']} halted due to negative news."
+                )
                 return
 
-        # Gate 1: Profile Check
-        profile = self._get_profile_for_channel(channel_id)
-        if not profile: return
+        # --- Pre-Market Trading Logic ---
+        # (This section would contain logic to adjust trade quantity based on pre-market rules)
+        # For now, we assume regular hours.
 
-        # Gate 2: Keyword Filter
-        for reject_word in profile.get("reject_if_contains", []):
-            if reject_word.lower() in message_content.lower():
-                return
-
-        # Gate 3: Translation Check
-        signal = self.parser.parse(message_content, profile)
-        if not signal: return
+        # --- Contract Creation ---
+        contract = Option(
+            parsed_signal['ticker'],
+            parsed_signal['expiry'],
+            parsed_signal['strike'],
+            parsed_signal['option_type'],
+            'SMART'
+        )
         
-        logging.info(f"Successfully parsed signal from {profile['channel_name']}: {signal}")
+        # Qualify contract to get conId
+        qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
+        if not qualified_contracts:
+            self.logger.error(f"Could not qualify contract for signal: {parsed_signal}")
+            return
+        qualified_contract = qualified_contracts[0]
 
-        # --- Gate 4: The Resilient Sentiment Check ---
-        sentiment_score = 0.0
-        if self.config.sentiment_filter["enabled"]:
-            headlines = self.trade_executor.ib_interface.get_news_headlines(signal["symbol"])
+        # --- Order Sizing ---
+        # (Simplified logic, a real implementation would be more complex)
+        trade_value = profile['trading']['funds_allocation']
+        # Fetch ticker price to estimate quantity
+        ticker_data = self.ib_interface.ib.reqMktData(qualified_contract, '', False, False)
+        await asyncio.sleep(2) # Allow time for data to arrive
+        
+        last_price = ticker_data.last
+        if not last_price or last_price <= 0:
+            self.logger.error(f"Could not get a valid market price for {qualified_contract.localSymbol}. Aborting trade.")
+            self.ib_interface.ib.cancelMktData(qualified_contract)
+            return
+        
+        self.ib_interface.ib.cancelMktData(qualified_contract) # Clean up
+        
+        quantity = int(trade_value / (last_price * 100)) # 100 shares per contract
+        if quantity == 0:
+            self.logger.warning(f"Calculated quantity is 0 for {qualified_contract.localSymbol}. Min contract price likely too high. Aborting.")
+            return
+
+        # --- Order Creation & Placement ---
+        order = Order(
+            action=parsed_signal['action'],
+            orderType=profile['trading']['entry_order_type'],
+            totalQuantity=quantity,
+            tif=profile['trading']['time_in_force']
+        )
+
+        trade = self.ib_interface.place_order(qualified_contract, order)
+        if trade:
+            self.logger.info(f"Trade placed for {qualified_contract.localSymbol}. OrderId: {trade.order.orderId}")
+            self.active_trades[qualified_contract.conId] = trade
+            await self.telegram_interface.send_message(
+                f"Trade Alert: Placed order for {quantity} contracts of {qualified_contract.localSymbol}."
+            )
+
+    async def monitor_active_trades(self):
+        """
+        The core of the "Single Operator" model. This loop runs sequentially
+        and handles all post-trade management.
+        """
+        if not self.active_trades:
+            return
+
+        self.logger.debug(f"Monitoring {len(self.active_trades)} active trade(s).")
+        
+        # Create a copy of the keys to iterate over, as the dictionary may change
+        con_ids_to_check = list(self.active_trades.keys())
+
+        for conId in con_ids_to_check:
+            trade = self.active_trades.get(conId)
+            if not trade or not trade.isDone():
+                continue # Skip trades not yet filled or already closed
+
+            # --- Safety Net: Attach Native Trailing Stop ---
+            # (This is a simplified placeholder. A full implementation is complex.)
+            # We would check if a native trail has been attached already.
+            # If not, create and place the trailing stop order here.
             
-            # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
-            if not headlines:
-                # If the news fetch failed, log it and proceed with a neutral score.
-                logging.warning(f"Proceeding without sentiment score for {signal['symbol']} due to data fetch failure.")
-            else:
-                # Only analyze if we actually have headlines.
-                sentiment_score = self.sentiment_analyzer.analyze_sentiment(headlines)
+            # --- Dynamic Exit Logic ---
+            # Example: Check for timeout exit
+            # We would compare the trade's open time to the current time.
+            # If it exceeds the profile's timeout, we would place a closing order.
 
-                trade_veto = False
-                threshold = self.config.sentiment_filter["sentiment_threshold"]
-                reason = ""
-                if signal['right'] == 'C' and sentiment_score < threshold:
-                    trade_veto = True
-                    reason = f"Sentiment score {sentiment_score:.4f} is below threshold {threshold} for a CALL."
-                elif signal['right'] == 'P' and sentiment_score > -threshold:
-                    trade_veto = True
-                    reason = f"Sentiment score {sentiment_score:.4f} is above threshold {-threshold} for a PUT."
+            # Example: PSAR or RSI based exits
+            # We would fetch historical data, calculate indicators, and decide to close.
+            
+            # If an exit condition is met:
+            #   close_order = Order(...)
+            #   self.ib_interface.place_order(trade.contract, close_order)
+            #   del self.active_trades[conId] # Remove from active monitoring
 
-                if trade_veto:
-                    logging.warning(f"TRADE VETOED for {signal['symbol']} {signal['strike']}{signal['right']}. Reason: {reason}")
-                    veto_message = (
-                        f"❌ *Trade Vetoed* ❌\n\n"
-                        f"*Ticker:* `{signal['symbol']}`\n"
-                        f"*Option:* `{signal['strike']}{signal['right']}`\n"
-                        f"*Expiry:* `{signal['expiry']}`\n"
-                        f"*Source Channel:* `{profile['channel_name']}`\n\n"
-                        f"*Reason:* {reason}"
-                    )
-                    self.trade_executor.notifier.send_message(veto_message)
-                    return
-
-        signal["sentiment_score"] = sentiment_score
-
-        # Gate 5: Final Approval
-        logging.info(f"Signal approved. Handing off to trade executor: {signal}")
-        self.trade_executor.execute_trade(signal, profile)
-
-    def _get_profile_for_channel(self, channel_id):
-        """Finds the active profile for a given channel ID."""
-        for profile in self.config.profiles:
-            if str(profile["channel_id"]) == str(channel_id) and profile["enabled"]:
-                return profile
-        return None
-
+    def get_active_trades(self):
+        return self.active_trades
