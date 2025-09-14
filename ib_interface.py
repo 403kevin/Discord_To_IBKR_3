@@ -1,164 +1,200 @@
-# interfaces/ib_interface.py
 import logging
-from ib_insync import IB, Stock, Option, MarketOrder, Order, util
-from datetime import datetime
-import pandas as pd
-import technical_analysis as ta
-
+from ib_insync import IB, Stock, Option, MarketOrder, StopLimitOrder, LimitOrder, Order, Trade, util
 from services.config import Config
+# Placeholder for a potential technical analysis module
+# from services import technical_analysis as ta
+import asyncio
+import pandas as pd
 
 
 class IBInterface:
     """
-    The bot's "Hands." This is the definitive, battle-hardened version. It now
-    contains a fortified news fetching function that will never crash the bot,
-    even if the request to IBKR's news servers fails or times out.
+    Handles all interactions with the Interactive Brokers API via ib_insync.
+    This is a specialist class, focused solely on broker communication.
     """
 
     def __init__(self, config: Config):
+        self.logger = logging.getLogger(__name__)
         self.config = config
         self.ib = IB()
-        self.is_connected = False
-        self.on_fill_callback = None
+        self.account_summary = {}
+        self.active_positions = {}
+        self.connection_successful = False
 
-        self.ib.connectedEvent += self._on_connected
-        self.ib.disconnectedEvent += self._on_disconnected
-        self.ib.errorEvent += self._on_error
-        self.ib.execDetailsEvent += self._on_fill
-
-    def connect(self):
+    async def connect(self):
+        """Establishes connection to IBKR TWS or Gateway."""
         try:
-            logging.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
-            util.run(
-                self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port, clientId=self.config.ibkr_client_id))
-            self.ib.reqMarketDataType(3)
-            return True
-        except Exception as e:
-            logging.error(f"Failed to connect to IBKR: {e}")
-            return False
-
-    def get_option_contract(self, symbol, strike, right, expiry):
-        """Gets a qualified option contract object from IBKR."""
-        if symbol == 'SPX':
-            logging.info("Detected SPX symbol. Using direct CBOE contract definition.")
-            return Option(symbol, expiry, strike, right, 'CBOE', tradingClass='SPX')
-
-        contract = Option(symbol, expiry, strike, right, 'SMART', tradingClass=symbol)
-        try:
-            qualified_contracts = self.ib.qualifyContracts(contract)
-            if not qualified_contracts: return None
-            return qualified_contracts[0]
-        except Exception as e:
-            logging.warning(f"Could not qualify contract for {symbol}. It may not exist. Error: {e}")
-            return None
-
-    def place_trade(self, contract, quantity, time_in_force="DAY"):
-        """Places a market order with a specified time-in-force."""
-        order = MarketOrder("BUY", quantity)
-        order.tif = time_in_force
-        trade = self.ib.placeOrder(contract, order)
-        return trade
-
-    def place_native_trail_stop(self, contract, quantity, trail_percent):
-        """Places a native, broker-side trailing stop order."""
-        order = Order()
-        order.orderType = "TRAIL"
-        order.action = "SELL"
-        order.totalQuantity = quantity
-        order.trailingPercent = float(trail_percent)
-        trade = self.ib.placeOrder(contract, order)
-        return trade
-
-    def get_news_headlines(self, symbol):
-        """
-        Fetches recent news headlines for a given stock symbol. This version
-        is fortified with a master error handler to prevent crashes.
-        """
-        # --- THIS IS THE CRITICAL, BATTLE-HARDENED FIX ---
-        try:
-            stock_contract = Stock(symbol, 'SMART', 'USD')
-            self.ib.qualifyContracts(stock_contract)
-
-            # Use util.run() to handle the asynchronous call and its timeout gracefully.
-            headlines = util.run(
-                self.ib.reqHistoricalNewsAsync(stock_contract.conId, "BRFG", "", "", 100, []),
-                timeout=10
+            self.logger.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
+            await self.ib.connectAsync(
+                self.config.ibkr_host,
+                self.config.ibkr_port,
+                clientId=self.config.ibkr_client_id
             )
-            # The original code was correct, but we will now wrap it in a
-            # master 'except' block to make it truly anti-fragile.
-            return [h.headline for h in headlines]
+            self.logger.info("Connection to IBKR successful.")
+            self.connection_successful = True
+            self.ib.reqMarketDataType(3)  # 1=live, 2=frozen, 3=delayed, 4=delayed frozen
+            self.ib.accountSummaryEvent += self.on_account_summary
+            self.ib.updatePortfolioEvent += self.on_portfolio_update
+            self.ib.reqAccountSummary( 'All', 'AccountType,AvailableFunds,ExcessLiquidity,NetLiquidity,TotalCashValue' )
 
         except Exception as e:
-            # This is the master safety net. It catches ANY error from the news
-            # request (timeouts, connection drops, API errors) and prevents a crash.
-            logging.warning(f"Could not fetch news for {symbol}. Request failed. Reason: {e}")
-            return []  # Return an empty, iterable list to ensure safety upstream.
+            self.logger.critical(f"Failed to connect to IBKR: {e}")
+            self.connection_successful = False
 
-    def get_live_ticker(self, contract):
-        """Requests and returns a live ticker for a contract."""
-        self.ib.reqMktData(contract, '', False, False)
-        self.ib.sleep(0.5)
-        ticker = self.ib.ticker(contract)
-        return ticker
+    async def disconnect(self):
+        """Disconnects from IBKR."""
+        self.logger.info("Disconnecting from IBKR...")
+        self.ib.disconnect()
+        self.logger.info("Disconnected.")
 
-    def get_technical_indicators(self, contract):
-        """Calculates ATR, PSAR, and RSI."""
+    def on_account_summary(self, summary):
+        """Event handler for account summary updates."""
+        self.logger.info(f"Account summary update: {summary}")
+        for tag in summary.tags.split(','):
+             self.account_summary[tag] = summary.value
+    
+    def on_portfolio_update(self, item):
+        """Event handler for portfolio updates."""
+        self.logger.info(f"updatePortfolio: {item}")
+        if item.position != 0:
+            self.active_positions[item.contract.conId] = item
+        else: # Position has been closed
+            if item.contract.conId in self.active_positions:
+                del self.active_positions[item.contract.conId]
+
+    async def get_contract_details(self, symbol):
+        """Fetches contract details for a given stock symbol."""
         try:
-            bars = self.ib.reqHistoricalData(
-                contract, endDateTime='', durationStr='1 D', barSizeSetting='1 min',
-                whatToShow='TRADES', useRTH=True, formatDate=1
-            )
-            if not bars:
-                logging.warning(f"Could not fetch historical data for {contract.localSymbol} to calculate TA.")
+            contract = Stock(symbol, 'SMART', 'USD')
+            details = await self.ib.reqContractDetailsAsync(contract)
+            if not details:
+                self.logger.warning(f"No contract details found for {symbol}")
                 return None
-            df = pd.DataFrame(bars)
-            df.set_index('date', inplace=True)
-            atr = ta.get_atr(df)['ATR'][-1]
-            psar = ta.get_psar(df)['PSAR'][-1]
-            rsi = ta.get_rsi(df)['RSI'][-1]
-            return {'atr': atr, 'psar': psar, 'rsi': rsi}
+            return details[0].contract
         except Exception as e:
-            logging.error(f"Error calculating technical indicators for {contract.localSymbol}: {e}", exc_info=True)
+            self.logger.error(f"Error fetching contract details for {symbol}: {e}")
             return None
 
-    def close_position(self, contract, quantity):
-        order = MarketOrder("SELL", quantity)
-        self.ib.placeOrder(contract, order)
+    async def get_option_chain(self, symbol, expiration_date, strike):
+        """
+        Fetches the specific option contract from the chain.
+        Expiration date format: YYYYMMDD
+        """
+        try:
+            # First, qualify the underlying stock contract
+            underlying_contract = Stock(symbol, 'SMART', 'USD')
+            await self.ib.qualifyContractsAsync(underlying_contract)
 
-    def get_all_positions(self):
-        return self.ib.positions()
+            # Fetch option chains
+            chains = await self.ib.reqSecDefOptParamsAsync(
+                underlyingSymbol=underlying_contract.symbol,
+                futFopExchange='',
+                underlyingSecType=underlying_contract.secType,
+                underlyingConId=underlying_contract.conId
+            )
 
-    def flatten_all_positions(self):
-        positions = self.get_all_positions()
-        if not positions:
-            logging.info("Flatten command received, but no open positions to close.")
-            return
-        logging.warning(f"EMERGENCY FLATTEN: Closing all {len(positions)} positions.")
-        for pos in positions:
-            action = "SELL" if pos.position > 0 else "BUY"
-            quantity = abs(pos.position)
-            order = MarketOrder(action, quantity)
-            self.ib.placeOrder(pos.contract, order)
-        logging.warning("All flatten orders have been sent.")
+            # Find the correct exchange from the chains
+            chain = next((c for c in chains if c.exchange == 'SMART'), None)
+            if not chain:
+                self.logger.warning(f"No option chain found for {symbol} on SMART exchange.")
+                return None
+            
+            # Filter for the specific expiration and strike
+            # Note: This is simplified. A real implementation might need to find the closest match.
+            # For now, we assume an exact match is requested.
+            
+            # Create and qualify the specific option contract
+            option_contract = Option(
+                symbol,
+                expiration_date,
+                strike,
+                'C',  # Assuming CALL for now, will be dynamic
+                'SMART',
+                '100',
+                'USD'
+            )
+            
+            qualified_contracts = await self.ib.qualifyContractsAsync(option_contract)
+            
+            if qualified_contracts:
+                return qualified_contracts[0]
+            else:
+                self.logger.warning(f"Could not qualify option contract for {symbol} {expiration_date} C{strike}")
+                return None
 
-    def disconnect(self):
-        if self.is_connected:
-            logging.info("Disconnecting from IBKR.")
-            self.ib.disconnect()
+        except Exception as e:
+            self.logger.error(f"Error fetching option chain for {symbol}: {e}")
+            return None
 
-    def _on_connected(self):
-        logging.info("IBKR connection successful.")
-        self.is_connected = True
+    def create_order(self, action, quantity, order_type="MKT", time_in_force="DAY", limit_price=None, stop_price=None):
+        """Creates an IB order object."""
+        if order_type == "MKT":
+            return MarketOrder(action, quantity)
+        elif order_type == "LMT":
+            return LimitOrder(action, quantity, limit_price, tif=time_in_force)
+        elif order_type == "STPLMT":
+            return StopLimitOrder(action, quantity, stop_price, limit_price, tif=time_in_force)
+        else:
+            self.logger.error(f"Unsupported order type: {order_type}")
+            return None
 
-    def _on_disconnected(self):
-        logging.warning("IBKR connection lost.")
-        self.is_connected = False
+    def place_order(self, contract, order: Order) -> Trade:
+        """Places an order and returns the Trade object."""
+        # --- SURGICAL FIX: Check for existing open orders to prevent conflicts ---
+        open_orders = self.ib.openOrders()
+        for open_order in open_orders:
+            if open_order.contract.conId == contract.conId:
+                self.logger.warning(
+                    f"Order conflict detected for {contract.localSymbol}. An open order already exists. "
+                    f"Canceling new order request to prevent rejection."
+                )
+                # If an order already exists, we do not proceed.
+                return None
+        # --- END SURGICAL FIX ---
+        try:
+            self.logger.info(f"Placing order: {order.action} {order.totalQuantity} {contract.localSymbol} @ {order.orderType}")
+            trade = self.ib.placeOrder(contract, order)
+            return trade
+        except Exception as e:
+            self.logger.error(f"Error placing order for {contract.localSymbol}: {e}")
+            return None
+    
+    async def get_historical_data(self, contract, duration='1 M', bar_size='1 day'):
+        """Fetches historical market data."""
+        try:
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1
+            )
+            if bars:
+                df = util.df(bars)
+                return df
+            else:
+                self.logger.warning(f"No historical data returned for {contract.localSymbol}")
+                return pd.DataFrame() # Return empty dataframe
+        except Exception as e:
+            self.logger.error(f"Error fetching historical data for {contract.localSymbol}: {e}")
+            return pd.DataFrame()
+    
+    def get_account_summary(self):
+        """Returns the latest account summary data."""
+        return self.account_summary
 
-    def _on_error(self, reqId, errorCode, errorString, contract):
-        if errorCode not in [2104, 2106, 2158, 2108]:
-            logging.error(f"IBKR Error. ReqId: {reqId}, Code: {errorCode}, Msg: {errorString}")
+    def get_active_positions(self):
+        """Returns the dictionary of active positions."""
+        return self.active_positions
 
-    def _on_fill(self, trade, fill):
-        if self.on_fill_callback:
-            self.on_fill_callback(trade, fill)
-
+    async def get_ticker(self, contract):
+        """Gets the live market data ticker for a contract."""
+        try:
+            ticker = self.ib.reqMktData(contract, '', False, False)
+            await asyncio.sleep(2) # Allow time for ticker data to arrive
+            return ticker
+        except Exception as e:
+            self.logger.error(f"Error getting ticker for {contract.localSymbol}: {e}")
+            return None
