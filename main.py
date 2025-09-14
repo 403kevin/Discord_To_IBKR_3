@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 # Import project modules
 from services.config import Config
 from interfaces.ib_interface import IBInterface
-from interfaces.telegram_notifier import TelegramNotifier
+from interfaces.telegram_interface import TelegramInterfacer
 from interfaces.discord_interface import DiscordInterface
 from services.sentiment_analyzer import SentimentAnalyzer
 from services.market_data_manager import MarketDataManager
