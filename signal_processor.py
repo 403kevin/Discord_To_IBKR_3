@@ -2,7 +2,6 @@ import logging
 from services.config import Config
 from interfaces.ib_interface import IBInterface
 from interfaces.discord_interface import DiscordInterface
-from interfaces.telegram_interface import TelegramInterface
 from services.message_parsers import SignalParser
 from services.sentiment_analysis import SentimentAnalyzer
 import asyncio
@@ -17,13 +16,12 @@ class SignalProcessor:
     """
 
     def __init__(self, config: Config, ib_interface: IBInterface,
-                 discord_interface: DiscordInterface, telegram_interface: TelegramInterface,
+                 discord_interface: DiscordInterface,
                  sentiment_analyzer: SentimentAnalyzer):
         self.logger = logging.getLogger(__name__)
         self.config = config
         self.ib_interface = ib_interface
         self.discord_interface = discord_interface
-        self.telegram_interface = telegram_interface
         self.sentiment_analyzer = sentiment_analyzer
         self.parser = SignalParser(config)
         self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
