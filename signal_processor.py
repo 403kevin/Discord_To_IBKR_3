@@ -1,9 +1,9 @@
 import logging
 import asyncio
 import uuid
-from datetime import datetime, timezone, timedelta
-from collections import deque  # <-- SURGICAL FIX: The missing tool is now imported.
-from ib_insync import Option, MarketOrder, Order
+from datetime import datetime, timezone
+from collections import deque
+from ib_insync import Option, MarketOrder
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -47,42 +47,45 @@ class SignalProcessor:
     async def process_signal(self, message: dict, profile: dict):
         """
         The main entry point for processing a single Discord message.
-        This is the complete, battle-hardened ignition system.
+        This is the complete, battle-hardened ignition system with diagnostics.
         """
         msg_id = message['id']
-        if msg_id in self.processed_message_ids:
-            return # Skip already processed messages
         
-        # --- SURGICAL FIX: Put the Bouncer at the Door ---
-        # This is the new gatekeeper logic that enforces the max age rule.
+        # --- Gatekeeper #1: Short-Term Memory ---
+        if msg_id in self.processed_message_ids:
+            return # Silently ignore duplicates, this is expected behavior.
+        
+        # --- Gatekeeper #2: The Bouncer (Age Check) ---
         message_timestamp = message['timestamp']
         current_time = datetime.now(timezone.utc)
         message_age = (current_time - message_timestamp).total_seconds()
         
         if message_age > self.config.signal_max_age_seconds:
-            # This signal is too old, reject it immediately.
+            logger.info(f"Signal REJECTED (ID: {msg_id}): Stale message (Age: {message_age:.0f}s > {self.config.signal_max_age_seconds}s).")
             return 
-        # --- END SURGICAL FIX ---
-
-        # If the message is fresh, we can now add it to our memory and process it.
+        
+        # --- If the message is fresh, we can now add it to our memory. ---
         self.processed_message_ids.append(msg_id)
 
+        # --- Gatekeeper #3: The Translator ---
         parser = SignalParser(self.config)
         parsed_signal = parser.parse_signal_message(message['content'], profile)
         
         if not parsed_signal:
+            logger.info(f"Signal IGNORED (ID: {msg_id}): Message content did not parse into a valid trade signal.")
             return
 
-        logger.info(f"Successfully parsed signal: {parsed_signal}")
+        # --- If we reach here, the signal is valid and fresh. ---
+        logger.info(f"Signal ACCEPTED (ID: {msg_id}): Successfully parsed signal: {parsed_signal}")
 
-        # --- SENTIMENT ANALYSIS GATE ---
+        # --- Gatekeeper #4: Sentiment Analysis ---
         if self.config.sentiment_filter['enabled']:
             sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
             if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
-                logger.warning(f"Trade for {parsed_signal['ticker']} halted due to low sentiment score: {sentiment_score}")
+                logger.warning(f"Trade for {parsed_signal['ticker']} HALTED (ID: {msg_id}): Low sentiment score: {sentiment_score}")
                 return
 
-        # --- BUILD THE CONTRACT ---
+        # --- Build the Contract ---
         try:
             contract = Option(
                 symbol=parsed_signal['ticker'],
@@ -94,22 +97,19 @@ class SignalProcessor:
             )
             await self.ib_interface.ib.qualifyContractsAsync(contract)
         except Exception as e:
-            logger.error(f"Contract qualification failed for {parsed_signal}: {e}")
+            logger.error(f"Contract qualification FAILED for {parsed_signal} (ID: {msg_id}): {e}")
             return
 
-        # --- CALCULATE TRADE SIZE ---
-        # NOTE: This is a simplified sizing model. A real-world bot would need
-        # to fetch the live price to calculate the exact number of contracts.
-        # For now, we will assume a simple quantity for demonstration.
-        quantity = 1 # Placeholder quantity
+        # --- Calculate Trade Size (Placeholder) ---
+        quantity = 1
 
-        # --- BUILD THE ORDER ---
+        # --- Build the Order ---
         order = MarketOrder(
-            action=parsed_signal['action'].upper(), # Ensure action is uppercase
+            action=parsed_signal['action'].upper(),
             totalQuantity=quantity
         )
 
-        # --- PLACE THE TRADE ---
+        # --- Place the Trade ---
         try:
             trade = await self.ib_interface.place_order(contract, order)
             if trade:
@@ -119,42 +119,33 @@ class SignalProcessor:
                     "entry_time": datetime.now(timezone.utc),
                     "profile": profile
                 }
-                logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
+                logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']} (Original Msg ID: {msg_id}).")
             else:
-                logger.warning(f"Trade for {parsed_signal['ticker']} was not placed (likely due to an existing open order).")
-
+                logger.warning(f"Trade for {parsed_signal['ticker']} NOT PLACED (ID: {msg_id}): Likely due to an existing open order.")
         except Exception as e:
-            logger.error(f"Failed to place trade for {parsed_signal['ticker']}: {e}")
+            logger.error(f"Failed to place trade for {parsed_signal['ticker']} (ID: {msg_id}): {e}")
 
 
     async def monitor_active_trades(self):
         """
-        This method will be responsible for managing all ongoing trades.
+        Manages all ongoing trades.
         """
         if not self.active_trades:
             return
 
-        # Create a copy of the keys to iterate over, as the dictionary may change size.
         trade_ids = list(self.active_trades.keys())
-        
         for trade_id in trade_ids:
             trade_info = self.active_trades.get(trade_id)
-            if not trade_info:
-                continue
+            if not trade_info: continue
             
             trade = trade_info['trade_obj']
             
-            # Check the status of the order
             if trade.orderStatus.status == 'Filled':
                 logger.info(f"Trade {trade_id} ({trade.contract.localSymbol}) has been filled.")
-                # Once filled, a real bot would attach a stop loss, native trail, etc.
-                # It would then be managed by a different part of the monitoring logic.
-                # For now, we will just remove it from active *entry* monitoring.
                 del self.active_trades[trade_id]
             
             elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
                 logger.warning(f"Trade {trade_id} ({trade.contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                 del self.active_trades[trade_id]
 
-        await asyncio.sleep(0.1) # Non-blocking sleep
-
+        await asyncio.sleep(0.1)
