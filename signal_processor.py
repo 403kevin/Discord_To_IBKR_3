@@ -7,6 +7,7 @@ from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
 
+
 class SignalProcessor:
     """
     The "brain" of the bot. This class is responsible for taking raw messages,
@@ -22,7 +23,7 @@ class SignalProcessor:
         self.ib_interface = ib_interface
         self.discord_interface = discord_interface
         self.sentiment_analyzer = sentiment_analyzer
-        
+
         self._channel_states = {}
         self.active_trades = {}
         self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
@@ -50,25 +51,25 @@ class SignalProcessor:
         """
         msg_id = message['id']
         if msg_id in self.processed_message_ids:
-            return # Skip already processed messages
-        
+            return  # Skip already processed messages
+
         # --- SURGICAL FIX: Put the Bouncer at the Door ---
         # This is the new gatekeeper logic that enforces the max age rule.
         message_timestamp = message['timestamp']
         current_time = datetime.now(timezone.utc)
         message_age = (current_time - message_timestamp).total_seconds()
-        
+
         if message_age > self.config.signal_max_age_seconds:
             # This signal is too old, reject it immediately.
-            return 
-        # --- END SURGICAL FIX ---
+            return
+            # --- END SURGICAL FIX ---
 
         # If the message is fresh, we can now add it to our memory and process it.
         self.processed_message_ids.append(msg_id)
 
         parser = SignalParser(self.config)
         parsed_signal = parser.parse_signal_message(message['content'], profile)
-        
+
         if not parsed_signal:
             return
 
@@ -78,7 +79,8 @@ class SignalProcessor:
         if self.config.sentiment_filter['enabled']:
             sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
             if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
-                logger.warning(f"Trade for {parsed_signal['ticker']} halted due to low sentiment score: {sentiment_score}")
+                logger.warning(
+                    f"Trade for {parsed_signal['ticker']} halted due to low sentiment score: {sentiment_score}")
                 return
 
         # --- BUILD THE CONTRACT ---
@@ -100,11 +102,11 @@ class SignalProcessor:
         # NOTE: This is a simplified sizing model. A real-world bot would need
         # to fetch the live price to calculate the exact number of contracts.
         # For now, we will assume a simple quantity for demonstration.
-        quantity = 1 # Placeholder quantity
+        quantity = 1  # Placeholder quantity
 
         # --- BUILD THE ORDER ---
         order = MarketOrder(
-            action=parsed_signal['action'].upper(), # Ensure action is uppercase
+            action=parsed_signal['action'].upper(),  # Ensure action is uppercase
             totalQuantity=quantity
         )
 
@@ -120,11 +122,11 @@ class SignalProcessor:
                 }
                 logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
             else:
-                logger.warning(f"Trade for {parsed_signal['ticker']} was not placed (likely due to an existing open order).")
+                logger.warning(
+                    f"Trade for {parsed_signal['ticker']} was not placed (likely due to an existing open order).")
 
         except Exception as e:
             logger.error(f"Failed to place trade for {parsed_signal['ticker']}: {e}")
-
 
     async def monitor_active_trades(self):
         """
@@ -135,14 +137,14 @@ class SignalProcessor:
 
         # Create a copy of the keys to iterate over, as the dictionary may change size.
         trade_ids = list(self.active_trades.keys())
-        
+
         for trade_id in trade_ids:
             trade_info = self.active_trades.get(trade_id)
             if not trade_info:
                 continue
-            
+
             trade = trade_info['trade_obj']
-            
+
             # Check the status of the order
             if trade.orderStatus.status == 'Filled':
                 logger.info(f"Trade {trade_id} ({trade.contract.localSymbol}) has been filled.")
@@ -150,10 +152,11 @@ class SignalProcessor:
                 # It would then be managed by a different part of the monitoring logic.
                 # For now, we will just remove it from active *entry* monitoring.
                 del self.active_trades[trade_id]
-            
+
             elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
-                logger.warning(f"Trade {trade_id} ({trade.contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
+                logger.warning(
+                    f"Trade {trade_id} ({trade.contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                 del self.active_trades[trade_id]
 
-        await asyncio.sleep(0.1) # Non-blocking sleep
+        await asyncio.sleep(0.1)  # Non-blocking sleep
 
