@@ -33,23 +33,25 @@ class DiscordInterface:
 
     async def initialize(self):
         """
-        Logs the bot into Discord. This is a separate, awaitable method
-        to allow for clean asynchronous startup in main.py.
+        Logs the bot into Discord using the correct, non-blocking startup sequence.
         """
         if self.is_initialized:
             logger.warning("Discord client is already initialized.")
             return
 
         try:
-            # `start()` is a non-blocking method. We use `login()` and `connect()`
-            # for more control in an async environment, but for a simple poller,
-            # we just need to log in to get the connection ready. A background
-            # task will handle the connection.
-            # We wrap this in a future to ensure it completes before we proceed.
-            asyncio.create_task(self.client.start(self.token))
+            # --- SURGICAL FIX: The Correct Ignition Sequence ---
+            # 1. First, we log in. This is an awaitable, so we know it's done.
+            await self.client.login(self.token)
             
-            # Wait until the client has successfully connected and is ready.
+            # 2. Then, we connect in the background.
+            #    We create this as a task because connect() runs forever.
+            asyncio.create_task(self.client.connect())
+            
+            # 3. NOW, we can safely wait for the client to be ready.
+            #    This will no longer cause a race condition.
             await self.client.wait_until_ready()
+            # --- END SURGICAL FIX ---
             
             self.is_initialized = True
             logger.info(f"Discord client initialized successfully. Logged in as {self.client.user}.")
@@ -81,15 +83,13 @@ class DiscordInterface:
                 logger.error(f"Could not find Discord channel with ID: {channel_id}")
                 return []
 
-            # `history()` is an async iterator. We collect its results into a list.
-            messages_data = []
-            async for msg in channel.history(limit=limit):
-                messages_data.append(msg)
+            # `history()` is an async iterator. We use a list comprehension.
+            messages = [message async for message in channel.history(limit=limit)]
 
             # Convert the discord.Message objects into a simpler dictionary format.
             # This decouples the rest of our application from the discord.py library.
             processed_messages = []
-            for msg in messages_data:
+            for msg in messages:
                 processed_messages.append({
                     "id": msg.id,
                     "content": msg.content,
@@ -114,3 +114,4 @@ class DiscordInterface:
             logger.info("Closing Discord connection...")
             await self.client.close()
             logger.info("Discord connection closed.")
+
