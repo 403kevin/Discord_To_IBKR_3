@@ -3,7 +3,7 @@ from services.config import Config
 from interfaces.ib_interface import IBInterface
 from interfaces.discord_interface import DiscordInterface
 from services.signal_parser import SignalParser
-from services.sentiment_analysis import SentimentAnalyzer
+from services.sentiment_analyzer import SentimentAnalyzer
 import asyncio
 from ib_insync import Option, Trade, Order
 from collections import deque
