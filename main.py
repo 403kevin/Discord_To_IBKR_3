@@ -219,7 +219,6 @@ async def main():
     """
     # Initialize components
     config = Config()
-    notifier = TelegramNotifier(config)
 
     ib_interface = IBInterface(config, notifier)
     market_data_manager = MarketDataManager(ib_interface)
