@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from services.config import Config
 from services.sentiment_analyzer import SentimentAnalyzer
 from services.market_data_manager import MarketDataManager
-from ib_interface import IBInterface
+from interfaces.ib_interface import IBInterface
 from signal_parser import SignalParser
 from telegram_notifier import TelegramNotifier
 from discord_interface import DiscordInterface
