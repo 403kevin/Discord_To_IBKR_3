@@ -98,3 +98,4 @@ class DiscordInterface:
         if self.session and not self.session.closed:
             await self.session.close()
             logger.info("Discord session closed.")
+
