@@ -228,8 +228,6 @@ async def main():
         # Connect to IBKR
         await ib_interface.connect()
 
-        # Set the market data manager's price update handler
-        ib_interface.ib.pendingTickersEvent += market_data_manager.on_price_update
 
         logging.info("Main application loop started. Bot is now live.")
 
@@ -261,7 +259,6 @@ async def main():
         logging.info("Shutdown signal received.")
     except Exception as e:
         logging.critical(f"[FATAL] The main application loop has crashed: {e}", exc_info=True)
-        await notifier.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
     finally:
         logging.info("Shutting down bot...")
         await ib_interface.disconnect()
