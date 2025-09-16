@@ -21,6 +21,8 @@ Destructive Refactoring: The AI attempted to completely rebuild working files (m
 What Not To Do (Binding AI Constraints)
 DO NOT replace or suggest replacing the custom polling engine in discord_interface.py.
 
+the script is being discreet - pretending to be a browser and NOT a BOT. 
+
 DO NOT deviate from the established settings structure in the config.py class.
 
 DO NOT perform large-scale refactoring unless it is the explicitly stated Primary Task.
