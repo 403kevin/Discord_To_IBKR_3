@@ -220,8 +220,7 @@ async def main():
     # Initialize components
     config = Config()
 
-    ib_interface = IBInterface(config, notifier)
-    market_data_manager = MarketDataManager(ib_interface)
+    ib_interface = IBInterface(config)
 
     discord_interface = DiscordInterface(config)
 
