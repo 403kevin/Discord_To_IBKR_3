@@ -60,21 +60,20 @@ class SignalParser:
 
         # Try to parse different date formats.
         try:
-            if len(expiry_str.split('/')[2]) == 4:  # MM/DD/YYYY
+            parts = expiry_str.split('/')
+            if len(parts) == 3 and len(parts[2]) == 4:  # MM/DD/YYYY
                 dt = datetime.strptime(expiry_str, '%m/%d/%Y')
-            elif len(expiry_str.split('/')[2]) == 2:  # MM/DD/YY
+            elif len(parts) == 3 and len(parts[2]) == 2:  # MM/DD/YY
                 dt = datetime.strptime(expiry_str, '%m/%d/%y')
-        except (IndexError, ValueError):
-            try:  # MM/DD
+            elif len(parts) == 2:  # MM/DD
                 dt = datetime.strptime(expiry_str, '%m/%d').replace(year=now.year)
-                # --- SURGICAL UPGRADE: Intelligent Year Calculation ---
                 # If the parsed date is in the past for this year, assume it's for next year.
-                # This prevents old signals from being misinterpreted.
                 if dt < now:
                     dt = dt.replace(year=now.year + 1)
-                # --- END SURGICAL UPGRADE ---
-            except ValueError:
+            else:
                 return None
+        except (IndexError, ValueError):
+            return None
 
         if dt:
             # Final check: Ensure the expiry date is not a weekend.
@@ -113,3 +112,4 @@ class SignalParser:
             }
 
         return None
+
