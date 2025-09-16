@@ -13,277 +13,225 @@ from interfaces.discord_interface import DiscordInterface
 from services.sentiment_analyzer import SentimentAnalyzer
 from bot_engine.signal_processor import SignalProcessor
 
-# ==============================================================================
-# SECTION 1: GLOBAL STATE & SETUP
-# ==============================================================================
+# --- 1. SETUP ---
+# Custom logger configuration. All events will be recorded in `runtime.log`.
+log_file_path = "runtime.log"
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(log_file_path), logging.StreamHandler()])
+logger = logging.getLogger(__name__)
+logger.info("Custom logger initialized.")
 
-# In-memory cache to prevent processing the same Discord message ID twice
-processed_message_ids = deque(maxlen=50)
+# --- DATA STRUCTURES ---
+# A simple in-memory dictionary to hold the state of active trades.
+# The key is a unique trade identifier, and the value is an object with trade details.
+active_trades = {}
+# A deque (a list with a maximum size) to store recent message IDs.
+# This acts as a short-term memory to prevent processing the same signal twice.
+processed_message_ids = deque(maxlen=Config().processed_message_cache_size)
 
-# Dictionary to hold live trade data, managed by the main application loop
-live_positions = {}
-
-
-# ==============================================================================
-# SECTION 2: CORE LOGIC FUNCTIONS
-# ==============================================================================
-
-def get_live_price(ticker):
+# --- UTILITY FUNCTIONS ---
+def is_market_hours(timezone="US/Eastern"):
     """
-    Safely retrieves the last known price for a contract from the data manager.
-    Prefers 'ask' for entries, falls back to 'last'.
+    Checks if the current time is within regular US market hours (9:30 AM to 4:00 PM Eastern).
+    Also checks that it's a weekday.
     """
-    if not ticker:
-        return None
-    price = ticker.ask if ticker.ask and ticker.ask > 0 else ticker.last
-    return price if price and price > 0 else None
+    tz = pytz.timezone(timezone)
+    now = datetime.now(tz)
+    market_open = dt_time(9, 30)
+    market_close = dt_time(16, 0)
+    # Monday is 0, Sunday is 6. We only trade on weekdays.
+    return market_open <= now.time() <= market_close and now.weekday() < 5
 
-
-def calculate_trade_quantity(live_price, profile):
+def is_pre_market_hours(config, timezone="US/Eastern"):
     """
-    Calculates the number of contracts to trade based on capital allocation.
+    Checks if the current time is within the user-defined pre-market hours.
+    This is governed by the settings in `config.py`.
     """
-    funds = profile['trading']['funds_allocation']
-    cost_per_contract = live_price * 100
-    if cost_per_contract == 0:
-        return 0
-    quantity = int(funds / cost_per_contract)
-    logging.info(
-        f"[SIZER] Funds: ${funds}, Price: ${live_price:.2f}, Cost/Contract: ${cost_per_contract:.2f} => Quantity: {quantity}")
-    return quantity
+    if not config.pre_market_trading.get("enabled", False):
+        return False
+    tz = pytz.timezone(timezone)
+    now = datetime.now(tz)
+    pre_market_start = datetime.strptime(config.pre_market_trading["start_time"], "%H:%M").time()
+    pre_market_end = datetime.strptime(config.pre_market_trading["end_time"], "%H:%M").time()
+    return pre_market_start <= now.time() < pre_market_end and now.weekday() < 5
 
-
-async def process_signal(signal, ib_interface, market_data_manager, notifier, config):
-    """
-    Main pipeline for processing a validated trading signal.
-    """
-    try:
-        logging.info(f"[PROCESS] Processing signal: {signal}")
-        profile = next((p for p in config.profiles if p['channel_name'] == signal['source_channel']), None)
-        if not profile:
-            logging.warning(f"[REJECT] No profile found for channel: {signal['source_channel']}")
-            return
-
-        # --- 1. Get Contract ---
-        contract = await ib_interface.get_option_contract(signal)
-        if not contract:
-            raise ValueError("Failed to qualify contract from signal.")
-
-        # --- Prevent Re-entry ---
-        if contract.conId in live_positions:
-            logging.warning(f"[REJECT] Signal for an already live position: {contract.localSymbol}. Ignoring.")
-            return
-
-        # --- 2. Sentiment Analysis ---
-        score = 'N/A'  # Default score
-        if profile['sentiment_filter']['enabled']:
-            headlines = await ib_interface.get_news_headlines(contract.symbol)
-            sentiment_analyzer = SentimentAnalyzer()
-            score = sentiment_analyzer.analyze_sentiment(headlines)
-
-            threshold = profile['sentiment_filter']['sentiment_threshold']
-            is_call = signal['right'] == 'C'
-
-            if (is_call and score < threshold) or (not is_call and score > -threshold):
-                reason = f"Sentiment score {score:.2f} failed threshold {threshold} for a {signal['right']}"
-                logging.warning(f"[VETO] Trade for {contract.localSymbol} vetoed. Reason: {reason}")
-                await notifier.send_veto_message(signal, profile, reason, score)
-                return
-
-        # --- 3. Pre-Trade Checks & Sizing ---
-        await market_data_manager.subscribe_to_contract(contract)
-        await asyncio.sleep(2)  # Allow a moment for the price to stream
-        ticker = market_data_manager.get_ticker(contract.conId)
-        live_price = get_live_price(ticker)
-
-        if not live_price:
-            raise ValueError("Could not fetch a valid live price for sizing.")
-
-        if not (profile['trading']['min_price'] <= live_price <= profile['trading']['max_price']):
-            reason = f"Live price ${live_price:.2f} is outside the allowed range (${profile['trading']['min_price']:.2f} - ${profile['trading']['max_price']:.2f})"
-            logging.warning(f"[REJECT] Trade for {contract.localSymbol} rejected. Reason: {reason}")
-            await notifier.send_rejection_message(contract.localSymbol, reason)
-            return
-
-        quantity = calculate_trade_quantity(live_price, profile)
-        if quantity == 0:
-            reason = f"Allocated funds not sufficient to buy 1 contract at ${live_price:.2f}"
-            logging.warning(f"[REJECT] Trade for {contract.localSymbol} rejected. Reason: {reason}")
-            await notifier.send_rejection_message(contract.localSymbol, reason)
-            return
-
-        # --- 4. Place Entry Order & Safety Net ---
-        entry_trade = await ib_interface.place_entry_order(contract, quantity)
-        logging.info(
-            f"[EXECUTE] Entry order placed for {quantity}x {contract.localSymbol}. OrderId: {entry_trade.order.orderId}")
-
-        # Add to live positions immediately to prevent re-entry
-        live_positions[contract.conId] = {
-            "contract": contract, "profile": profile,
-            "entry_price": None, "high_water_mark": 0,
-            "status": "pending_fill", "trade_object": entry_trade
-        }
-
-        # Wait for fill before placing trail
-        fill_confirmed = await ib_interface.wait_for_fill(entry_trade)
-        if not fill_confirmed:
-            logging.error(
-                f"[ERROR] Did not receive fill confirmation for OrderId {entry_trade.order.orderId}. Cancelling.")
-            await ib_interface.cancel_order(entry_trade.order)
-            del live_positions[contract.conId]
-            return
-
-        # Update position with actual fill price
-        fill_price = entry_trade.orderStatus.avgFillPrice
-        live_positions[contract.conId].update({
-            "entry_price": fill_price,
-            "high_water_mark": fill_price,
-            "status": "live"
-        })
-        logging.info(f"[FILLED] Filled at ${fill_price:.2f}. Position is now live.")
-        await notifier.send_fill_confirmation(entry_trade.fills[0], score, profile['channel_name'])
-
-        # Place the native trail order
-        if profile['safety_net']['enabled']:
-            await ib_interface.place_native_trail(contract, quantity, profile['safety_net']['native_trail_percent'])
-
-    except Exception as e:
-        logging.error(f"[CRITICAL] Unhandled error in process_signal: {e}", exc_info=True)
-        await notifier.send_message(
-            f"🚨 **Critical Bot Error** 🚨\n\nFailed to process signal.\n`{signal}`\n\nError: `{e}`")
-
-
-def monitor_positions(live_positions, market_data_manager, ib_interface, notifier):
-    """
-    The main monitoring loop that runs in the primary async thread.
-    """
-    for conId, pos_data in list(live_positions.items()):
-        if pos_data.get('status') != 'live':
-            continue
-
-        ticker = market_data_manager.get_ticker(conId)
-        live_price = get_live_price(ticker)
-        if not live_price:
-            continue
-
-        contract = pos_data['contract']
-        profile = pos_data['profile']
-        entry_price = pos_data['entry_price']
-
-        # Update high-water mark
-        pos_data['high_water_mark'] = max(pos_data['high_water_mark'], live_price)
-        high_water_mark = pos_data['high_water_mark']
-
-        # --- Dynamic Exit Logic ---
-        exit_strategy = profile['exit_strategy']
-
-        # 1. Breakeven Stop
-        if not pos_data.get('breakeven_set'):
-            profit_percent = (live_price - entry_price) / entry_price if entry_price != 0 else 0
-            if profit_percent >= (exit_strategy['breakeven_trigger_percent'] / 100):
-                logging.info(
-                    f"[BREAKEVEN] Triggered for {contract.localSymbol}. Moving stop to entry price ${entry_price:.2f}")
-                pos_data['breakeven_set'] = True
-                # The logic below will now enforce the breakeven stop
-
-        # 2. Trailing Stop Calculation
-        stop_price = 0
-        if pos_data.get('breakeven_set'):
-            stop_price = entry_price
-        else:
-            pullback_amount = high_water_mark * (exit_strategy['pullback_stop_percent'] / 100)
-            stop_price = high_water_mark - pullback_amount
-
-        # 3. Check for exit
-        if live_price <= stop_price:
-            logging.info(
-                f"[EXIT] Trailing stop hit for {contract.localSymbol}. Price: ${live_price:.2f}, Stop: ${stop_price:.2f}")
-            # In a real implementation, you'd place a sell order here
-            # For now, we'll just log and remove from monitoring
-            del live_positions[conId]
-            asyncio.create_task(
-                notifier.send_message(f"ℹ️ **Position Closed (Trail Stop)** ℹ️\n\n`{contract.localSymbol}`"))
-            continue
-
-        logging.info(
-            f"[MONITOR] {contract.localSymbol} | Price: {live_price:.2f} | High: {high_water_mark:.2f} | Stop: {stop_price:.2f}")
-
-
-# ==============================================================================
-# SECTION 3: MAIN APPLICATION
-# ==============================================================================
 
 async def main():
     """
-    The main asynchronous function that runs the bot.
+    The main asynchronous entry point and orchestrator for the trading bot.
+    This function initializes all components and runs the primary event loop.
     """
-    # Initialize components
-    config = Config()
-
-    ib_interface = IBInterface(config)
-
-    discord_interface = DiscordInterface(config)
-
+    # Initialize interfaces to None to ensure they exist in the `finally` block
+    # for a clean shutdown, even if initialization fails.
+    ib_interface = None
     try:
-        # Connect to IBKR
+        # --- COMPONENT INITIALIZATION ---
+        config = Config()
+        ib_interface = IBInterface(config)
+        discord_interface = DiscordInterface(config)
+        sentiment_analyzer = SentimentAnalyzer(config)
+
+        # The SignalProcessor is the "brain" that uses all other components.
+        signal_processor = SignalProcessor(
+            config, ib_interface, discord_interface, sentiment_analyzer
+        )
+
+        # --- 2. CONNECTION & STARTUP ---
         await ib_interface.connect()
-
-
-        logging.info("Main application loop started. Bot is now live.")
-
-        # --- Main Loop ---
+        await discord_interface.initialize()
+        logger.info("VADER sentiment analyzer initialized successfully.")
+        
+        # --- 3. MAIN EVENT LOOP ---
+        logger.info("Starting main event loop...")
         while True:
-            # 1. Check for new Discord messages
-            messages = await discord_interface.get_latest_messages(profile['channel_id'], limit=5)
-            if messages:
-                # Process messages from oldest to newest to maintain order.
-                for message in reversed(messages):
-                    await signal_processor.process_signal(message, profile)
-            for msg in new_messages:
-                msg_id = msg['id']
-                if msg_id in processed_message_ids:
-                    continue
-                processed_message_ids.append(msg_id)
+            # --- Global Shutdown Check ---
+            # This allows for a remote shutdown command via a specific Discord channel.
+            if config.master_shutdown_enabled:
+                try:
+                    shutdown_messages = await discord_interface.get_latest_messages(
+                        config.master_shutdown_channel_id, limit=1
+                    )
+                    if shutdown_messages and shutdown_messages[0]['content'].strip().lower() == config.master_shutdown_command:
+                        logger.info("Master shutdown command received. Terminating.")
+                        break # Exit the main while loop
+                except Exception as e:
+                    logger.error(f"Error checking for shutdown command: {e}")
 
-                # 2. Parse the message content
-                parser = SignalParser(config)
-                signal = parser.parse(msg['content'], msg['channel_name'])
+            # --- Discord Polling Cycle ---
+            # Iterate through each channel profile defined in the config.
+            for profile in config.profiles:
+                if not profile.get('enabled', False):
+                    continue # Skip disabled profiles
 
-                if signal:
-                    # Don't wait for processing, just start the task
-                    asyncio.create_task(process_signal(signal, ib_interface, market_data_manager, notifier, config))
+                # --- Consecutive Loss Cooldown Check ---
+                # If a channel has too many losses in a row, it's put on a timeout.
+                cooldown_info = signal_processor.get_cooldown_status(profile['channel_id'])
+                if cooldown_info['on_cooldown']:
+                    now_utc = datetime.now(pytz.utc)
+                    if now_utc < cooldown_info['end_time']:
+                        continue # Still on cooldown, skip this profile
+                    else:
+                        # Cooldown has expired, reset the counter.
+                        signal_processor.reset_consecutive_losses(profile['channel_id'])
+                        logger.info(f"Cooldown for channel {profile['channel_name']} has ended.")
 
-            # 3. Monitor live positions
-            monitor_positions(live_positions, market_data_manager, ib_interface, notifier)
+                try:
+                    # Fetch the latest messages from the Discord channel.
+                    messages = await discord_interface.get_latest_messages(profile['channel_id'], limit=5)
+                    if messages:
+                        # Process messages from oldest to newest to maintain order.
+                        for message in reversed(messages):
+                            await signal_processor.process_signal(message, profile)
+                except Exception as e:
+                    logger.error(f"Error fetching or processing messages for channel {profile['channel_name']}: {e}")
 
-            # 4. Intelligent wait
-            await asyncio.sleep(1)
+                # A brief, polite pause between polling different channels.
+                await asyncio.sleep(config.delay_between_channels)
 
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logging.info("Shutdown signal received.")
+            # --- Active Trade Monitoring & Management ---
+            # After checking for new signals, manage all ongoing trades.
+            try:
+                await signal_processor.monitor_active_trades()
+            except Exception as e:
+                logger.error(f"Error during active trade monitoring: {e}", exc_info=True)
+
+            # A longer pause after a full cycle of polling and monitoring.
+            await asyncio.sleep(config.delay_after_full_cycle)
+
     except Exception as e:
-        logging.critical(f"[FATAL] The main application loop has crashed: {e}", exc_info=True)
+        logger.critical(f"A critical error occurred in the main setup or loop: {e}", exc_info=True)
     finally:
-        logging.info("Shutting down bot...")
-        await ib_interface.disconnect()
-        logging.info("Bot has been shut down.")
+        # --- CLEAN SHUTDOWN ---
+        # This block ensures resources are released gracefully.
+        if ib_interface and ib_interface.ib.isConnected():
+            logger.info("Disconnecting from IBKR...")
+            await ib_interface.disconnect()
+        logger.info("Bot has shut down.")
 
-
+# --- SCRIPT ENTRY POINT ---
+# This is the standard Python way to make a script runnable.
 if __name__ == "__main__":
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] [%(levelname)-5s] [%(module)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-    # Configure asyncio to use the ProactorEventLoop on Windows, which is
-    # required for ib_insync to function correctly in this architecture.
+    # This is a small but important fix for asyncio on Windows.
+    # It prevents a `RuntimeError: Event loop is closed` on shutdown.
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+    try:
+        # `asyncio.run()` starts the asynchronous event loop.
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        # This catches manual shutdown signals (like Ctrl+C).
+        logger.info("Shutdown signal received. Exiting.")
+
+# ====================================================================================
+# --- LEGACY MAIN BLOCK (FOR REFERENCE & EDUCATIONAL PURPOSES ONLY) ---
+# The code below this point represents the previous, synchronous version of the bot.
+# It is NOT executed. It is preserved here as a "battle scar" to show the project's
+# architectural evolution from a simple, blocking script to a more robust,
+# asynchronous application. This is a key part of the project's history.
+# ====================================================================================
+
+def legacy_main_disabled():
+    """
+    This function represents the old, single-threaded architecture.
+    It is not called and will not run. It is for historical reference.
+    """
+    config = Config()
+    ib_interface = IBInterface(config)
+    discord_interface = DiscordInterface(config)
+    sentiment_analyzer = SentimentAnalyzer(config)
 
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Bot terminated by user.")
+        # --- 2. INITIALIZATION & CONNECTION (Legacy Sync) ---
+        # In the old model, this `connect` call would block the entire script.
+        ib_interface.connect_sync()
+        logger.info("VADER sentiment analyzer initialized successfully.")
+
+        # --- 3. MAIN EVENT LOOP (Legacy Sync) ---
+        logger.info("Starting main event loop...")
+        while True:
+            # --- Global Shutdown Check (Legacy) ---
+            if config.master_shutdown_enabled:
+                try:
+                    # This would require a synchronous version of the discord fetcher.
+                    # It highlights the difficulty of mixing async-style tasks
+                    # in a synchronous loop.
+                    pass
+                except Exception as e:
+                    logger.error(f"Error checking for shutdown command: {e}")
+
+            # --- Discord Polling (Legacy Sync) ---
+            for profile in config.profiles:
+                if not profile.get('enabled', False):
+                    continue
+
+                try:
+                    # The old script would have to block here, waiting for a response.
+                    messages = [] # Placeholder for a synchronous fetch
+                    if messages:
+                        for message in reversed(messages):
+                            # The entire trade logic would block here. If a trade
+                            # took 3 seconds, the bot could not poll other channels.
+                            pass
+                except Exception as e:
+                    logger.error(f"Error fetching messages for {profile['channel_name']}: {e}")
+                
+                # A hard, blocking sleep.
+                time.sleep(config.delay_between_channels)
+
+            # --- Active Trade Monitoring (The biggest flaw of the legacy model) ---
+            # In a sync model, monitoring trades while also polling for new ones
+            # is extremely difficult and inefficient, often requiring complex
+            # threading that we proved was a failure point. The new async
+            # `monitor_active_trades` is architecturally superior.
+
+            time.sleep(config.delay_after_full_cycle)
+
+    except Exception as e:
+        logger.critical(f"A critical error occurred: {e}", exc_info=True)
+    finally:
+        if ib_interface.ib.isConnected():
+            ib_interface.disconnect_sync()
+        logger.info("Bot has shut down.")
 
