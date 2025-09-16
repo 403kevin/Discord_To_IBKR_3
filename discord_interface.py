@@ -1,6 +1,6 @@
 import logging
-import discord
 import asyncio
+import discord
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ class DiscordInterface:
     """
     A specialist module responsible for all interactions with the Discord API.
     This class uses the discord.py library in an asynchronous, non-blocking manner.
-    It does NOT use threading or a message queue, adhering to the "Single Operator" model.
+    It adheres to the "Single Operator" model.
     """
 
     def __init__(self, config):
@@ -26,32 +26,37 @@ class DiscordInterface:
         intents = discord.Intents.default()
         intents.messages = True
         intents.message_content = True # Crucial for reading message content
-        
-        # The client is the main connection to Discord.
-        self.client = discord.Client(intents=intents)
+
+        # --- SURGICAL FIX: The "Chrome Browser" Disguise ---
+        # As per the README.md, we must identify as a browser to "fly under the radar"
+        # when using a user token. We achieve this by overriding the default User-Agent.
+        # We pass this into the underlying aiohttp session used by discord.py.
+        connector_args = {
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        }
+        # --- END SURGICAL FIX ---
+
+        # The client is the main connection to Discord. We pass the disguise in here.
+        self.client = discord.Client(intents=intents, connector_args=connector_args)
         self.is_initialized = False
 
     async def initialize(self):
         """
-        Logs the bot into Discord using the correct, non-blocking startup sequence.
+        Logs the bot into Discord. This is the correct, non-racy ignition sequence.
         """
         if self.is_initialized:
             logger.warning("Discord client is already initialized.")
             return
 
         try:
-            # --- SURGICAL FIX: The Correct Ignition Sequence ---
-            # 1. First, we log in. This is an awaitable, so we know it's done.
-            await self.client.login(self.token)
+            # We use a background task to run the client's main loop,
+            # allowing our own main loop in main.py to continue.
+            asyncio.create_task(self.client.start(self.token))
             
-            # 2. Then, we connect in the background.
-            #    We create this as a task because connect() runs forever.
-            asyncio.create_task(self.client.connect())
-            
-            # 3. NOW, we can safely wait for the client to be ready.
-            #    This will no longer cause a race condition.
+            # Wait until the client has successfully connected and is ready.
             await self.client.wait_until_ready()
-            # --- END SURGICAL FIX ---
             
             self.is_initialized = True
             logger.info(f"Discord client initialized successfully. Logged in as {self.client.user}.")
@@ -83,7 +88,7 @@ class DiscordInterface:
                 logger.error(f"Could not find Discord channel with ID: {channel_id}")
                 return []
 
-            # `history()` is an async iterator. We use a list comprehension.
+            # `history()` is an async iterator. We collect its results into a list.
             messages = [message async for message in channel.history(limit=limit)]
 
             # Convert the discord.Message objects into a simpler dictionary format.
