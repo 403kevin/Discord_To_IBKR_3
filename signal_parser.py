@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-
 class SignalParser:
     """
     A specialist module for parsing trading signals from raw text messages.
@@ -25,14 +24,22 @@ class SignalParser:
         return None
 
     def _parse_ticker(self, text):
-        """Finds a potential stock ticker (e.g., AAPL, SPX)."""
-        # A common pattern is an all-caps word of 1-5 letters.
-        match = re.search(r'\b([A-Z]{1,5})\b', text)
-        if match:
-            # Ensure the found "ticker" is not one of our action buzzwords.
-            if match.group(1) not in self.config.buzzwords:
-                return match.group(1)
-        return None
+        """
+        Finds a potential stock ticker by locating all capitalized words and
+        returning the first one that is not an action buzzword.
+        """
+        # This regex finds all words that are composed of 1-5 capital letters.
+        potential_tickers = re.findall(r'\b([A-Z]{1,5})\b', text)
+        if not potential_tickers:
+            return None
+        
+        # Iterate through all potential tickers found.
+        for ticker in potential_tickers:
+            # The first one that is NOT a buzzword is our ticker.
+            if ticker not in self.config.buzzwords:
+                return ticker
+        
+        return None # No valid ticker was found
 
     def _parse_strike_and_type(self, text):
         """Finds the strike price and option type (C or P)."""
@@ -48,6 +55,7 @@ class SignalParser:
         """
         Finds and formats the expiration date.
         Handles MM/DD, MM/DD/YY, and MM/DD/YYYY.
+        Intelligently assumes next year for past dates.
         """
         # This regex is designed to find common date formats.
         match = re.search(r'(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)', text)
@@ -58,14 +66,13 @@ class SignalParser:
         now = datetime.now()
         dt = None
 
-        # Try to parse different date formats.
         try:
             parts = expiry_str.split('/')
-            if len(parts) == 3 and len(parts[2]) == 4:  # MM/DD/YYYY
+            if len(parts) == 3 and len(parts[2]) == 4: # MM/DD/YYYY
                 dt = datetime.strptime(expiry_str, '%m/%d/%Y')
-            elif len(parts) == 3 and len(parts[2]) == 2:  # MM/DD/YY
+            elif len(parts) == 3 and len(parts[2]) == 2: # MM/DD/YY
                 dt = datetime.strptime(expiry_str, '%m/%d/%y')
-            elif len(parts) == 2:  # MM/DD
+            elif len(parts) == 2: # MM/DD
                 dt = datetime.strptime(expiry_str, '%m/%d').replace(year=now.year)
                 # If the parsed date is in the past for this year, assume it's for next year.
                 if dt < now:
@@ -74,14 +81,15 @@ class SignalParser:
                 return None
         except (IndexError, ValueError):
             return None
-
+        
         if dt:
             # Final check: Ensure the expiry date is not a weekend.
-            if dt.weekday() >= 5:  # Saturday or Sunday
+            if dt.weekday() >= 5: # Saturday or Sunday
                 logger.warning(f"Parse failed. Expiry date '{dt.strftime('%Y%m%d')}' is a weekend. Rejecting signal.")
                 return None
             return dt.strftime('%Y%m%d')
         return None
+
 
     def parse_signal_message(self, message_content: str, profile: dict) -> dict or None:
         """
@@ -92,7 +100,7 @@ class SignalParser:
         # --- Rejection Pass ---
         for reject_word in profile.get("reject_if_contains", []):
             if reject_word.upper() in text:
-                return None  # Message contains a forbidden word.
+                return None # Message contains a forbidden word.
 
         # --- Extraction Pass ---
         action = self._parse_action(text)
@@ -110,6 +118,6 @@ class SignalParser:
                 "option_type": option_type,
                 "expiry": expiry
             }
-
+        
         return None
 
