@@ -1,116 +1,116 @@
-# interfaces/discord_interface.py
 import logging
-import requests
-import time
-from threading import Thread, Event
-from datetime import datetime, timezone
-from collections import deque
+import discord
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 class DiscordInterface:
     """
-    The bot's "Ears." This is the definitive, battle-hardened version.
-    It now correctly processes the master shutdown command by checking for
-    the keyword in recent, fresh messages, independent of the last-seen ID.
+    A specialist module responsible for all interactions with the Discord API.
+    This class uses the discord.py library in an asynchronous, non-blocking manner.
+    It does NOT use threading or a message queue, adhering to the "Single Operator" model.
     """
-    def __init__(self, config, message_queue, shutdown_event: Event):
+
+    def __init__(self, config):
+        """
+        Initializes the Discord client.
+        Args:
+            config: The main configuration object.
+        """
         self.config = config
-        self.queue = message_queue
-        self.shutdown_event = shutdown_event
-        self.processed_ids = deque(maxlen=config.processed_message_cache_size)
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": config.discord_user_token,
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        })
-        self._polling_thread = None
-        self._is_polling = False
-        self.last_message_ids = {str(p["channel_id"]): "INIT" for p in config.profiles}
-
-    def _poll_channel(self, profile, is_shutdown_channel=False):
-        """Fetches and filters messages from a single channel."""
-        if is_shutdown_channel:
-            if not self.config.master_shutdown_channel_id or self.config.master_shutdown_channel_id == "YOUR_PRIVATE_DISCORD_CHANNEL_ID":
-                return
-            channel_id = self.config.master_shutdown_channel_id
-        else:
-            channel_id = str(profile["channel_id"])
-
-        url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=5"
+        self.token = self.config.discord_user_token
         
+        # We need to specify which events the bot is interested in.
+        # `intents.messages` is required to read message content.
+        intents = discord.Intents.default()
+        intents.messages = True
+        intents.message_content = True # Crucial for reading message content
+        
+        # The client is the main connection to Discord.
+        self.client = discord.Client(intents=intents)
+        self.is_initialized = False
+
+    async def initialize(self):
+        """
+        Logs the bot into Discord. This is a separate, awaitable method
+        to allow for clean asynchronous startup in main.py.
+        """
+        if self.is_initialized:
+            logger.warning("Discord client is already initialized.")
+            return
+
         try:
-            response = self.session.get(url, timeout=10)
-            if response.status_code != 200: return
-
-            messages = response.json()
-            if not messages: return
-
-            # --- THIS IS THE CRITICAL, DEFINITIVE FIX ---
-            if is_shutdown_channel:
-                # For the shutdown channel, we don't care about the last_id.
-                # We just check the most recent messages for the command.
-                for msg in messages:
-                    msg_time = datetime.fromisoformat(msg['timestamp'].replace("Z", "+00:00"))
-                    age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
-                    
-                    if age_seconds <= self.config.signal_max_age_seconds:
-                        if self.config.master_shutdown_command.lower() in msg['content'].lower():
-                            if msg['id'] not in self.processed_ids:
-                                logging.critical("MASTER SHUTDOWN COMMAND DETECTED. Signaling termination.")
-                                self.shutdown_event.set() # Pull the emergency cord
-                                self.processed_ids.append(msg['id'])
-                                return # Exit immediately
-            else:
-                # For regular signal channels, we use the robust last_id logic.
-                last_id = self.last_message_ids.get(channel_id)
-                if last_id == "INIT":
-                    self.last_message_ids[channel_id] = messages[0]['id']
-                    logging.info(f"Initial poll for channel {channel_id}. Set last message ID to {messages[0]['id']}.")
-                    return
-
-                new_messages = []
-                for msg in reversed(messages):
-                    if msg['id'] > last_id:
-                        new_messages.append(msg)
-
-                if new_messages:
-                    self.last_message_ids[channel_id] = new_messages[-1]['id']
-                    for msg in new_messages:
-                        if msg['id'] in self.processed_ids: continue
-                        
-                        msg_time = datetime.fromisoformat(msg['timestamp'].replace("Z", "+00:00"))
-                        age_seconds = (datetime.now(timezone.utc) - msg_time).total_seconds()
-                        
-                        if age_seconds <= self.config.signal_max_age_seconds:
-                            self.queue.put({"channel_id": msg["channel_id"], "content": msg["content"]})
-                            self.processed_ids.append(msg['id'])
-
-        except requests.RequestException as e:
-            logging.error(f"Network error while polling Discord: {e}")
-
-    def _polling_loop(self):
-        logging.info("Discord polling thread started.")
-        while self._is_polling and not self.shutdown_event.is_set():
-            for profile in self.config.profiles:
-                if profile["enabled"]:
-                    self._poll_channel(profile)
-                    time.sleep(self.config.delay_between_channels)
+            # `start()` is a non-blocking method. We use `login()` and `connect()`
+            # for more control in an async environment, but for a simple poller,
+            # we just need to log in to get the connection ready. A background
+            # task will handle the connection.
+            # We wrap this in a future to ensure it completes before we proceed.
+            asyncio.create_task(self.client.start(self.token))
             
-            if self.config.master_shutdown_enabled:
-                self._poll_channel(None, is_shutdown_channel=True)
+            # Wait until the client has successfully connected and is ready.
+            await self.client.wait_until_ready()
+            
+            self.is_initialized = True
+            logger.info(f"Discord client initialized successfully. Logged in as {self.client.user}.")
+        
+        except discord.errors.LoginFailure as e:
+            logger.critical(f"Discord login failed: Invalid token. Please check your .env file. Error: {e}")
+            raise  # Re-raise the exception to stop the bot's startup
+        except Exception as e:
+            logger.critical(f"An unexpected error occurred during Discord initialization: {e}", exc_info=True)
+            raise
 
-            time.sleep(self.config.delay_after_full_cycle)
-        logging.info("Discord polling thread stopped.")
+    async def get_latest_messages(self, channel_id: str, limit: int = 10) -> list:
+        """
+        Asynchronously fetches the latest messages from a specific Discord channel.
+        Args:
+            channel_id (str): The ID of the channel to fetch messages from.
+            limit (int): The maximum number of messages to retrieve.
+        Returns:
+            A list of message dictionaries, or an empty list if an error occurs.
+        """
+        if not self.is_initialized or self.client.is_closed():
+            logger.error("Discord client is not ready or has been closed. Cannot fetch messages.")
+            return []
 
-    def start_polling(self):
-        if not self._is_polling:
-            self._is_polling = True
-            self._polling_thread = Thread(target=self._polling_loop, name="DiscordPollingThread", daemon=True)
-            self._polling_thread.start()
+        try:
+            # Get the channel object from the client's cache.
+            channel = self.client.get_channel(int(channel_id))
+            if not channel:
+                logger.error(f"Could not find Discord channel with ID: {channel_id}")
+                return []
 
-    def stop_polling(self):
-        logging.info("Stopping Discord polling.")
-        self._is_polling = False
-        if self._polling_thread and self._polling_thread.is_alive():
-            self._polling_thread.join(timeout=10)
+            # `history()` is an async iterator. We collect its results into a list.
+            messages_data = []
+            async for msg in channel.history(limit=limit):
+                messages_data.append(msg)
 
+            # Convert the discord.Message objects into a simpler dictionary format.
+            # This decouples the rest of our application from the discord.py library.
+            processed_messages = []
+            for msg in messages_data:
+                processed_messages.append({
+                    "id": msg.id,
+                    "content": msg.content,
+                    "author": str(msg.author),
+                    "timestamp": msg.created_at
+                })
+            
+            return processed_messages
+
+        except discord.errors.Forbidden:
+            logger.error(f"Permission error: The bot does not have permission to read messages in channel {channel_id}.")
+            return []
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while fetching messages from channel {channel_id}: {e}", exc_info=True)
+            return []
+
+    async def close(self):
+        """
+        Gracefully logs out and closes the connection to Discord.
+        """
+        if self.client and not self.client.is_closed():
+            logger.info("Closing Discord connection...")
+            await self.client.close()
+            logger.info("Discord connection closed.")
