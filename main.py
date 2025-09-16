@@ -1,296 +1,290 @@
 # main.py
+import asyncio
 import logging
-import time
-import queue
-from threading import Lock, Event
-from datetime import datetime, timezone, timedelta
+import sys
+from collections import deque
+from datetime import datetime, timezone
 
-# Import project modules
 from services.config import Config
-from interfaces.ib_interface import IBInterface
-from interfaces.telegram_interface import TelegramInterface
-from interfaces.discord_interface import DiscordInterface
 from services.sentiment_analyzer import SentimentAnalyzer
 from services.market_data_manager import MarketDataManager
-from bot_engine.signal_processor import SignalProcessor
-from bot_engine.trade_executor import TradeExecutor
+from ib_interface import IBInterface
+from signal_parser import SignalParser
+from telegram_notifier import TelegramNotifier
+from discord_interface import DiscordInterface
 
-class MainApp:
+# ==============================================================================
+# SECTION 1: GLOBAL STATE & SETUP
+# ==============================================================================
+
+# In-memory cache to prevent processing the same Discord message ID twice
+processed_message_ids = deque(maxlen=50)
+
+# Dictionary to hold live trade data, managed by the main application loop
+live_positions = {}
+
+
+# ==============================================================================
+# SECTION 2: CORE LOGIC FUNCTIONS
+# ==============================================================================
+
+def get_live_price(ticker):
     """
-    The main application class. This is the definitive "Single Operator" version.
-    It now uses a "Two-Phase" model to safely handle fill events, permanently
-    resolving the 'event loop is already running' error.
+    Safely retrieves the last known price for a contract from the data manager.
+    Prefers 'ask' for entries, falls back to 'last'.
     """
-    def __init__(self):
-        from services.custom_logger import setup_logger
-        setup_logger()
+    if not ticker:
+        return None
+    price = ticker.ask if ticker.ask and ticker.ask > 0 else ticker.last
+    return price if price and price > 0 else None
 
-        self.config = Config()
-        self.message_queue = queue.Queue()
-        self.shutdown_event = Event()
 
-        self.ib_interface = IBInterface(self.config)
-        self.notifier = TelegramNotifier(self.config)
-        self.sentiment_analyzer = SentimentAnalyzer()
-        self.market_data_manager = MarketDataManager(self.ib_interface)
-        
-        self._live_positions = {}
-        self._pm_lock = Lock()
-        
-        self.trade_executor = TradeExecutor(self.ib_interface, self, self.notifier)
-        self.channel_states = self._initialize_channel_states()
-        self.state_lock = Lock()
-        
-        self.signal_processor = SignalProcessor(
-            self.config, self.sentiment_analyzer, self.trade_executor,
-            self.channel_states, self.state_lock
-        )
-        
-        self.discord_interface = DiscordInterface(self.config, self.message_queue, self.shutdown_event)
-        self.is_running = True
-
-    def _initialize_channel_states(self):
-        states = {}
-        for profile in self.config.profiles:
-            channel_id = profile["channel_id"]
-            states[channel_id] = {"consecutive_losses": 0, "cooldown_until": None}
-        return states
-
-    # --- Position Management (formerly PositionMonitor) ---
-    def add_position_to_monitor(self, conId, entry_trade, profile, sentiment_score):
-        with self._pm_lock:
-            if conId in self._live_positions: return
-            logging.info(f"Position for {entry_trade.contract.localSymbol} (conId: {conId}) is now pending setup.")
-            self._live_positions[conId] = {
-                "entry_trade": entry_trade, "profile": profile,
-                "sentiment_score": sentiment_score, "safety_net_settings": profile["safety_net"],
-                "entry_price": None, "entry_timestamp": None,
-                "high_water_mark": 0, "trailing_stop_price": 0,
-                "breakeven_set": False, "status": "pending_fill",
-                "initial_indicators": None, "previous_rsi": None
-            }
-
-    def _process_pending_setups(self):
-        """
-        Phase 2 of the fill process. This is called safely from the main loop.
-        It finds newly filled trades and performs the slow, blocking setup tasks.
-        """
-        with self._pm_lock:
-            pending_setup_ids = [
-                conId for conId, pos_data in self._live_positions.items()
-                if pos_data.get("status") == "filled_pending_setup"
-            ]
-
-        for conId in pending_setup_ids:
-            with self._pm_lock:
-                pos_data = self._live_positions.get(conId)
-                if not pos_data: continue
-                trade = pos_data["entry_trade"]
-            
-            # 1. Get the "Mission Briefing" (Technical Indicators)
-            initial_indicators = None
-            for i in range(3): # Intelligent retry loop
-                logging.info(f"Fetching initial TA indicators for {trade.contract.localSymbol} (Attempt {i+1}/3)...")
-                indicators = self.ib_interface.get_technical_indicators(trade.contract)
-                if indicators:
-                    initial_indicators = indicators
-                    break
-                logging.warning(f"Attempt {i+1} failed to fetch TA data. Retrying in 2 seconds...")
-                time.sleep(2)
-            
-            # 2. Activate full monitoring with the mission briefing
-            self.activate_monitoring(conId, pos_data["entry_price"], initial_indicators)
-            
-            # 3. Place the native trail order safety net
-            safety_net_settings = pos_data.get("safety_net_settings", {})
-            if safety_net_settings.get("enabled"):
-                logging.info("Pausing for 1 second before attaching safety net...")
-                time.sleep(1)
-                logging.info("Placing native safety net trail order...")
-                self.ib_interface.place_native_trail_stop(
-                    trade.contract, trade.order.totalQuantity,
-                    safety_net_settings["native_trail_percent"]
-                )
-                logging.info("Native safety net trail order placed successfully.")
-
-    def activate_monitoring(self, conId, entry_price, initial_indicators):
-        with self._pm_lock:
-            if conId not in self._live_positions: return None
-            pos_data = self._live_positions[conId]
-            pos_data["entry_price"] = entry_price
-            pos_data["high_water_mark"] = entry_price
-            pos_data["entry_timestamp"] = datetime.now(timezone.utc)
-            pos_data["initial_indicators"] = initial_indicators
-            pos_data["status"] = "live"
-            logging.info(f"Monitoring fully activated for {pos_data['entry_trade'].contract.localSymbol} at ${entry_price:.2f}")
-            if initial_indicators:
-                logging.info(f"[MISSION BRIEFING] | Initial ATR: {initial_indicators.get('atr', 'N/A'):.2f}, PSAR: {initial_indicators.get('psar', 'N/A'):.2f}")
-            else:
-                logging.warning(f"No initial indicators provided for {pos_data['entry_trade'].contract.localSymbol}. Dynamic exits will use fallback.")
-            return pos_data
-
-    # ... (get_position_data, remove_position, _monitor_positions_loop, etc. are the same as the last version) ...
-    # ... I have included them here for completeness ...
-
-    def get_position_data(self, conId):
-        with self._pm_lock:
-            return self._live_positions.get(conId)
-
-    def remove_position(self, conId):
-        with self._pm_lock:
-            if conId in self._live_positions:
-                self._live_positions.pop(conId)
-
-    def _monitor_positions_loop(self):
-        with self._pm_lock:
-            active_conIds = list(self._live_positions.keys())
-        for conId in active_conIds:
-            self._check_single_position(conId)
-
-    def _check_single_position(self, conId):
-        with self._pm_lock:
-            pos_data = self._live_positions.get(conId)
-            if not pos_data or pos_data.get("status") != "live": return
-
-        ticker = self.market_data_manager.get_ticker(conId)
-        if not ticker or not ticker.last: return
-
-        current_price = ticker.last
-        pos_data["high_water_mark"] = max(pos_data["high_water_mark"], current_price)
-        exit_strategy = pos_data["profile"]["exit_strategy"]
-        contract_symbol = ticker.contract.localSymbol
-        indicators = pos_data["initial_indicators"]
-        
-        timeout_minutes = exit_strategy["timeout_exit_minutes"]
-        time_in_trade = (datetime.now(timezone.utc) - pos_data["entry_timestamp"]).total_seconds() / 60
-        if time_in_trade > timeout_minutes:
-            self._execute_exit(conId, f"Timeout ({timeout_minutes}m)")
-            return
-        
-        momentum_exits = exit_strategy.get("momentum_exits", {})
-        if indicators and momentum_exits.get("psar_enabled"):
-             if indicators['psar'] > current_price:
-                 self._execute_exit(conId, "PSAR Flip")
-                 return
-        
-        new_trailing_stop_price = self._calculate_trailing_stop(current_price, pos_data, indicators)
-        pos_data["trailing_stop_price"] = new_trailing_stop_price
-
-        if current_price <= pos_data["trailing_stop_price"]:
-            self._execute_exit(conId, f"Trailing Stop ({pos_data['trailing_stop_price']:.2f})")
-            return
-        
-        logging.info(f"[MONITOR] {contract_symbol} | Price: {current_price:.2f} | High: {pos_data['high_water_mark']:.2f} | Stop: {pos_data['trailing_stop_price']:.2f}")
-
-    def _calculate_trailing_stop(self, current_price, pos_data, indicators):
-        entry_price = pos_data["entry_price"]
-        high_water_mark = pos_data["high_water_mark"]
-        exit_strategy = pos_data["profile"]["exit_strategy"]
-        contract_symbol = pos_data["entry_trade"].contract.localSymbol
-
-        profit_percent = ((current_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
-        if not pos_data["breakeven_set"] and profit_percent >= exit_strategy["breakeven_trigger_percent"]:
-            logging.info(f"BREAKEVEN TRIGGERED for {contract_symbol}. Stop moved to entry price ${entry_price:.2f}.")
-            pos_data["breakeven_set"] = True
-            return entry_price
-
-        if pos_data["breakeven_set"]:
-            return max(pos_data.get("trailing_stop_price", 0), entry_price)
-
-        trail_method = exit_strategy["trail_method"]
-        if trail_method == "pullback_percent":
-            pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["pullback_percent"] / 100)
-            return high_water_mark - pullback_amount
-        
-        elif trail_method == "atr":
-            if indicators and 'atr' in indicators:
-                atr_val = indicators['atr']
-                atr_mult = exit_strategy["trail_settings"]["atr_multiplier"]
-                pullback_amount = atr_val * atr_mult
-                logging.info(f"[ATR CALC] {contract_symbol} | ATR: {atr_val:.2f} * {atr_mult}x => Pullback: ${pullback_amount:.2f}")
-                return high_water_mark - pullback_amount
-            else:
-                logging.warning(f"ATR data not available for {contract_symbol}. Using fallback percentage.")
-                pullback_amount = high_water_mark * (exit_strategy["trail_settings"]["pullback_percent"] / 100)
-                return high_water_mark - pullback_amount
+def calculate_trade_quantity(live_price, profile):
+    """
+    Calculates the number of contracts to trade based on capital allocation.
+    """
+    funds = profile['trading']['funds_allocation']
+    cost_per_contract = live_price * 100
+    if cost_per_contract == 0:
         return 0
+    quantity = int(funds / cost_per_contract)
+    logging.info(
+        f"[SIZER] Funds: ${funds}, Price: ${live_price:.2f}, Cost/Contract: ${cost_per_contract:.2f} => Quantity: {quantity}")
+    return quantity
 
-    def _execute_exit(self, conId, reason):
-        with self._pm_lock:
-            pos_data = self._live_positions.get(conId)
-            if not pos_data or pos_data["status"] != "live": return
-            pos_data["status"] = "exit_sent"
-        
-        contract = pos_data["entry_trade"].contract
-        quantity = pos_data["entry_trade"].order.totalQuantity
-        logging.info(f"Executing market close for {contract.localSymbol} (Reason: {reason}).")
-        self.ib_interface.close_position(contract, quantity)
 
-    def _handle_fill_event(self, trade, fill):
-        """
-        Phase 1 of the fill process. This is the fast, non-blocking receiver.
-        Its ONLY job is to update the status and hand off to the main loop.
-        """
-        conId = fill.contract.conId
-        side = fill.execution.side
-        
-        if side == 'BOT':
-            with self._pm_lock:
-                pos_data = self._live_positions.get(conId)
-                if pos_data and pos_data.get("status") == "pending_fill":
-                    pos_data["status"] = "filled_pending_setup"
-                    pos_data["entry_price"] = fill.execution.price # Store the price now
-                    logging.info(f"Fill received for {fill.contract.localSymbol}. Status set to pending_setup.")
-                    self.notifier.send_fill_confirmation(fill, pos_data.get("sentiment_score", 0.0), pos_data["profile"]["channel_name"])
-                    self.market_data_manager.subscribe_to_contract(trade.contract)
+async def process_signal(signal, ib_interface, market_data_manager, notifier, config):
+    """
+    Main pipeline for processing a validated trading signal.
+    """
+    try:
+        logging.info(f"[PROCESS] Processing signal: {signal}")
+        profile = next((p for p in config.profiles if p['channel_name'] == signal['source_channel']), None)
+        if not profile:
+            logging.warning(f"[REJECT] No profile found for channel: {signal['source_channel']}")
+            return
 
-        elif side == 'SLD':
-            self._process_exit_fill(fill)
+        # --- 1. Get Contract ---
+        contract = await ib_interface.get_option_contract(signal)
+        if not contract:
+            raise ValueError("Failed to qualify contract from signal.")
 
-    def _process_exit_fill(self, fill):
-        # ... (This logic is the same) ...
-        pass
+        # --- Prevent Re-entry ---
+        if contract.conId in live_positions:
+            logging.warning(f"[REJECT] Signal for an already live position: {contract.localSymbol}. Ignoring.")
+            return
 
-    def run(self):
-        self.is_running = True
-        try:
-            self.ib_interface.connect()
-            self.ib_interface.on_fill_callback = self._handle_fill_event
-            self.discord_interface.start_polling()
+        # --- 2. Sentiment Analysis ---
+        score = 'N/A'  # Default score
+        if profile['sentiment_filter']['enabled']:
+            headlines = await ib_interface.get_news_headlines(contract.symbol)
+            sentiment_analyzer = SentimentAnalyzer()
+            score = sentiment_analyzer.analyze_sentiment(headlines)
 
-            logging.info("Main application loop started. Bot is now live.")
-            while self.is_running and not self.shutdown_event.is_set():
-                self.ib_interface.ib.sleep(1) # The intelligent, active wait
-                
-                # --- NEW: Process pending setups safely in the main loop ---
-                self._process_pending_setups()
+            threshold = profile['sentiment_filter']['sentiment_threshold']
+            is_call = signal['right'] == 'C'
 
-                try:
-                    message_data = self.message_queue.get_nowait()
-                    self.signal_processor.process_message(message_data)
-                except queue.Empty:
-                    pass
-                
-                self._monitor_positions_loop()
+            if (is_call and score < threshold) or (not is_call and score > -threshold):
+                reason = f"Sentiment score {score:.2f} failed threshold {threshold} for a {signal['right']}"
+                logging.warning(f"[VETO] Trade for {contract.localSymbol} vetoed. Reason: {reason}")
+                await notifier.send_veto_message(signal, profile, reason, score)
+                return
 
-                if self.config.oversold_monitor_enabled:
-                    # ... (Oversold logic is the same) ...
-                    pass
-                            
-        except KeyboardInterrupt:
-            logging.info("Shutdown signal received.")
-        finally:
-            self.stop()
+        # --- 3. Pre-Trade Checks & Sizing ---
+        await market_data_manager.subscribe_to_contract(contract)
+        await asyncio.sleep(2)  # Allow a moment for the price to stream
+        ticker = market_data_manager.get_ticker(contract.conId)
+        live_price = get_live_price(ticker)
 
-    def stop(self):
-        if not self.is_running: return
-        self.is_running = False
-        self.shutdown_event.set()
+        if not live_price:
+            raise ValueError("Could not fetch a valid live price for sizing.")
+
+        if not (profile['trading']['min_price'] <= live_price <= profile['trading']['max_price']):
+            reason = f"Live price ${live_price:.2f} is outside the allowed range (${profile['trading']['min_price']:.2f} - ${profile['trading']['max_price']:.2f})"
+            logging.warning(f"[REJECT] Trade for {contract.localSymbol} rejected. Reason: {reason}")
+            await notifier.send_rejection_message(contract.localSymbol, reason)
+            return
+
+        quantity = calculate_trade_quantity(live_price, profile)
+        if quantity == 0:
+            reason = f"Allocated funds not sufficient to buy 1 contract at ${live_price:.2f}"
+            logging.warning(f"[REJECT] Trade for {contract.localSymbol} rejected. Reason: {reason}")
+            await notifier.send_rejection_message(contract.localSymbol, reason)
+            return
+
+        # --- 4. Place Entry Order & Safety Net ---
+        entry_trade = await ib_interface.place_entry_order(contract, quantity)
+        logging.info(
+            f"[EXECUTE] Entry order placed for {quantity}x {contract.localSymbol}. OrderId: {entry_trade.order.orderId}")
+
+        # Add to live positions immediately to prevent re-entry
+        live_positions[contract.conId] = {
+            "contract": contract, "profile": profile,
+            "entry_price": None, "high_water_mark": 0,
+            "status": "pending_fill", "trade_object": entry_trade
+        }
+
+        # Wait for fill before placing trail
+        fill_confirmed = await ib_interface.wait_for_fill(entry_trade)
+        if not fill_confirmed:
+            logging.error(
+                f"[ERROR] Did not receive fill confirmation for OrderId {entry_trade.order.orderId}. Cancelling.")
+            await ib_interface.cancel_order(entry_trade.order)
+            del live_positions[contract.conId]
+            return
+
+        # Update position with actual fill price
+        fill_price = entry_trade.orderStatus.avgFillPrice
+        live_positions[contract.conId].update({
+            "entry_price": fill_price,
+            "high_water_mark": fill_price,
+            "status": "live"
+        })
+        logging.info(f"[FILLED] Filled at ${fill_price:.2f}. Position is now live.")
+        await notifier.send_fill_confirmation(entry_trade.fills[0], score, profile['channel_name'])
+
+        # Place the native trail order
+        if profile['safety_net']['enabled']:
+            await ib_interface.place_native_trail(contract, quantity, profile['safety_net']['native_trail_percent'])
+
+    except Exception as e:
+        logging.error(f"[CRITICAL] Unhandled error in process_signal: {e}", exc_info=True)
+        await notifier.send_message(
+            f"🚨 **Critical Bot Error** 🚨\n\nFailed to process signal.\n`{signal}`\n\nError: `{e}`")
+
+
+def monitor_positions(live_positions, market_data_manager, ib_interface, notifier):
+    """
+    The main monitoring loop that runs in the primary async thread.
+    """
+    for conId, pos_data in list(live_positions.items()):
+        if pos_data.get('status') != 'live':
+            continue
+
+        ticker = market_data_manager.get_ticker(conId)
+        live_price = get_live_price(ticker)
+        if not live_price:
+            continue
+
+        contract = pos_data['contract']
+        profile = pos_data['profile']
+        entry_price = pos_data['entry_price']
+
+        # Update high-water mark
+        pos_data['high_water_mark'] = max(pos_data['high_water_mark'], live_price)
+        high_water_mark = pos_data['high_water_mark']
+
+        # --- Dynamic Exit Logic ---
+        exit_strategy = profile['exit_strategy']
+
+        # 1. Breakeven Stop
+        if not pos_data.get('breakeven_set'):
+            profit_percent = (live_price - entry_price) / entry_price if entry_price != 0 else 0
+            if profit_percent >= (exit_strategy['breakeven_trigger_percent'] / 100):
+                logging.info(
+                    f"[BREAKEVEN] Triggered for {contract.localSymbol}. Moving stop to entry price ${entry_price:.2f}")
+                pos_data['breakeven_set'] = True
+                # The logic below will now enforce the breakeven stop
+
+        # 2. Trailing Stop Calculation
+        stop_price = 0
+        if pos_data.get('breakeven_set'):
+            stop_price = entry_price
+        else:
+            pullback_amount = high_water_mark * (exit_strategy['pullback_stop_percent'] / 100)
+            stop_price = high_water_mark - pullback_amount
+
+        # 3. Check for exit
+        if live_price <= stop_price:
+            logging.info(
+                f"[EXIT] Trailing stop hit for {contract.localSymbol}. Price: ${live_price:.2f}, Stop: ${stop_price:.2f}")
+            # In a real implementation, you'd place a sell order here
+            # For now, we'll just log and remove from monitoring
+            del live_positions[conId]
+            asyncio.create_task(
+                notifier.send_message(f"ℹ️ **Position Closed (Trail Stop)** ℹ️\n\n`{contract.localSymbol}`"))
+            continue
+
+        logging.info(
+            f"[MONITOR] {contract.localSymbol} | Price: {live_price:.2f} | High: {high_water_mark:.2f} | Stop: {stop_price:.2f}")
+
+
+# ==============================================================================
+# SECTION 3: MAIN APPLICATION
+# ==============================================================================
+
+async def main():
+    """
+    The main asynchronous function that runs the bot.
+    """
+    # Initialize components
+    config = Config()
+    notifier = TelegramNotifier(config)
+
+    ib_interface = IBInterface(config, notifier)
+    market_data_manager = MarketDataManager(ib_interface)
+
+    discord_interface = DiscordInterface(config)
+
+    try:
+        # Connect to IBKR
+        await ib_interface.connect()
+
+        # Set the market data manager's price update handler
+        ib_interface.ib.pendingTickersEvent += market_data_manager.on_price_update
+
+        logging.info("Main application loop started. Bot is now live.")
+
+        # --- Main Loop ---
+        while True:
+            # 1. Check for new Discord messages
+            new_messages = await discord_interface.poll_new_messages()
+            for msg in new_messages:
+                msg_id = msg['id']
+                if msg_id in processed_message_ids:
+                    continue
+                processed_message_ids.append(msg_id)
+
+                # 2. Parse the message content
+                parser = SignalParser(config)
+                signal = parser.parse(msg['content'], msg['channel_name'])
+
+                if signal:
+                    # Don't wait for processing, just start the task
+                    asyncio.create_task(process_signal(signal, ib_interface, market_data_manager, notifier, config))
+
+            # 3. Monitor live positions
+            monitor_positions(live_positions, market_data_manager, ib_interface, notifier)
+
+            # 4. Intelligent wait
+            await asyncio.sleep(1)
+
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logging.info("Shutdown signal received.")
+    except Exception as e:
+        logging.critical(f"[FATAL] The main application loop has crashed: {e}", exc_info=True)
+        await notifier.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
+    finally:
         logging.info("Shutting down bot...")
-        self.discord_interface.stop_polling()
-        self.ib_interface.disconnect()
+        await ib_interface.disconnect()
         logging.info("Bot has been shut down.")
 
+
 if __name__ == "__main__":
-    app = MainApp()
-    app.run()
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] [%(levelname)-5s] [%(module)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Configure asyncio to use the ProactorEventLoop on Windows, which is
+    # required for ib_insync to function correctly in this architecture.
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot terminated by user.")
+
