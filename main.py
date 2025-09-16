@@ -1,17 +1,16 @@
-# main.py
-import asyncio
 import logging
-import sys
+import asyncio
+from datetime import datetime, time as dt_time
+import pytz
 from collections import deque
-from datetime import datetime, timezone
 
+# --- MODULE IMPORTS ---
+# These are the specialist modules that perform specific jobs.
 from services.config import Config
-from services.sentiment_analyzer import SentimentAnalyzer
-from services.market_data_manager import MarketDataManager
 from interfaces.ib_interface import IBInterface
-from signal_parser import SignalParser
-from telegram_notifier import TelegramNotifier
-from discord_interface import DiscordInterface
+from interfaces.discord_interface import DiscordInterface
+from services.sentiment_analyzer import SentimentAnalyzer
+from bot_engine.signal_processor import SignalProcessor
 
 # ==============================================================================
 # SECTION 1: GLOBAL STATE & SETUP
