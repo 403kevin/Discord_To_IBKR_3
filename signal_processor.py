@@ -1,7 +1,7 @@
 import logging
 import asyncio
+import uuid
 from datetime import datetime, timezone, timedelta
-from collections import deque
 from ib_insync import Option, MarketOrder, Order
 from services.signal_parser import SignalParser
 
@@ -23,79 +23,137 @@ class SignalProcessor:
         self.discord_interface = discord_interface
         self.sentiment_analyzer = sentiment_analyzer
         
-        # --- SURGICAL ADDITION: Cooldown Module State ---
-        # This dictionary will store the state for the consecutive loss monitor.
-        # Key: channel_id, Value: {'consecutive_losses': int, 'on_cooldown': bool, 'end_time': datetime}
         self._channel_states = {}
-        # --- END SURGICAL ADDITION ---
-
-        # In-memory storage for active trades and processed message IDs.
         self.active_trades = {}
         self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
 
-    # --- SURGICAL ADDITION: Cooldown Module Methods ---
     def get_cooldown_status(self, channel_id):
-        """
-        Checks the cooldown status for a given channel.
-        """
-        return self._channel_states.setdefault(channel_id, {
+        """Checks the cooldown status for a given channel."""
+        return self._channel_states.setdefault(str(channel_id), {
             'consecutive_losses': 0,
             'on_cooldown': False,
             'end_time': None
         })
 
     def reset_consecutive_losses(self, channel_id):
-        """
-        Resets the loss counter and cooldown status for a channel.
-        """
-        state = self.get_cooldown_status(channel_id)
+        """Resets the loss counter and cooldown status for a channel."""
+        state = self.get_cooldown_status(str(channel_id))
         state['consecutive_losses'] = 0
         state['on_cooldown'] = False
         state['end_time'] = None
         logger.info(f"Consecutive loss counter for channel {channel_id} has been reset.")
-    # --- END SURGICAL ADDITION ---
 
     async def process_signal(self, message: dict, profile: dict):
         """
         The main entry point for processing a single Discord message.
+        This is the complete, battle-hardened ignition system.
         """
         msg_id = message['id']
         if msg_id in self.processed_message_ids:
             return # Skip already processed messages
+        
+        # --- SURGICAL FIX: Put the Bouncer at the Door ---
+        # This is the new gatekeeper logic that enforces the max age rule.
+        message_timestamp = message['timestamp']
+        current_time = datetime.now(timezone.utc)
+        message_age = (current_time - message_timestamp).total_seconds()
+        
+        if message_age > self.config.signal_max_age_seconds:
+            # This signal is too old, reject it immediately.
+            return 
+        # --- END SURGICAL FIX ---
+
+        # If the message is fresh, we can now add it to our memory and process it.
         self.processed_message_ids.append(msg_id)
 
-        # 1. Parse the message using our specialist parser.
         parser = SignalParser(self.config)
         parsed_signal = parser.parse_signal_message(message['content'], profile)
         
         if not parsed_signal:
-            return # The message was not a valid trade signal.
+            return
 
-        # ... (rest of the processing logic will go here)
-        logger.info(f"Successfully processed signal: {parsed_signal}")
-        # In a full implementation, this is where you would create the contract,
-        # perform sentiment analysis, check margin, and place the trade.
+        logger.info(f"Successfully parsed signal: {parsed_signal}")
+
+        # --- SENTIMENT ANALYSIS GATE ---
+        if self.config.sentiment_filter['enabled']:
+            sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
+            if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
+                logger.warning(f"Trade for {parsed_signal['ticker']} halted due to low sentiment score: {sentiment_score}")
+                return
+
+        # --- BUILD THE CONTRACT ---
+        try:
+            contract = Option(
+                symbol=parsed_signal['ticker'],
+                lastTradeDateOrContractMonth=parsed_signal['expiry'],
+                strike=parsed_signal['strike'],
+                right=parsed_signal['option_type'],
+                exchange='SMART',
+                currency='USD'
+            )
+            await self.ib_interface.ib.qualifyContractsAsync(contract)
+        except Exception as e:
+            logger.error(f"Contract qualification failed for {parsed_signal}: {e}")
+            return
+
+        # --- CALCULATE TRADE SIZE ---
+        # NOTE: This is a simplified sizing model. A real-world bot would need
+        # to fetch the live price to calculate the exact number of contracts.
+        # For now, we will assume a simple quantity for demonstration.
+        quantity = 1 # Placeholder quantity
+
+        # --- BUILD THE ORDER ---
+        order = MarketOrder(
+            action=parsed_signal['action'].upper(), # Ensure action is uppercase
+            totalQuantity=quantity
+        )
+
+        # --- PLACE THE TRADE ---
+        try:
+            trade = await self.ib_interface.place_order(contract, order)
+            if trade:
+                trade_id = str(uuid.uuid4())
+                self.active_trades[trade_id] = {
+                    "trade_obj": trade,
+                    "entry_time": datetime.now(timezone.utc),
+                    "profile": profile
+                }
+                logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
+            else:
+                logger.warning(f"Trade for {parsed_signal['ticker']} was not placed (likely due to an existing open order).")
+
+        except Exception as e:
+            logger.error(f"Failed to place trade for {parsed_signal['ticker']}: {e}")
+
 
     async def monitor_active_trades(self):
         """
-        This method will be responsible for managing all ongoing trades,
-        checking for exit conditions (stop loss, take profit, timeout),
-        and updating the internal state. In a real implementation, this
-        would be a complex piece of logic.
+        This method will be responsible for managing all ongoing trades.
         """
-        # Placeholder for the trade monitoring logic.
-        # It would iterate through self.active_trades.
-        # When a trade closes with a loss, it would increment the counter:
-        #
-        # state = self.get_cooldown_status(channel_id)
-        # state['consecutive_losses'] += 1
-        # if state['consecutive_losses'] >= max_losses:
-        #     state['on_cooldown'] = True
-        #     state['end_time'] = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
-        #     logger.warning(f"Channel {channel_id} placed on cooldown.")
-        #
-        # When a trade closes with a profit, it would call:
-        # self.reset_consecutive_losses(channel_id)
+        if not self.active_trades:
+            return
+
+        # Create a copy of the keys to iterate over, as the dictionary may change size.
+        trade_ids = list(self.active_trades.keys())
         
+        for trade_id in trade_ids:
+            trade_info = self.active_trades.get(trade_id)
+            if not trade_info:
+                continue
+            
+            trade = trade_info['trade_obj']
+            
+            # Check the status of the order
+            if trade.orderStatus.status == 'Filled':
+                logger.info(f"Trade {trade_id} ({trade.contract.localSymbol}) has been filled.")
+                # Once filled, a real bot would attach a stop loss, native trail, etc.
+                # It would then be managed by a different part of the monitoring logic.
+                # For now, we will just remove it from active *entry* monitoring.
+                del self.active_trades[trade_id]
+            
+            elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
+                logger.warning(f"Trade {trade_id} ({trade.contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
+                del self.active_trades[trade_id]
+
         await asyncio.sleep(0.1) # Non-blocking sleep
 
