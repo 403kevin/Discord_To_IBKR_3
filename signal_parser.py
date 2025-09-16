@@ -1,154 +1,115 @@
 import logging
 import re
-from services.config import Config
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
 
 class SignalParser:
     """
-    A specialist class for parsing trading signals from Discord messages.
-    It uses a multi-pass approach to handle various signal formats.
+    A specialist module for parsing trading signals from raw text messages.
+    This is a battle-hardened, multi-pass parser designed to be flexible.
     """
 
-    def __init__(self, config: Config):
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, config):
         self.config = config
 
-    def parse_signal_message(self, message_content, profile):
+    def _parse_action(self, text):
+        """Finds the action (BUY or SELL) based on buzzwords."""
+        for word in self.config.buzzwords_buy:
+            if word in text:
+                return "BUY"
+        for word in self.config.buzzwords_sell:
+            if word in text:
+                return "SELL"
+        return None
+
+    def _parse_ticker(self, text):
+        """Finds a potential stock ticker (e.g., AAPL, SPX)."""
+        # A common pattern is an all-caps word of 1-5 letters.
+        match = re.search(r'\b([A-Z]{1,5})\b', text)
+        if match:
+            # Ensure the found "ticker" is not one of our action buzzwords.
+            if match.group(1) not in self.config.buzzwords:
+                return match.group(1)
+        return None
+
+    def _parse_strike_and_type(self, text):
+        """Finds the strike price and option type (C or P)."""
+        # Looks for a number followed by C or P (e.g., 450C, 120.5P)
+        match = re.search(r'(\d+(?:\.\d+)?)\s*([CP])\b', text, re.IGNORECASE)
+        if match:
+            strike = float(match.group(1))
+            option_type = match.group(2).upper()
+            return strike, option_type
+        return None, None
+
+    def _parse_expiry(self, text):
         """
-        Parses a message content based on a given profile.
-        This is the primary entry point for this class.
+        Finds and formats the expiration date.
+        Handles MM/DD, MM/DD/YY, and MM/DD/YYYY.
         """
-        # --- Pre-computation for ambiguous expiry ---
-        today = datetime.now()
-        
-        # Check for rejection keywords first
-        if any(keyword.lower() in message_content.lower() for keyword in profile.get('reject_if_contains', [])):
-            self.logger.info(f"Message rejected due to keyword filter: '{message_content}'")
+        # This regex is designed to find common date formats.
+        match = re.search(r'(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)', text)
+        if not match:
             return None
 
-        # --- First Pass: Standard Parser (Action-Ticker-Strike-Expiry) ---
-        # Example: BTO SPX 5200C 06/21
-        # Example: SELL NVDA 120P 6/21
-        pattern = re.compile(
-            r'\b(' + '|'.join(self.config.buzzwords) + r')\b'  # Action (BTO, STC, etc.)
-            r'\s+([A-Z]{1,5})'                            # Ticker (1-5 capital letters)
-            r'\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])'         # Strike and Type (e.g., 5200C, 120.5P)
-            r'\s+(\d{1,2}/\d{1,2})',                       # Expiry (e.g., 06/21, 6/21)
-            re.IGNORECASE
-        )
-        
-        match = pattern.search(message_content)
+        expiry_str = match.group(1).replace('-', '/')
+        now = datetime.now()
+        dt = None
 
-        if match:
-            action, ticker, strike, option_type, expiry_raw = match.groups()
-            
-            # --- Date Processing ---
-            month, day = map(int, expiry_raw.split('/'))
-            year = today.year
-            # Handle year rollover
-            if month < today.month or (month == today.month and day < today.day):
-                year += 1
-            expiry_str = f"{year}{month:02d}{day:02d}"
-
-            # --- SURGICAL FIX: Validate the extracted ticker ---
-            # Check if the extracted "ticker" is actually a buzzword.
-            if ticker.upper() in self.config.buzzwords:
-                self.logger.warning(f"Parse failed. Ticker '{ticker}' is a buzzword. Rejecting signal.")
-                return None
-            # --- END SURGICAL FIX ---
-            
-            # --- SURGICAL FIX: Validate the expiry date ---
-            try:
-                expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
-                # Monday is 0 and Sunday is 6. We reject Saturdays (5) and Sundays (6).
-                if expiry_dt.weekday() >= 5:
-                    self.logger.warning(f"Parse failed. Expiry date '{expiry_str}' is a weekend. Rejecting signal.")
-                    return None
+        # Try to parse different date formats.
+        try:
+            if len(expiry_str.split('/')[2]) == 4:  # MM/DD/YYYY
+                dt = datetime.strptime(expiry_str, '%m/%d/%Y')
+            elif len(expiry_str.split('/')[2]) == 2:  # MM/DD/YY
+                dt = datetime.strptime(expiry_str, '%m/%d/%y')
+        except (IndexError, ValueError):
+            try:  # MM/DD
+                dt = datetime.strptime(expiry_str, '%m/%d').replace(year=now.year)
+                # --- SURGICAL UPGRADE: Intelligent Year Calculation ---
+                # If the parsed date is in the past for this year, assume it's for next year.
+                # This prevents old signals from being misinterpreted.
+                if dt < now:
+                    dt = dt.replace(year=now.year + 1)
+                # --- END SURGICAL UPGRADE ---
             except ValueError:
-                self.logger.error(f"Parse failed. Invalid date format for expiry: '{expiry_str}'")
                 return None
-            # --- END SURGICAL FIX ---
 
+        if dt:
+            # Final check: Ensure the expiry date is not a weekend.
+            if dt.weekday() >= 5:  # Saturday or Sunday
+                logger.warning(f"Parse failed. Expiry date '{dt.strftime('%Y%m%d')}' is a weekend. Rejecting signal.")
+                return None
+            return dt.strftime('%Y%m%d')
+        return None
+
+    def parse_signal_message(self, message_content: str, profile: dict) -> dict or None:
+        """
+        The main parsing method. It orchestrates the other parsing functions.
+        """
+        text = message_content.upper()
+
+        # --- Rejection Pass ---
+        for reject_word in profile.get("reject_if_contains", []):
+            if reject_word.upper() in text:
+                return None  # Message contains a forbidden word.
+
+        # --- Extraction Pass ---
+        action = self._parse_action(text)
+        ticker = self._parse_ticker(text)
+        strike, option_type = self._parse_strike_and_type(text)
+        expiry = self._parse_expiry(text)
+
+        # --- Validation Pass ---
+        # A valid signal must have all its core components.
+        if all([action, ticker, strike, option_type, expiry]):
             return {
-                "action": "BUY" if action.upper() in self.config.buzzwords_buy else "SELL",
-                "ticker": ticker.upper(),
-                "strike": float(strike),
-                "option_type": option_type.upper(),
-                "expiry": expiry_str
+                "action": action,
+                "ticker": ticker,
+                "strike": strike,
+                "option_type": option_type,
+                "expiry": expiry
             }
 
-        # --- Second Pass: Ambiguous Signal (Ticker-Strike-Expiry only) ---
-        # This handles signals where the action (BTO/STC) is implied.
-        if profile.get('assume_buy_on_ambiguous', False):
-            pattern_ambiguous = re.compile(
-                r'([A-Z]{1,5})'                               # Ticker
-                r'\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])'          # Strike and Type
-                r'\s+(\d{1,2}/\d{1,2})',                        # Expiry
-                re.IGNORECASE
-            )
-            match_ambiguous = pattern_ambiguous.search(message_content)
-            if match_ambiguous:
-                ticker, strike, option_type, expiry_raw = match_ambiguous.groups()
-                
-                # --- Date Processing ---
-                month, day = map(int, expiry_raw.split('/'))
-                year = today.year
-                if month < today.month or (month == today.month and day < today.day):
-                    year += 1
-                expiry_str = f"{year}{month:02d}{day:02d}"
-
-                # --- SURGICAL FIX (Duplicated for this path): Validate Ticker ---
-                if ticker.upper() in self.config.buzzwords:
-                    self.logger.warning(f"Ambiguous parse failed. Ticker '{ticker}' is a buzzword.")
-                    return None
-                # --- END SURGICAL FIX ---
-
-                # --- SURGICAL FIX (Duplicated for this path): Validate Expiry ---
-                try:
-                    expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
-                    if expiry_dt.weekday() >= 5:
-                        self.logger.warning(f"Ambiguous parse failed. Expiry '{expiry_str}' is a weekend.")
-                        return None
-                except ValueError:
-                    self.logger.error(f"Ambiguous parse failed. Invalid date format: '{expiry_str}'")
-                    return None
-                # --- END SURGICAL FIX ---
-
-                return {
-                    "action": "BUY", # Assumption based on profile
-                    "ticker": ticker.upper(),
-                    "strike": float(strike),
-                    "option_type": option_type.upper(),
-                    "expiry": expiry_str
-                }
-
-        # --- Third Pass: Ambiguous Expiry (e.g., "SPX 0DTE", "NVDA weekly") ---
-        if profile.get('ambiguous_expiry_enabled', False):
-            # This logic can be complex. For now, we'll handle simple cases.
-            # Example: "0DTE" means "zero days to expiry"
-            if "0dte" in message_content.lower():
-                # Find the parts of the signal around the 0DTE text
-                pattern_0dte = re.compile(
-                    r'([A-Z]{1,5})\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])',
-                    re.IGNORECASE
-                )
-                match_0dte = pattern_0dte.search(message_content)
-                if match_0dte:
-                    ticker, strike, option_type = match_0dte.groups()
-                    
-                    # Set expiry to today's date
-                    expiry_str = today.strftime('%Y%m%d')
-                    
-                    # (No need to validate if today is a weekend, IB will reject it anyway,
-                    # but a robust implementation would check against a market calendar)
-                    
-                    return {
-                        "action": "BUY", # Assuming buy
-                        "ticker": ticker.upper(),
-                        "strike": float(strike),
-                        "option_type": option_type.upper(),
-                        "expiry": expiry_str
-                    }
-
-        self.logger.debug(f"Message did not match any known signal format: '{message_content}'")
         return None
