@@ -234,7 +234,11 @@ async def main():
         # --- Main Loop ---
         while True:
             # 1. Check for new Discord messages
-            new_messages = await discord_interface.poll_new_messages()
+            messages = await discord_interface.get_latest_messages(profile['channel_id'], limit=5)
+            if messages:
+                # Process messages from oldest to newest to maintain order.
+                for message in reversed(messages):
+                    await signal_processor.process_signal(message, profile)
             for msg in new_messages:
                 msg_id = msg['id']
                 if msg_id in processed_message_ids:
