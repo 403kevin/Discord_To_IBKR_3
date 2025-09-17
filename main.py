@@ -157,10 +157,10 @@ async def main():
         if telegram_interface:  # <-- ADD THIS BLOCK
             await telegram_interface.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
 
-if discord_interface:
-    await discord_interface.close()
-if telegram_interface: # <-- ADD THIS BLOCK
-    await telegram_interface.close()
+        if discord_interface:
+            await discord_interface.close()
+        if telegram_interface: # <-- ADD THIS BLOCK
+            await telegram_interface.close()
 
 # --- SCRIPT ENTRY POINT ---
 # This is the standard Python way to make a script runnable.
