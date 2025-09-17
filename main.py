@@ -12,6 +12,7 @@ from interfaces.ib_interface import IBInterface
 from interfaces.discord_interface import DiscordInterface
 from services.sentiment_analyzer import SentimentAnalyzer
 from bot_engine.signal_processor import SignalProcessor
+from interfaces.telegram_interface import TelegramInterface
 
 # --- 1. SETUP ---
 # Custom logger configuration. All events will be recorded in `runtime.log`.
@@ -30,6 +31,7 @@ active_trades = {}
 # This acts as a short-term memory to prevent processing the same signal twice.
 processed_message_ids = deque(maxlen=Config().processed_message_cache_size)
 
+
 # --- UTILITY FUNCTIONS ---
 def is_market_hours(timezone="US/Eastern"):
     """
@@ -42,6 +44,7 @@ def is_market_hours(timezone="US/Eastern"):
     market_close = dt_time(16, 0)
     # Monday is 0, Sunday is 6. We only trade on weekdays.
     return market_open <= now.time() <= market_close and now.weekday() < 5
+
 
 def is_pre_market_hours(config, timezone="US/Eastern"):
     """
@@ -65,25 +68,30 @@ async def main():
     # Initialize interfaces to None to ensure they exist in the `finally` block
     # for a clean shutdown, even if initialization fails.
     ib_interface = None
+    discord_interface = None
+    telegram_interface = None
     try:
         # --- COMPONENT INITIALIZATION ---
         config = Config()
         ib_interface = IBInterface(config)
         discord_interface = DiscordInterface(config)
         sentiment_analyzer = SentimentAnalyzer(config)
+        telegram_interface = TelegramInterface(config)
 
         # The SignalProcessor is the "brain" that uses all other components.
         signal_processor = SignalProcessor(
-            config, ib_interface, discord_interface, sentiment_analyzer
+            config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface
         )
 
         # --- 2. CONNECTION & STARTUP ---
         await ib_interface.connect()
         await discord_interface.initialize()
+        await telegram_interface.initialize()
         logger.info("VADER sentiment analyzer initialized successfully.")
-        
+
         # --- 3. MAIN EVENT LOOP ---
         logger.info("Starting main event loop...")
+        await telegram_interface.send_message("✅ **Bot is online and running.**")
         while True:
             # --- Global Shutdown Check ---
             # This allows for a remote shutdown command via a specific Discord channel.
@@ -92,9 +100,11 @@ async def main():
                     shutdown_messages = await discord_interface.get_latest_messages(
                         config.master_shutdown_channel_id, limit=1
                     )
-                    if shutdown_messages and shutdown_messages[0]['content'].strip().lower() == config.master_shutdown_command:
+                    if shutdown_messages and shutdown_messages[0][
+                        'content'].strip().lower() == config.master_shutdown_command:
                         logger.info("Master shutdown command received. Terminating.")
-                        break # Exit the main while loop
+                        await telegram_interface.send_message("⚠️ **Shutdown command received. Bot is terminating.**")
+                        break  # Exit the main while loop
                 except Exception as e:
                     logger.error(f"Error checking for shutdown command: {e}")
 
@@ -102,7 +112,7 @@ async def main():
             # Iterate through each channel profile defined in the config.
             for profile in config.profiles:
                 if not profile.get('enabled', False):
-                    continue # Skip disabled profiles
+                    continue  # Skip disabled profiles
 
                 # --- Consecutive Loss Cooldown Check ---
                 # If a channel has too many losses in a row, it's put on a timeout.
@@ -110,7 +120,7 @@ async def main():
                 if cooldown_info['on_cooldown']:
                     now_utc = datetime.now(pytz.utc)
                     if now_utc < cooldown_info['end_time']:
-                        continue # Still on cooldown, skip this profile
+                        continue  # Still on cooldown, skip this profile
                     else:
                         # Cooldown has expired, reset the counter.
                         signal_processor.reset_consecutive_losses(profile['channel_id'])
@@ -141,13 +151,16 @@ async def main():
 
     except Exception as e:
         logger.critical(f"A critical error occurred in the main setup or loop: {e}", exc_info=True)
-    finally:
-        # --- CLEAN SHUTDOWN ---
-        # This block ensures resources are released gracefully.
-        if ib_interface and ib_interface.ib.isConnected():
-            logger.info("Disconnecting from IBKR...")
-            await ib_interface.disconnect()
+        if telegram_interface:  # <-- ADD THIS BLOCK
+            await telegram_interface.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
         logger.info("Bot has shut down.")
+        if telegram_interface:  # <-- ADD THIS BLOCK
+            await telegram_interface.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
+
+if discord_interface:
+    await discord_interface.close()
+if telegram_interface: # <-- ADD THIS BLOCK
+    await telegram_interface.close()
 
 # --- SCRIPT ENTRY POINT ---
 # This is the standard Python way to make a script runnable.
@@ -156,13 +169,14 @@ if __name__ == "__main__":
     # It prevents a `RuntimeError: Event loop is closed` on shutdown.
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
+
     try:
         # `asyncio.run()` starts the asynchronous event loop.
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         # This catches manual shutdown signals (like Ctrl+C).
         logger.info("Shutdown signal received. Exiting.")
+
 
 # ====================================================================================
 # --- LEGACY MAIN BLOCK (FOR REFERENCE & EDUCATIONAL PURPOSES ONLY) ---
@@ -208,7 +222,7 @@ def legacy_main_disabled():
 
                 try:
                     # The old script would have to block here, waiting for a response.
-                    messages = [] # Placeholder for a synchronous fetch
+                    messages = []  # Placeholder for a synchronous fetch
                     if messages:
                         for message in reversed(messages):
                             # The entire trade logic would block here. If a trade
@@ -216,7 +230,7 @@ def legacy_main_disabled():
                             pass
                 except Exception as e:
                     logger.error(f"Error fetching messages for {profile['channel_name']}: {e}")
-                
+
                 # A hard, blocking sleep.
                 time.sleep(config.delay_between_channels)
 
