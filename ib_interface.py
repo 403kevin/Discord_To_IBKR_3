@@ -1,13 +1,13 @@
 import logging
 import asyncio
-from ib_insync import IB, Stock, Option, MarketOrder
+from ib_insync import IB, Stock, Option, MarketOrder, Order
 
 logger = logging.getLogger(__name__)
 
 class IBInterface:
     """
     A specialist module responsible for all interactions with the Interactive Brokers API.
-    This is the upgraded version with the EOD safety net feature.
+    This is the final, battle-hardened version with an upgraded guard clause.
     """
 
     def __init__(self, config):
@@ -46,25 +46,30 @@ class IBInterface:
 
     async def place_order(self, contract, order):
         """
-        Places an order with IBKR. Includes a "guard clause" to prevent conflicts.
+        Places an order with IBKR. Includes the upgraded, battle-hardened "guard clause".
         """
-        open_orders = self.ib.openOrders()
-        for open_order in open_orders:
-            if open_order.contract.conId == contract.conId:
-                logger.warning(
-                    f"Order conflict detected for {contract.localSymbol}. An open order already exists. "
-                    f"Canceling new order request to prevent rejection."
-                )
-                return None
+        # --- SURGICAL UPGRADE: The "Master Mission Manifest" ---
+        # Instead of openOrders(), we use trades() for a more robust check.
+        # This guarantees we can always see both the order and the contract.
+        active_trades = self.ib.trades()
+        for trade in active_trades:
+            # We only care about orders that are not yet filled or canceled.
+            if trade.orderStatus.status in ('PendingSubmit', 'Submitted', 'PreSubmitted'):
+                if trade.contract.conId == contract.conId:
+                    logger.warning(
+                        f"Order conflict detected for {contract.localSymbol}. An active, unfilled order already exists. "
+                        f"Canceling new order request to prevent rejection."
+                    )
+                    return None # Abort mission.
+        # --- END SURGICAL UPGRADE ---
         
         logger.info(f"Placing order: {order.action} {order.totalQuantity} {contract.localSymbol} @ {order.orderType}")
-        trade = self.ib.placeOrder(contract, order)
-        return trade
+        new_trade = self.ib.placeOrder(contract, order)
+        return new_trade
         
     async def close_all_positions(self):
         """
-        The EOD "Kill Switch". Fetches all open positions and closes them with market orders.
-        This is a critical, restored safety feature.
+        The EOD "Kill Switch". Fetches all open positions and closes them.
         """
         if not self.ib.isConnected():
             logger.error("Not connected to IBKR. Cannot close positions.")
@@ -80,16 +85,13 @@ class IBInterface:
             contract = position.contract
             quantity = position.position
             
-            # Determine the correct closing action (SELL for long, BUY for short)
             action = 'SELL' if quantity > 0 else 'BUY'
-            
-            # We must use the absolute quantity for the order
             order_quantity = abs(quantity)
 
             order = MarketOrder(action, order_quantity)
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"EOD CLOSE: Submitted {action} order for {order_quantity} of {contract.localSymbol}.")
-            await asyncio.sleep(0.1) # Small delay between closing orders
+            await asyncio.sleep(0.1)
         
         logger.warning("EOD CLOSE COMPLETE.")
 
