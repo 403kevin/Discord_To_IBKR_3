@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 class SignalProcessor:
     """
     The "brain" of the bot. This is the feature-complete version responsible
-    for processing signals and managing the lifecycle of trades with detailed logging.
+    for processing signals and managing the lifecycle of trades with detailed logging
+    and a professional Telegram notification system.
     """
 
     def __init__(self, config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface):
@@ -70,8 +71,27 @@ class SignalProcessor:
             logger.debug(f"Signal IGNORED (ID: {msg_id}): Message content did not parse.")
             return
 
-        logger.info(f"Signal ACCEPTED (ID: {msg_id}): Successfully parsed signal: {parsed_signal}")
-        await self.telegram_interface.send_message(f"✅ **Signal Accepted**\n`{message['content']}`")
+        logger.info(f"Signal ACCEPTED (ID: {msg_id}): Parsed: {parsed_signal}")
+        
+        # --- Build Contract for Veto Message ---
+        # We build a simple contract string for notification purposes first.
+        contract_str = (f"{parsed_signal['ticker']} "
+                        f"{parsed_signal['expiry'][4:6]}/{parsed_signal['expiry'][6:8]}/{parsed_signal['expiry'][2:4]} "
+                        f"{parsed_signal['strike']}{parsed_signal['option_type']}")
+
+        # --- Gatekeeper #4: Sentiment Analysis ---
+        sentiment_score = 'N/A'
+        if self.config.sentiment_filter['enabled']:
+            sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
+            if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
+                reason = f"Sentiment score {sentiment_score} below threshold {self.config.sentiment_filter['sentiment_threshold']}"
+                logger.warning(f"Trade for {contract_str} VETOED: {reason}")
+                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                            f"Source Channel: `{profile['channel_name']}`\n"
+                            f"Contract details: `{contract_str}`\n"
+                            f"Reason: `{reason}`")
+                await self.telegram_interface.send_message(veto_msg)
+                return
 
         # --- Build and Qualify the Contract ---
         try:
@@ -83,22 +103,28 @@ class SignalProcessor:
                 exchange='SMART',
                 currency='USD'
             )
-            # The scout: ask IBKR if this contract is valid.
             qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
             
-            # --- SURGICAL FIX: The "Target Confirmation" Protocol ---
-            # If the broker returns an empty list, the contract is a ghost. Abort mission.
             if not qualified_contracts:
-                logger.error(f"Contract qualification FAILED for {parsed_signal} (ID: {msg_id}): No security definition found.")
-                await self.telegram_interface.send_message(f"❌ **Trade Failed**\n`{parsed_signal['ticker']}`\nReason: Contract does not exist (check expiry/strike).")
+                reason = "Contract does not exist (check expiry/strike)."
+                logger.error(f"Trade for {contract_str} VETOED: {reason}")
+                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                            f"Source Channel: `{profile['channel_name']}`\n"
+                            f"Contract details: `{contract_str}`\n"
+                            f"Reason: `{reason}`")
+                await self.telegram_interface.send_message(veto_msg)
                 return
 
         except Exception as e:
-            logger.error(f"Contract qualification FAILED for {parsed_signal} (ID: {msg_id}): {e}", exc_info=True)
-            await self.telegram_interface.send_message(f"❌ **Trade Failed**\n`{parsed_signal['ticker']}`\nReason: `{e}`")
+            reason = str(e)
+            logger.error(f"Trade for {contract_str} VETOED during qualification: {reason}", exc_info=True)
+            veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                        f"Source Channel: `{profile['channel_name']}`\n"
+                        f"Contract details: `{contract_str}`\n"
+                        f"Reason: `Qualification Error: {reason}`")
+            await self.telegram_interface.send_message(veto_msg)
             return
             
-        # --- If we reach here, the contract is confirmed to be valid. ---
         quantity = 1 # Placeholder for future dynamic sizing logic
         order = MarketOrder(action=parsed_signal['action'].upper(), totalQuantity=quantity)
 
@@ -112,16 +138,15 @@ class SignalProcessor:
                     "entry_time": datetime.now(timezone.utc),
                     "profile": profile,
                     "fill_processed": False,
-                    "entry_price": None
+                    "entry_price": None,
+                    "sentiment_score": sentiment_score
                 }
                 logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
-                await self.telegram_interface.send_message(f"🚀 **Trade Placed**\n`{trade.order.action} {trade.order.totalQuantity} {trade.contract.localSymbol}`")
+                # Note: We do not send a Telegram message here. We wait for the fill confirmation.
             else:
-                logger.warning(f"Trade for {parsed_signal['ticker']} NOT PLACED: Likely due to an existing open order.")
-                await self.telegram_interface.send_message(f"⚠️ **Trade Not Placed**\n`{parsed_signal['ticker']}`\nReason: Conflict with an existing open order.")
+                logger.warning(f"Trade for {contract_str} NOT PLACED: Likely due to a conflict with an existing open order.")
         except Exception as e:
-            logger.error(f"Trade execution FAILED for {parsed_signal} (ID: {msg_id}): {e}", exc_info=True)
-            await self.telegram_interface.send_message(f"❌ **Trade Failed**\n`{parsed_signal['ticker']}`\nReason: `{e}`")
+            logger.error(f"Trade execution FAILED for {contract_str}: {e}", exc_info=True)
 
 
     async def monitor_active_trades(self):
@@ -142,21 +167,44 @@ class SignalProcessor:
             if not trade_info['fill_processed']:
                 if trade.orderStatus.status == 'Filled':
                     trade_info['fill_processed'] = True
-                    trade_info['entry_price'] = trade.orderStatus.avgFillPrice
-                    logger.info(f"Trade {trade_id} ({contract.localSymbol}) has been filled at ${trade_info['entry_price']:.2f}.")
-                    await self.telegram_interface.send_message(f"✅ **Trade Filled**\n`{contract.localSymbol}`\n{trade.order.action} {trade.order.totalQuantity} @ ${trade_info['entry_price']:.2f}")
+                    entry_price = trade.orderStatus.avgFillPrice
+                    trade_info['entry_price'] = entry_price
+                    
+                    # --- Build and Send "Trade Entry Confirmed" Notification ---
+                    profile = trade_info['profile']
+                    exit_strategy = profile['exit_strategy']
+                    momentum_exit = "NONE"
+                    if exit_strategy['momentum_exits']['psar_enabled']: momentum_exit = "PSAR"
+                    elif exit_strategy['momentum_exits']['rsi_hook_enabled']: momentum_exit = "RSI"
+                    
+                    contract_str = f"{contract.symbol} {contract.lastTradeDateOrContractMonth[4:6]}/{contract.lastTradeDateOrContractMonth[6:8]}/{contract.lastTradeDateOrContractMonth[2:4]} {contract.strike}{contract.right}"
+
+                    entry_msg = (f"✅ **Trade Entry Confirmed** ✅\n"
+                                 f"Source Channel: `{profile['channel_name']}`\n"
+                                 f"Contract details: `{contract_str}`\n"
+                                 f"Quantity: `{int(trade.order.totalQuantity)}`\n"
+                                 f"Entry Price: `${entry_price:.2f}`\n"
+                                 f"Vader Sentiment Score: `{trade_info['sentiment_score']}`\n"
+                                 f"Trail method: `{exit_strategy['trail_method']}`\n"
+                                 f"Momentum Exit: `{momentum_exit}`")
+                    await self.telegram_interface.send_message(entry_msg)
+                    logger.info(f"Trade {trade_id} ({contract.localSymbol}) has been filled at ${entry_price:.2f}.")
+                    
                 elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
                     logger.warning(f"Trade {trade_id} ({contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                     del self.active_trades[trade_id]
                 continue
 
+            # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
                 ticker = self.ib_interface.ib.reqMktData(contract, '', True, False)
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.2) # Give a moment for data to arrive
                 
-                last_price = ticker.last
-                if not last_price or last_price < 0:
+                last_price = ticker.last if ticker.last else ticker.close if ticker.close else 0
+                
+                if not last_price > 0:
                     logger.debug(f"No valid market price for {contract.localSymbol}. Waiting...")
+                    self.ib_interface.ib.cancelMktData(contract)
                     continue
 
                 entry_price = trade_info['entry_price']
@@ -172,6 +220,6 @@ class SignalProcessor:
                 self.ib_interface.ib.cancelMktData(contract)
 
             except Exception as e:
-                logger.error(f"Error monitoring trade {trade_id} ({contract.localSymbol}): {e}", exc_info=True)
+                logger.error(f"Error monitoring trade {trade_id} ({contract.localSymbol}): {e}")
                 self.ib_interface.ib.cancelMktData(contract)
 
