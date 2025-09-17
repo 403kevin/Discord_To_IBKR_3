@@ -70,6 +70,7 @@ async def main():
     ib_interface = None
     discord_interface = None
     telegram_interface = None
+    eod_close_triggered_today = False
     try:
         # --- COMPONENT INITIALIZATION ---
         config = Config()
@@ -107,6 +108,28 @@ async def main():
                         break  # Exit the main while loop
                 except Exception as e:
                     logger.error(f"Error checking for shutdown command: {e}")
+
+                    # --- SURGICAL UPGRADE: EOD Safety Net Check ---
+                    if config.eod_close["enabled"] and not eod_close_triggered_today:
+                        tz = pytz.timezone("US/Eastern")
+                        now = datetime.now(tz)
+
+                        close_time = dt_time(config.eod_close["hour"], config.eod_close["minute"])
+
+                        if now.time() >= close_time:
+                            logger.warning("EOD CLOSE TRIGGERED. Initiating closing of all positions.")
+                            await telegram_interface.send_message(
+                                "⚠️ **EOD CLOSE TRIGGERED** ⚠️\nInitiating closing of all open positions.")
+
+                            try:
+                                await ib_interface.close_all_positions()
+                                eod_close_triggered_today = True  # Mark as triggered to prevent re-running
+                                await telegram_interface.send_message("✅ **EOD CLOSE COMPLETE** ✅")
+                            except Exception as e:
+                                logger.critical(f"EOD close procedure failed: {e}", exc_info=True)
+                                await telegram_interface.send_message(f"🚨 **EOD CLOSE FAILED** 🚨\nReason: `{e}`")
+
+                    # --- Discord Polling Cycle ---
 
             # --- Discord Polling Cycle ---
             # Iterate through each channel profile defined in the config.
