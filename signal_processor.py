@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from collections import deque
 from ib_insync import Option, MarketOrder, Order
-from ib_insync.order import TrailOrder # <-- SURGICAL FIX: The correct address
+from ib_insync.order import TrailOrder # <-- The Correct Address for modern versions
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,6 @@ class SignalProcessor:
             contract = trade.contract
             profile = trade_info['profile']
             
-            # --- MONITOR UNTIL FILLED ---
             if not trade_info['fill_processed']:
                 if trade.orderStatus.status == 'Filled':
                     trade_info['fill_processed'] = True
@@ -153,10 +152,8 @@ class SignalProcessor:
                 elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
                     logger.warning(f"Trade {trade_id} ({contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                     del self.active_trades[trade_id]
-                
                 continue
 
-            # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
                 ticker = self.ib_interface.ib.reqMktData(contract, '', False, False)
                 await asyncio.sleep(1.5)
