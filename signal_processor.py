@@ -3,8 +3,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from collections import deque
-from ib_insync import Option, MarketOrder, Order
-from ib_insync.order import TrailOrder # <-- The Correct Address for modern versions
+from ib_insync import Option, MarketOrder, Order # Note: TrailOrder is removed
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 class SignalProcessor:
     """
     The "brain" of the bot. This is the feature-complete "Professional Trader"
-    version with the restored Native Trail safety reflex.
+    version with the restored and corrected Native Trail safety reflex.
     """
 
     def __init__(self, config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface):
@@ -27,15 +26,11 @@ class SignalProcessor:
         self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
 
     def get_cooldown_status(self, channel_id):
-        """Checks the cooldown status for a given channel."""
         return self._channel_states.setdefault(str(channel_id), {
-            'consecutive_losses': 0,
-            'on_cooldown': False,
-            'end_time': None
+            'consecutive_losses': 0, 'on_cooldown': False, 'end_time': None
         })
 
     def reset_consecutive_losses(self, channel_id):
-        """Resets the loss counter and cooldown status for a channel."""
         state = self.get_cooldown_status(str(channel_id))
         state['consecutive_losses'] = 0
         state['on_cooldown'] = False
@@ -79,10 +74,8 @@ class SignalProcessor:
                 currency='USD'
             )
             qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
-            if not qualified_contracts:
-                reason = "Contract does not exist (check expiry/strike)."
-                return
-        except Exception as e:
+            if not qualified_contracts: return
+        except Exception:
             return
             
         quantity = 1
@@ -105,9 +98,6 @@ class SignalProcessor:
 
 
     async def monitor_active_trades(self):
-        """
-        The "battle log." This is the upgraded version with the Native Trail safety reflex.
-        """
         if not self.active_trades:
             return
 
@@ -133,12 +123,15 @@ class SignalProcessor:
                             trail_percent = profile['safety_net']['native_trail_percent']
                             opposite_action = 'SELL' if trade.order.action == 'BUY' else 'BUY'
                             
-                            trail_order = TrailOrder(
+                            # --- SURGICAL FIX: The Correct Way to Create a Trail Order ---
+                            trail_order = Order(
                                 action=opposite_action,
+                                orderType='TRAIL', # Tell the universal order to be a TRAIL
                                 totalQuantity=trade.order.totalQuantity,
-                                trailingPercent=trail_percent,
+                                trailingPercent=trail_percent, # Set the trail percentage
                                 tif='GTC'
                             )
+                            # --- END SURGICAL FIX ---
                             
                             trail_trade = await self.ib_interface.place_order(contract, trail_order)
                             if trail_trade:
