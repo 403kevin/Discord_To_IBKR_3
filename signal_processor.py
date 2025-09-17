@@ -3,7 +3,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from collections import deque
-from ib_insync import Option, MarketOrder, Order, TrailOrder # <-- SURGICAL ADDITION
+from ib_insync import Option, MarketOrder, Order, TrailOrder
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,6 @@ class SignalProcessor:
         self.active_trades = {}
         self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
 
-    # ... (get_cooldown_status and reset_consecutive_losses remain the same) ...
-
     def get_cooldown_status(self, channel_id):
         """Checks the cooldown status for a given channel."""
         return self._channel_states.setdefault(str(channel_id), {
@@ -44,7 +42,6 @@ class SignalProcessor:
         logger.info(f"Consecutive loss counter for channel {channel_id} has been reset.")
 
     async def process_signal(self, message: dict, profile: dict):
-        # ... (This entire function remains the same as the last version) ...
         msg_id = message['id']
         if msg_id in self.processed_message_ids: return
         self.processed_message_ids.append(msg_id)
@@ -70,8 +67,7 @@ class SignalProcessor:
                         f"{int(parsed_signal['strike'])}{parsed_signal['option_type']}")
         
         sentiment_score = 'N/A'
-        # ... (Sentiment and Veto logic is unchanged) ...
-
+        
         try:
             contract = Option(
                 symbol=parsed_signal['ticker'],
@@ -84,10 +80,8 @@ class SignalProcessor:
             qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
             if not qualified_contracts:
                 reason = "Contract does not exist (check expiry/strike)."
-                # ... (Veto logic is unchanged) ...
                 return
         except Exception as e:
-            # ... (Veto logic is unchanged) ...
             return
             
         quantity = 1
@@ -100,7 +94,7 @@ class SignalProcessor:
                 self.active_trades[trade_id] = {
                     "trade_obj": trade, "profile": profile, "fill_processed": False,
                     "entry_price": None, "sentiment_score": sentiment_score,
-                    "high_water_mark": 0, "native_trail_attached": False # New flag
+                    "high_water_mark": 0, "native_trail_attached": False
                 }
                 logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
             else:
@@ -133,14 +127,8 @@ class SignalProcessor:
                     trade_info['entry_price'] = entry_price
                     trade_info['high_water_mark'] = entry_price
                     
-                    # ... (Telegram Entry Confirmation logic is unchanged) ...
-                    
-                    # --- SURGICAL UPGRADE: The "Safety Reflex" ---
                     if profile['safety_net']['enabled'] and not trade_info['native_trail_attached']:
-                        # --- BATTLE-HARDENED PAUSE ---
-                        # Wait a moment for the broker's systems to fully register the fill.
                         await asyncio.sleep(1) 
-                        
                         try:
                             trail_percent = profile['safety_net']['native_trail_percent']
                             opposite_action = 'SELL' if trade.order.action == 'BUY' else 'BUY'
@@ -149,7 +137,7 @@ class SignalProcessor:
                                 action=opposite_action,
                                 totalQuantity=trade.order.totalQuantity,
                                 trailingPercent=trail_percent,
-                                tif='GTC' # Good Till Canceled
+                                tif='GTC'
                             )
                             
                             trail_trade = await self.ib_interface.place_order(contract, trail_order)
@@ -161,13 +149,47 @@ class SignalProcessor:
                             logger.error(f"Failed to attach native trail for {contract.localSymbol}: {e}", exc_info=True)
                             await self.telegram_interface.send_message(f"🚨 **Native Trail FAILED**\n`{contract.localSymbol}`\nReason: `{e}`")
 
+                # --- SURGICAL FIX: The Corrected Cancellation Logic ---
                 elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
-                    # ... (Cancellation logic is unchanged) ...
+                    logger.warning(f"Trade {trade_id} ({contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
+                    del self.active_trades[trade_id]
+                
+                # This continue belongs to the outer 'if not fill_processed'
                 continue
 
             # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
                 # ... (The "battle log" PnL monitoring logic is unchanged) ...
+                ticker = self.ib_interface.ib.reqMktData(contract, '', False, False)
+                await asyncio.sleep(1.5)
+                
+                last_price = ticker.last if ticker.last and not ticker.last != ticker.last else ticker.close if ticker.close else 0
+                
+                if not last_price > 0:
+                    self.ib_interface.ib.cancelMktData(contract)
+                    continue
+
+                trade_info['high_water_mark'] = max(trade_info['high_water_mark'], last_price)
+                high_water_mark = trade_info['high_water_mark']
+                
+                pullback_percent = trade_info['profile']['exit_strategy']['trail_settings']['pullback_percent']
+                trailing_stop_price = high_water_mark * (1 - (pullback_percent / 100))
+                
+                entry_price = trade_info['entry_price']
+                pnl_percent = ((last_price - entry_price) / entry_price) * 100 if entry_price else 0
+
+                logger.info(
+                    f"MONITORING {contract.localSymbol}: "
+                    f"Entry=${entry_price:.2f}, "
+                    f"Last=${last_price:.2f}, "
+                    f"PnL={pnl_percent:.2f}%, "
+                    f"High-Water Mark=${high_water_mark:.2f}, "
+                    f"Trail Stop=${trailing_stop_price:.2f}"
+                )
+                
+                self.ib_interface.ib.cancelMktData(contract)
+
             except Exception as e:
-                # ... (Error handling for monitoring is unchanged) ...
+                logger.error(f"Error monitoring trade {trade_id} ({contract.localSymbol}): {e}")
+                self.ib_interface.ib.cancelMktData(contract)
 
