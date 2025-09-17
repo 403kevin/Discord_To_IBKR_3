@@ -1,9 +1,12 @@
 # services/config.py
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-# This line finds and loads the variables from your .env file.
-load_dotenv()
+# --- GPS for the .env file ---
+current_dir = Path(__file__).parent
+env_path = current_dir.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 
 class Config:
@@ -20,14 +23,17 @@ class Config:
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 6
         self.signal_max_age_seconds = 60
-
-        # --- NEW: Short-Term Memory ---
-        # Remembers the last N message IDs to prevent double-processing in a race condition.
         self.processed_message_cache_size = 25
-
         self.buzzwords_buy = ["BTO", "BUY"]
         self.buzzwords_sell = ["STC", "SELL"]
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
+        self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
+
+        self.eod_close = {
+            "enabled": True,
+            "hour": 13,   # US/Mountain timezone
+            "minute": 55
+        }
 
         self.pre_market_trading = {
             "enabled": True,
@@ -47,7 +53,7 @@ class Config:
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 4002 #4002 GATEWAY 7497 TWS
+        self.ibkr_port = 7497 #4002 GATEWAY 7497 TWS
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -72,13 +78,13 @@ class Config:
         # =================================================================
         self.profiles = [
             {
-                "channel_id": "916540757236678706",
-                "channel_name": "QIQO",
+                "channel_id": "1392531225348014180",
+                "channel_name": "test_server",
                 "enabled": True,
-                "assume_buy_on_ambiguous": True, # NO buy buzzword
+                "assume_buy_on_ambiguous": False, # NO buy buzzword
                 "ambiguous_expiry_enabled": True, # next available expiry
                 "reject_if_contains": ["RISK", "earnings", "play"],
-                "consecutive_loss_monitor": {"enabled": True, "max_losses": 3, "cooldown_minutes": 60},
+                "consecutive_loss_monitor": {"enabled": False, "max_losses": 3, "cooldown_minutes": 60},
 
                 "trading": {
                     "funds_allocation": 1000,
@@ -91,7 +97,7 @@ class Config:
 
                 "exit_strategy": {
                     "breakeven_trigger_percent": 15,
-                    "timeout_exit_minutes": 120,
+                    "timeout_exit_minutes": 10,
 
                     # --- UPDATED: Graceful Exit Strategy Toggle ---
                     # Defines the primary trailing stop method.
