@@ -3,7 +3,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from collections import deque
-from ib_insync import Option, MarketOrder, Order # Note: TrailOrder is removed
+from ib_insync import Option, MarketOrder, Order
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class SignalProcessor:
     """
     The "brain" of the bot. This is the feature-complete "Professional Trader"
-    version with the restored and corrected Native Trail safety reflex.
+    version with the full, detailed Telegram notification system.
     """
 
     def __init__(self, config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface):
@@ -58,12 +58,24 @@ class SignalProcessor:
             return
 
         logger.info(f"Signal ACCEPTED (ID: {msg_id}): Parsed: {parsed_signal}")
+        
         contract_str = (f"{parsed_signal['ticker']} "
                         f"{parsed_signal['expiry'][4:6]}/{parsed_signal['expiry'][6:8]}/{parsed_signal['expiry'][2:4]} "
                         f"{int(parsed_signal['strike'])}{parsed_signal['option_type']}")
-        
+
         sentiment_score = 'N/A'
-        
+        if self.config.sentiment_filter['enabled']:
+            sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
+            if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
+                reason = f"Sentiment score {sentiment_score} below threshold {self.config.sentiment_filter['sentiment_threshold']}"
+                logger.warning(f"Trade for {contract_str} VETOED: {reason}")
+                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                            f"Source Channel: `{profile['channel_name']}`\n"
+                            f"Contract details: `{contract_str}`\n"
+                            f"Reason: `{reason}`")
+                await self.telegram_interface.send_message(veto_msg)
+                return
+
         try:
             contract = Option(
                 symbol=parsed_signal['ticker'],
@@ -74,8 +86,23 @@ class SignalProcessor:
                 currency='USD'
             )
             qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
-            if not qualified_contracts: return
-        except Exception:
+            if not qualified_contracts:
+                reason = "Contract does not exist (check expiry/strike)."
+                logger.error(f"Trade for {contract_str} VETOED: {reason}")
+                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                            f"Source Channel: `{profile['channel_name']}`\n"
+                            f"Contract details: `{contract_str}`\n"
+                            f"Reason: `{reason}`")
+                await self.telegram_interface.send_message(veto_msg)
+                return
+        except Exception as e:
+            reason = str(e)
+            logger.error(f"Trade for {contract_str} VETOED during qualification: {reason}", exc_info=True)
+            veto_msg = (f"❌ **Trade Vetoed** ❌\n"
+                        f"Source Channel: `{profile['channel_name']}`\n"
+                        f"Contract details: `{contract_str}`\n"
+                        f"Reason: `Qualification Error: {reason}`")
+            await self.telegram_interface.send_message(veto_msg)
             return
             
         quantity = 1
@@ -117,21 +144,37 @@ class SignalProcessor:
                     trade_info['entry_price'] = entry_price
                     trade_info['high_water_mark'] = entry_price
                     
+                    # --- SURGICAL FIX: The Complete "Trade Entry Confirmed" Blueprint ---
+                    exit_strategy = profile['exit_strategy']
+                    momentum_exit = "NONE"
+                    if exit_strategy.get('momentum_exits', {}).get('psar_enabled'): momentum_exit = "PSAR"
+                    elif exit_strategy.get('momentum_exits', {}).get('rsi_hook_enabled'): momentum_exit = "RSI"
+                    
+                    contract_str = f"{contract.symbol} {contract.lastTradeDateOrContractMonth[4:6]}/{contract.lastTradeDateOrContractMonth[6:8]}/{contract.lastTradeDateOrContractMonth[2:4]} {int(contract.strike)}{contract.right}"
+
+                    entry_msg = (f"✅ **Trade Entry Confirmed** ✅\n"
+                                 f"Source Channel: `{profile['channel_name']}`\n"
+                                 f"Contract details: `{contract_str}`\n"
+                                 f"Quantity: `{int(trade.order.totalQuantity)}`\n"
+                                 f"Entry Price: `${entry_price:.2f}`\n"
+                                 f"Vader Sentiment Score: `{trade_info['sentiment_score']}`\n"
+                                 f"Trail method: `{exit_strategy['trail_method']}`\n"
+                                 f"Momentum Exit: `{momentum_exit}`")
+                    await self.telegram_interface.send_message(entry_msg)
+                    logger.info(f"Trade {trade_id} ({contract.localSymbol}) has been filled at ${entry_price:.2f}.")
+                    # --- END SURGICAL FIX ---
+                    
                     if profile['safety_net']['enabled'] and not trade_info['native_trail_attached']:
                         await asyncio.sleep(1) 
                         try:
                             trail_percent = profile['safety_net']['native_trail_percent']
                             opposite_action = 'SELL' if trade.order.action == 'BUY' else 'BUY'
                             
-                            # --- SURGICAL FIX: The Correct Way to Create a Trail Order ---
                             trail_order = Order(
-                                action=opposite_action,
-                                orderType='TRAIL', # Tell the universal order to be a TRAIL
+                                action=opposite_action, orderType='TRAIL',
                                 totalQuantity=trade.order.totalQuantity,
-                                trailingPercent=trail_percent, # Set the trail percentage
-                                tif='GTC'
+                                trailingPercent=trail_percent, tif='GTC'
                             )
-                            # --- END SURGICAL FIX ---
                             
                             trail_trade = await self.ib_interface.place_order(contract, trail_order)
                             if trail_trade:
