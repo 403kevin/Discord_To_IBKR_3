@@ -3,7 +3,8 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from collections import deque
-from ib_insync import Option, MarketOrder, Order, TrailOrder
+from ib_insync import Option, MarketOrder, Order
+from ib_insync.order import TrailOrder # <-- SURGICAL FIX: The correct address
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -149,17 +150,14 @@ class SignalProcessor:
                             logger.error(f"Failed to attach native trail for {contract.localSymbol}: {e}", exc_info=True)
                             await self.telegram_interface.send_message(f"🚨 **Native Trail FAILED**\n`{contract.localSymbol}`\nReason: `{e}`")
 
-                # --- SURGICAL FIX: The Corrected Cancellation Logic ---
                 elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
                     logger.warning(f"Trade {trade_id} ({contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                     del self.active_trades[trade_id]
                 
-                # This continue belongs to the outer 'if not fill_processed'
                 continue
 
             # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
-                # ... (The "battle log" PnL monitoring logic is unchanged) ...
                 ticker = self.ib_interface.ib.reqMktData(contract, '', False, False)
                 await asyncio.sleep(1.5)
                 
