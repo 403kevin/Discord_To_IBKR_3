@@ -55,9 +55,7 @@ class SignalProcessor:
         if msg_id in self.processed_message_ids:
             return # Silently ignore duplicates, this is expected behavior.
         
-        # --- SURGICAL FIX: The Perfect Memory ---
-        # The bot will now remember EVERY message it sees, not just processed ones.
-        # This is the key to stopping the log spam.
+        # --- The Perfect Memory: Remember every message seen in this session. ---
         self.processed_message_ids.append(msg_id)
         
         # --- Gatekeeper #2: The Bouncer (Age Check) ---
@@ -66,7 +64,8 @@ class SignalProcessor:
         message_age = (current_time - message_timestamp).total_seconds()
         
         if message_age > self.config.signal_max_age_seconds:
-            logger.info(f"Signal REJECTED (ID: {msg_id}): Stale message (Age: {message_age:.0f}s > {self.config.signal_max_age_seconds}s).")
+            # This is a routine rejection, log as DEBUG to keep the console clean.
+            logger.debug(f"Signal REJECTED (ID: {msg_id}): Stale message (Age: {message_age:.0f}s > {self.config.signal_max_age_seconds}s).")
             return 
         
         # --- Gatekeeper #3: The Translator ---
@@ -74,10 +73,11 @@ class SignalProcessor:
         parsed_signal = parser.parse_signal_message(message['content'], profile)
         
         if not parsed_signal:
-            logger.info(f"Signal IGNORED (ID: {msg_id}): Message content did not parse into a valid trade signal.")
+            # This is a routine ignore, log as DEBUG.
+            logger.debug(f"Signal IGNORED (ID: {msg_id}): Message content did not parse into a valid trade signal.")
             return
 
-        # --- If we reach here, the signal is valid and fresh. ---
+        # --- If we reach here, the signal is new, fresh, and valid. Log as INFO. ---
         logger.info(f"Signal ACCEPTED (ID: {msg_id}): Successfully parsed signal: {parsed_signal}")
 
         # --- Gatekeeper #4: Sentiment Analysis ---
