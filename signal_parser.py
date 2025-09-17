@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 class SignalParser:
     """
     A specialist module for parsing trading signals from raw text messages.
-    This is a battle-hardened, multi-pass parser designed to be flexible.
+    This is a battle-hardened, multi-pass parser with restored intelligence
+    for handling daily expiry tickers.
     """
 
     def __init__(self, config):
@@ -28,22 +29,18 @@ class SignalParser:
         Finds a potential stock ticker by locating all capitalized words and
         returning the first one that is not an action buzzword.
         """
-        # This regex finds all words that are composed of 1-5 capital letters.
         potential_tickers = re.findall(r'\b([A-Z]{1,5})\b', text)
         if not potential_tickers:
             return None
         
-        # Iterate through all potential tickers found.
         for ticker in potential_tickers:
-            # The first one that is NOT a buzzword is our ticker.
             if ticker not in self.config.buzzwords:
                 return ticker
         
-        return None # No valid ticker was found
+        return None
 
     def _parse_strike_and_type(self, text):
         """Finds the strike price and option type (C or P)."""
-        # Looks for a number followed by C or P (e.g., 450C, 120.5P)
         match = re.search(r'(\d+(?:\.\d+)?)\s*([CP])\b', text, re.IGNORECASE)
         if match:
             strike = float(match.group(1))
@@ -51,15 +48,19 @@ class SignalParser:
             return strike, option_type
         return None, None
 
-    def _parse_expiry(self, text):
+    def _parse_expiry(self, text, ticker):
         """
         Finds and formats the expiration date.
-        Handles MM/DD, MM/DD/YY, and MM/DD/YYYY.
-        Intelligently assumes next year for past dates.
+        This is the upgraded version that understands daily expiry rules.
         """
-        # This regex is designed to find common date formats.
         match = re.search(r'(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)', text)
         if not match:
+            # --- SURGICAL UPGRADE for Daily Expiry ---
+            # If no date is found, and it's a daily ticker, assume today.
+            if ticker in self.config.daily_expiry_tickers:
+                dt = datetime.now()
+                # If it's a weekend, this will be caught by the check below.
+                return dt.strftime('%Y%m%d')
             return None
 
         expiry_str = match.group(1).replace('-', '/')
@@ -74,8 +75,7 @@ class SignalParser:
                 dt = datetime.strptime(expiry_str, '%m/%d/%y')
             elif len(parts) == 2: # MM/DD
                 dt = datetime.strptime(expiry_str, '%m/%d').replace(year=now.year)
-                # If the parsed date is in the past for this year, assume it's for next year.
-                if dt < now:
+                if dt.date() < now.date():
                     dt = dt.replace(year=now.year + 1)
             else:
                 return None
@@ -97,19 +97,16 @@ class SignalParser:
         """
         text = message_content.upper()
 
-        # --- Rejection Pass ---
         for reject_word in profile.get("reject_if_contains", []):
             if reject_word.upper() in text:
-                return None # Message contains a forbidden word.
+                return None
 
-        # --- Extraction Pass ---
         action = self._parse_action(text)
         ticker = self._parse_ticker(text)
         strike, option_type = self._parse_strike_and_type(text)
-        expiry = self._parse_expiry(text)
+        # --- SURGICAL UPGRADE: Pass the ticker to the expiry parser ---
+        expiry = self._parse_expiry(text, ticker)
 
-        # --- Validation Pass ---
-        # A valid signal must have all its core components.
         if all([action, ticker, strike, option_type, expiry]):
             return {
                 "action": action,
