@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime
-import aiohttp # Ensure this is in your requirements if not already
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -53,24 +53,25 @@ class DiscordInterface:
     async def get_latest_messages(self, channel_id: str, limit: int = 10) -> list:
         """
         Asynchronously fetches the latest messages from a specific Discord channel using direct HTTP requests.
-        Includes enhanced diagnostic logging.
+        Includes enhanced diagnostic logging at the DEBUG level.
         """
         if not self.session:
             logger.error("Discord session not initialized. Cannot fetch messages.")
             return []
 
         url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit={limit}"
-        logger.info(f"Fetching messages from channel ID: {channel_id}") # Diagnostic log
+        # This is a routine check, log as DEBUG to keep the console clean.
+        logger.debug(f"Fetching messages from channel ID: {channel_id}")
         try:
             async with self.session.get(url) as response:
-                logger.info(f"Discord API response status: {response.status}") # Diagnostic log
+                # This is a routine check, log as DEBUG.
+                logger.debug(f"Discord API response status: {response.status}")
                 if response.status == 200:
                     messages = await response.json()
-                    logger.info(f"Received {len(messages)} message(s) from Discord.") # Diagnostic log
+                    # This is a routine check, log as DEBUG.
+                    logger.debug(f"Received {len(messages)} message(s) from Discord.")
                     
                     if not messages:
-                        # This is the "blind" scenario. We now have a log for it.
-                        logger.info("Message list is empty. No new signals to process.")
                         return []
 
                     processed_messages = []
