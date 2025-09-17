@@ -4,8 +4,6 @@ import uuid
 from datetime import datetime, timezone
 from collections import deque
 from ib_insync import Option, MarketOrder, Order
-
-# We need the SignalParser to be imported here, not from within the class
 from services.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,7 @@ class SignalProcessor:
         logger.info(f"Signal ACCEPTED (ID: {msg_id}): Successfully parsed signal: {parsed_signal}")
         await self.telegram_interface.send_message(f"✅ **Signal Accepted**\n`{message['content']}`")
 
-        # --- Build and place the trade ---
+        # --- Build and Qualify the Contract ---
         try:
             contract = Option(
                 symbol=parsed_signal['ticker'],
@@ -85,11 +83,27 @@ class SignalProcessor:
                 exchange='SMART',
                 currency='USD'
             )
-            await self.ib_interface.ib.qualifyContractsAsync(contract)
+            # The scout: ask IBKR if this contract is valid.
+            qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
             
-            quantity = 1 # Placeholder for future dynamic sizing logic
-            order = MarketOrder(action=parsed_signal['action'].upper(), totalQuantity=quantity)
+            # --- SURGICAL FIX: The "Target Confirmation" Protocol ---
+            # If the broker returns an empty list, the contract is a ghost. Abort mission.
+            if not qualified_contracts:
+                logger.error(f"Contract qualification FAILED for {parsed_signal} (ID: {msg_id}): No security definition found.")
+                await self.telegram_interface.send_message(f"❌ **Trade Failed**\n`{parsed_signal['ticker']}`\nReason: Contract does not exist (check expiry/strike).")
+                return
 
+        except Exception as e:
+            logger.error(f"Contract qualification FAILED for {parsed_signal} (ID: {msg_id}): {e}", exc_info=True)
+            await self.telegram_interface.send_message(f"❌ **Trade Failed**\n`{parsed_signal['ticker']}`\nReason: `{e}`")
+            return
+            
+        # --- If we reach here, the contract is confirmed to be valid. ---
+        quantity = 1 # Placeholder for future dynamic sizing logic
+        order = MarketOrder(action=parsed_signal['action'].upper(), totalQuantity=quantity)
+
+        # --- Place the Trade ---
+        try:
             trade = await self.ib_interface.place_order(contract, order)
             if trade:
                 trade_id = str(uuid.uuid4())
@@ -97,7 +111,7 @@ class SignalProcessor:
                     "trade_obj": trade,
                     "entry_time": datetime.now(timezone.utc),
                     "profile": profile,
-                    "fill_processed": False, # New flag for post-fill actions
+                    "fill_processed": False,
                     "entry_price": None
                 }
                 logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
@@ -112,8 +126,7 @@ class SignalProcessor:
 
     async def monitor_active_trades(self):
         """
-        The "battle log." This function monitors all ongoing trades, provides detailed
-        logging on their status, and manages their lifecycle.
+        The "battle log." This function monitors all ongoing trades.
         """
         if not self.active_trades:
             return
@@ -126,7 +139,6 @@ class SignalProcessor:
             trade = trade_info['trade_obj']
             contract = trade.contract
             
-            # --- MONITOR UNTIL FILLED ---
             if not trade_info['fill_processed']:
                 if trade.orderStatus.status == 'Filled':
                     trade_info['fill_processed'] = True
@@ -136,13 +148,11 @@ class SignalProcessor:
                 elif trade.orderStatus.status in ['Cancelled', 'Inactive']:
                     logger.warning(f"Trade {trade_id} ({contract.localSymbol}) is no longer active. Status: {trade.orderStatus.status}")
                     del self.active_trades[trade_id]
-                continue # Wait for fill before proceeding to exit logic monitoring
+                continue
 
-            # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
-                # Request streaming market data for the contract
                 ticker = self.ib_interface.ib.reqMktData(contract, '', True, False)
-                await asyncio.sleep(1) # Give a moment for the data to arrive
+                await asyncio.sleep(1)
                 
                 last_price = ticker.last
                 if not last_price or last_price < 0:
@@ -152,7 +162,6 @@ class SignalProcessor:
                 entry_price = trade_info['entry_price']
                 pnl_percent = ((last_price - entry_price) / entry_price) * 100 if entry_price else 0
 
-                # This is the detailed logging you requested.
                 logger.info(
                     f"MONITORING {contract.localSymbol}: "
                     f"Entry=${entry_price:.2f}, "
@@ -160,13 +169,9 @@ class SignalProcessor:
                     f"PnL={pnl_percent:.2f}%"
                 )
                 
-                # Stop the data stream to avoid excessive data usage
                 self.ib_interface.ib.cancelMktData(contract)
-
-                # TODO: Implement actual exit logic here (breakeven, timeout, etc.)
-                # This is where the code to close the position would go.
 
             except Exception as e:
                 logger.error(f"Error monitoring trade {trade_id} ({contract.localSymbol}): {e}", exc_info=True)
-                self.ib_interface.ib.cancelMktData(contract) # Ensure data is cancelled on error
+                self.ib_interface.ib.cancelMktData(contract)
 
