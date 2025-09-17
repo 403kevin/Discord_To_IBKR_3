@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 class SignalProcessor:
     """
-    The "brain" of the bot. This is the feature-complete version responsible
-    for processing signals and managing the lifecycle of trades with detailed logging
-    and a professional Telegram notification system.
+    The "brain" of the bot. This is the feature-complete "Professional Trader"
+    version responsible for processing signals and managing the lifecycle of trades
+    with a detailed battle log and a professional Telegram notification system.
     """
 
     def __init__(self, config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface):
@@ -74,12 +74,11 @@ class SignalProcessor:
         logger.info(f"Signal ACCEPTED (ID: {msg_id}): Parsed: {parsed_signal}")
         
         # --- Build Contract for Veto Message ---
-        # We build a simple contract string for notification purposes first.
         contract_str = (f"{parsed_signal['ticker']} "
                         f"{parsed_signal['expiry'][4:6]}/{parsed_signal['expiry'][6:8]}/{parsed_signal['expiry'][2:4]} "
-                        f"{parsed_signal['strike']}{parsed_signal['option_type']}")
+                        f"{int(parsed_signal['strike'])}{parsed_signal['option_type']}")
 
-        # --- Gatekeeper #4: Sentiment Analysis ---
+        # --- Gatekeeper: Sentiment Analysis ---
         sentiment_score = 'N/A'
         if self.config.sentiment_filter['enabled']:
             sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
@@ -135,14 +134,13 @@ class SignalProcessor:
                 trade_id = str(uuid.uuid4())
                 self.active_trades[trade_id] = {
                     "trade_obj": trade,
-                    "entry_time": datetime.now(timezone.utc),
                     "profile": profile,
                     "fill_processed": False,
                     "entry_price": None,
-                    "sentiment_score": sentiment_score
+                    "sentiment_score": sentiment_score,
+                    "high_water_mark": 0 # For trailing stop logic
                 }
                 logger.info(f"Successfully placed trade {trade_id} for {parsed_signal['ticker']}.")
-                # Note: We do not send a Telegram message here. We wait for the fill confirmation.
             else:
                 logger.warning(f"Trade for {contract_str} NOT PLACED: Likely due to a conflict with an existing open order.")
         except Exception as e:
@@ -151,7 +149,8 @@ class SignalProcessor:
 
     async def monitor_active_trades(self):
         """
-        The "battle log." This function monitors all ongoing trades.
+        The "battle log." This function monitors all ongoing trades, provides detailed
+        logging on their status, and manages their lifecycle.
         """
         if not self.active_trades:
             return
@@ -164,20 +163,21 @@ class SignalProcessor:
             trade = trade_info['trade_obj']
             contract = trade.contract
             
+            # --- MONITOR UNTIL FILLED ---
             if not trade_info['fill_processed']:
                 if trade.orderStatus.status == 'Filled':
                     trade_info['fill_processed'] = True
                     entry_price = trade.orderStatus.avgFillPrice
                     trade_info['entry_price'] = entry_price
+                    trade_info['high_water_mark'] = entry_price # Initialize high-water mark
                     
-                    # --- Build and Send "Trade Entry Confirmed" Notification ---
                     profile = trade_info['profile']
                     exit_strategy = profile['exit_strategy']
                     momentum_exit = "NONE"
-                    if exit_strategy['momentum_exits']['psar_enabled']: momentum_exit = "PSAR"
-                    elif exit_strategy['momentum_exits']['rsi_hook_enabled']: momentum_exit = "RSI"
+                    if exit_strategy.get('momentum_exits', {}).get('psar_enabled'): momentum_exit = "PSAR"
+                    elif exit_strategy.get('momentum_exits', {}).get('rsi_hook_enabled'): momentum_exit = "RSI"
                     
-                    contract_str = f"{contract.symbol} {contract.lastTradeDateOrContractMonth[4:6]}/{contract.lastTradeDateOrContractMonth[6:8]}/{contract.lastTradeDateOrContractMonth[2:4]} {contract.strike}{contract.right}"
+                    contract_str = f"{contract.symbol} {contract.lastTradeDateOrContractMonth[4:6]}/{contract.lastTradeDateOrContractMonth[6:8]}/{contract.lastTradeDateOrContractMonth[2:4]} {int(contract.strike)}{contract.right}"
 
                     entry_msg = (f"✅ **Trade Entry Confirmed** ✅\n"
                                  f"Source Channel: `{profile['channel_name']}`\n"
@@ -197,24 +197,35 @@ class SignalProcessor:
 
             # --- MONITOR FILLED POSITIONS (The Battle Log) ---
             try:
-                ticker = self.ib_interface.ib.reqMktData(contract, '', True, False)
-                await asyncio.sleep(1.2) # Give a moment for data to arrive
+                ticker = self.ib_interface.ib.reqMktData(contract, '', False, False)
+                await asyncio.sleep(1.5) # Give a moment for data to arrive
                 
-                last_price = ticker.last if ticker.last else ticker.close if ticker.close else 0
+                last_price = ticker.last if ticker.last and not ticker.last != ticker.last else ticker.close if ticker.close else 0
                 
                 if not last_price > 0:
                     logger.debug(f"No valid market price for {contract.localSymbol}. Waiting...")
                     self.ib_interface.ib.cancelMktData(contract)
                     continue
 
+                # Update High-Water Mark
+                trade_info['high_water_mark'] = max(trade_info['high_water_mark'], last_price)
+                high_water_mark = trade_info['high_water_mark']
+                
+                # Freestyle Logic: Calculate a simple percentage-based trailing stop
+                pullback_percent = trade_info['profile']['exit_strategy']['trail_settings']['pullback_percent']
+                trailing_stop_price = high_water_mark * (1 - (pullback_percent / 100))
+                
                 entry_price = trade_info['entry_price']
                 pnl_percent = ((last_price - entry_price) / entry_price) * 100 if entry_price else 0
 
+                # This is the detailed logging you requested.
                 logger.info(
                     f"MONITORING {contract.localSymbol}: "
                     f"Entry=${entry_price:.2f}, "
                     f"Last=${last_price:.2f}, "
-                    f"PnL={pnl_percent:.2f}%"
+                    f"PnL={pnl_percent:.2f}%, "
+                    f"High-Water Mark=${high_water_mark:.2f}, "
+                    f"Trail Stop=${trailing_stop_price:.2f}"
                 )
                 
                 self.ib_interface.ib.cancelMktData(contract)
