@@ -47,13 +47,18 @@ class SignalProcessor:
     async def process_signal(self, message: dict, profile: dict):
         """
         The main entry point for processing a single Discord message.
-        This is the complete, battle-hardened ignition system with diagnostics.
+        This is the complete, battle-hardened ignition system with diagnostics and perfect memory.
         """
         msg_id = message['id']
         
         # --- Gatekeeper #1: Short-Term Memory ---
         if msg_id in self.processed_message_ids:
             return # Silently ignore duplicates, this is expected behavior.
+        
+        # --- SURGICAL FIX: The Perfect Memory ---
+        # The bot will now remember EVERY message it sees, not just processed ones.
+        # This is the key to stopping the log spam.
+        self.processed_message_ids.append(msg_id)
         
         # --- Gatekeeper #2: The Bouncer (Age Check) ---
         message_timestamp = message['timestamp']
@@ -64,9 +69,6 @@ class SignalProcessor:
             logger.info(f"Signal REJECTED (ID: {msg_id}): Stale message (Age: {message_age:.0f}s > {self.config.signal_max_age_seconds}s).")
             return 
         
-        # --- If the message is fresh, we can now add it to our memory. ---
-        self.processed_message_ids.append(msg_id)
-
         # --- Gatekeeper #3: The Translator ---
         parser = SignalParser(self.config)
         parsed_signal = parser.parse_signal_message(message['content'], profile)
@@ -149,3 +151,4 @@ class SignalProcessor:
                 del self.active_trades[trade_id]
 
         await asyncio.sleep(0.1)
+
