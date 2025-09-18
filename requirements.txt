@@ -6,5 +6,6 @@ python-dotenv==1.0.1
 pandas
 nltk
 aiohttp
+beautifulsoup4
 
 # In pycharm terminal - pip install -r requirements.txt
