@@ -50,6 +50,14 @@ class Config:
         self.oversold_monitor_enabled = True
 
         # =================================================================
+        # --- LEGEND: BACKTESTING ENGINE ---
+        # =================================================================
+        self.backtesting = {
+            "lookback_days": 30,  # How many days of historical data to fetch.
+            "bar_size": "1 min"   # The resolution of the data (e.g., "1 min", "5 mins", "1 hour").
+        }
+
+        # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
