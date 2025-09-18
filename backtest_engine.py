@@ -5,16 +5,17 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-# --- Add project root to path ---
+# --- SURGICAL ADDITION: The "GPS" ---
+# This tells the script how to find the other toolboxes from inside the 'backtester' folder.
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 # --- Import our battle-hardened modules ---
 from services.config import Config
 from bot_engine.signal_processor import SignalProcessor
-# We need the real interfaces to reference their structure
 from interfaces.ib_interface import IBInterface
 from interfaces.discord_interface import DiscordInterface
+from services.sentiment_analyzer import SentimentAnalyzer
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,22 +32,48 @@ class MockIBInterface(IBInterface):
     It doesn't connect to a real broker. Instead, it uses historical data.
     """
     def __init__(self, config, historical_data):
-        super().__init__(config)
+        # We don't call super().__init__() because we are replacing the connection logic
+        self.config = config
         self.historical_data = historical_data
         self.paper_trades = []
+        self.open_positions = {}
         self.current_time = None
+        self.ib = self # A little trick so self.ib_interface.ib works in the processor
 
     async def connect(self):
         logger.info("Mock IBInterface 'connected'.")
-        # In a mock, connect does nothing.
         pass
 
     async def disconnect(self):
         logger.info("Mock IBInterface 'disconnected'.")
         pass
 
+    # Mocking internal ib_insync methods that our processor uses
+    async def qualifyContractsAsync(self, contract):
+        return [contract] # Assume all contracts in a backtest are valid
+
+    def reqMktData(self, contract, *args, **kwargs):
+        # Return a mock ticker object with the historical price
+        from ib_insync import Ticker
+        symbol = contract.localSymbol.replace(' ', '_')
+        if symbol not in self.historical_data:
+            return Ticker(contract=contract, last=0) # Return a dummy ticker if no data
+            
+        df = self.historical_data[symbol]
+        
+        try:
+            # Find the bar that corresponds to our current simulated time
+            price_row = df[df['date'] <= self.current_time].iloc[-1]
+            last_price = price_row['close']
+        except IndexError:
+            last_price = 0 # No data available for this time yet
+
+        return Ticker(contract=contract, last=last_price, close=last_price)
+
+    def cancelMktData(self, contract):
+        pass # In a mock, this does nothing
+
     async def place_order(self, contract, order):
-        # In a backtest, placing an order means we find the price at the current time.
         symbol = contract.localSymbol.replace(' ', '_')
         if symbol not in self.historical_data:
             logger.error(f"Backtest Error: No historical data found for {symbol}")
@@ -54,9 +81,12 @@ class MockIBInterface(IBInterface):
         
         df = self.historical_data[symbol]
         
-        # Find the bar that corresponds to our current simulated time
-        current_price_row = df[df['date'] <= self.current_time].iloc[-1]
-        fill_price = current_price_row['close']
+        try:
+            current_price_row = df[df['date'] <= self.current_time].iloc[-1]
+            fill_price = current_price_row['close']
+        except IndexError:
+            logger.error(f"Backtest Error: No price data available for {symbol} at time {self.current_time}")
+            return None
 
         trade_record = {
             "timestamp": self.current_time,
@@ -69,7 +99,6 @@ class MockIBInterface(IBInterface):
         self.paper_trades.append(trade_record)
         logger.info(f"PAPER TRADE EXECUTED: {trade_record}")
         
-        # We must return a mock "Trade" object that the SignalProcessor expects
         from ib_insync import Trade, OrderStatus
         mock_trade = Trade(contract=contract, order=order, orderStatus=OrderStatus(status='Filled', avgFillPrice=fill_price), fills=[], log=[])
         return mock_trade
@@ -78,25 +107,27 @@ class MockIBInterface(IBInterface):
 class MockDiscordInterface(DiscordInterface):
     """
     A simulated version of the DiscordInterface for backtesting.
-    It serves signals from a historical list instead of polling a live channel.
     """
     def __init__(self, config, signal_log):
-        super().__init__(config)
+        self.config = config
         self.signal_log = signal_log
         self.current_time = None
+        self.processed_ids = set() # To ensure we only serve a signal once
 
     async def initialize(self):
         logger.info("Mock DiscordInterface 'initialized'.")
         pass
 
     async def get_latest_messages(self, channel_id: str, limit: int = 10) -> list:
-        # Find all signals that should have "appeared" at or before the current time
-        triggered_signals = [
-            s for s in self.signal_log 
-            if s['timestamp'] <= self.current_time
-        ]
-        # Return them as if they were just fetched from Discord
+        triggered_signals = []
+        for signal in self.signal_log:
+            if signal['timestamp'] <= self.current_time and signal['id'] not in self.processed_ids:
+                triggered_signals.append(signal)
+                self.processed_ids.add(signal['id'])
         return triggered_signals
+
+    async def close(self):
+        pass
 
 
 # ==============================================================================
@@ -106,7 +137,6 @@ class MockDiscordInterface(DiscordInterface):
 class BacktestEngine:
     """
     The main orchestrator for running a historical simulation.
-    It controls the flow of time and uses mock interfaces to feed data to the bot's brain.
     """
     def __init__(self, config):
         self.config = config
@@ -117,7 +147,7 @@ class BacktestEngine:
         """Loads the Battle Plan into memory."""
         logger.info(f"Loading battle plan from {signal_file}...")
         with open(signal_file, 'r') as f:
-            for line in f:
+            for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith('#'): continue
                 
@@ -125,14 +155,11 @@ class BacktestEngine:
                 if len(parts) != 2: continue
                 
                 timestamp_str, signal_text = parts
-                timestamp = datetime.fromisoformat(timestamp_str.strip())
+                timestamp = pd.to_datetime(timestamp_str.strip())
 
-                # We store the signal in the format our DiscordInterface produces
                 self.signal_log.append({
-                    "id": len(self.signal_log), # Unique ID for backtesting
-                    "content": signal_text.strip(),
-                    "timestamp": timestamp,
-                    "author": "Backtest"
+                    "id": line_num, "content": signal_text.strip(),
+                    "timestamp": timestamp, "author": "Backtest"
                 })
         logger.info(f"Loaded {len(self.signal_log)} historical signals.")
 
@@ -150,76 +177,48 @@ class BacktestEngine:
 
     async def run(self):
         """The main simulation loop."""
-        # --- 1. Load the historical data ---
-        self._load_signals('backtester/signals_to_test.txt')
-        self._load_price_data('backtester/historical_data')
+        script_dir = os.path.dirname(__file__)
+        self._load_signals(os.path.join(script_dir, 'signals_to_test.txt'))
+        self._load_price_data(os.path.join(script_dir, 'historical_data'))
 
         if not self.signal_log or not self.historical_data:
             logger.critical("No signals or historical data found. Aborting backtest.")
             return
 
-        # --- 2. Initialize the Cockpit ---
         mock_ib = MockIBInterface(self.config, self.historical_data)
         mock_discord = MockDiscordInterface(self.config, self.signal_log)
-        # We need a mock for sentiment, for now it will just approve everything
-        class MockSentiment:
-            async def analyze_sentiment(self, ticker): return 1.0
+        class MockTelegram: # Simple mock to prevent crashes
+            async def initialize(self): pass
+            async def send_message(self, text): pass
+            async def close(self): pass
         
-        # This is the magic: we use the REAL brain with the FAKE interfaces
-        pilot = SignalProcessor(self.config, mock_ib, mock_discord, MockSentiment())
+        # Use the REAL brain with the FAKE interfaces
+        pilot = SignalProcessor(self.config, mock_ib, mock_discord, SentimentAnalyzer(self.config), MockTelegram())
 
-        # --- 3. Run the Simulation ---
         start_time = self.signal_log[0]['timestamp'] - timedelta(minutes=1)
-        end_time = self.signal_log[-1]['timestamp'] + timedelta(hours=2) # Run for 2 hours after last signal
+        end_time = self.signal_log[-1]['timestamp'] + timedelta(hours=4) # Run for 4 hours after last signal
         
         logger.info(f"Starting simulation from {start_time} to {end_time}...")
         
         current_time = start_time
         while current_time <= end_time:
-            # Update the "current time" in our simulated world
+            # Update the simulated world's time
             mock_discord.current_time = current_time
             mock_ib.current_time = current_time
             
-            # --- Simulate the main.py loop ---
-            # 1. Check for signals (the pilot doesn't know they are historical)
-            # We use a dummy profile for now
+            # Simulate the main.py loop
             dummy_profile = self.config.profiles[0] 
             messages = await mock_discord.get_latest_messages(dummy_profile['channel_id'])
             for message in messages:
                 await pilot.process_signal(message, dummy_profile)
             
-            # 2. Monitor active trades
             await pilot.monitor_active_trades()
 
-            # Tick the clock forward by one minute
             current_time += timedelta(minutes=1)
-            # A tiny sleep to keep the loop from running too fast and locking up
             await asyncio.sleep(0.001)
 
         logger.info("Simulation complete.")
-        self._report_results(mock_ib.paper_trades)
-
-    def _report_results(self, trades):
-        """Prints a final summary of the backtest performance."""
-        if not trades:
-            logger.info("No trades were executed during the backtest.")
-            return
-            
-        logger.info("\n--- BACKTEST RESULTS ---")
-        df = pd.DataFrame(trades)
-        
-        total_pnl = 0
-        for i in range(0, len(df), 2):
-            if i + 1 < len(df):
-                entry = df.iloc[i]
-                exit = df.iloc[i+1]
-                pnl = (exit['price'] - entry['price']) * entry['quantity'] * 100 # Assuming 100 multiplier
-                total_pnl += pnl
-                logger.info(f"Trade {entry['contract']}: Entry @ ${entry['price']:.2f}, Exit @ ${exit['price']:.2f}, PnL: ${pnl:.2f}")
-
-        logger.info(f"\nTotal Realized PnL: ${total_pnl:.2f}")
-        logger.info("--- END OF REPORT ---")
-
+        # TODO: Add a final results report
 
 async def main():
     """Main entry point for the backtest script."""
@@ -228,3 +227,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
