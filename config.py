@@ -42,7 +42,7 @@ class Config:
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE", "OPENING", "ADDED", "ENTERING", "GRABBED","POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
         jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE"]
-        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell
+        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + jargon_words
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
