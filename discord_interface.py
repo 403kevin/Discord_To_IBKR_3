@@ -9,7 +9,7 @@ class DiscordInterface:
     """
     A specialist module responsible for all interactions with the Discord API.
     This is the "Master Intelligence" edition, capable of parsing both
-    plain text messages and complex embeds.
+    plain text messages and complex embeds, including all fields.
     """
 
     def __init__(self, config):
@@ -47,7 +47,7 @@ class DiscordInterface:
     async def get_latest_messages(self, channel_id: str, limit: int = 10) -> list:
         """
         Asynchronously fetches and processes the latest messages, handling both
-        plain text and embeds.
+        plain text and embeds by concatenating all readable text fields.
         """
         if not self.session:
             logger.error("Discord session not initialized. Cannot fetch messages.")
@@ -63,27 +63,39 @@ class DiscordInterface:
                     
                     processed_messages = []
                     for msg in messages:
-                        # --- SURGICAL UPGRADE: The "Embed Reader" ---
-                        master_content = ""
-                        if msg.get('embeds'):
-                            # If embeds exist, combine their title and description
-                            for embed in msg['embeds']:
-                                if 'title' in embed:
-                                    master_content += embed['title'] + " "
-                                if 'description' in embed:
-                                    master_content += embed['description'] + " "
+                        # --- SURGICAL UPGRADE: The "Master Interrogator" ---
+                        master_content = []
                         
-                        # Always include the plain text content, either as primary or supplemental
-                        master_content += msg.get('content', '')
+                        # Always start with the plain text content
+                        if msg.get('content'):
+                            master_content.append(msg['content'])
+
+                        if msg.get('embeds'):
+                            for embed in msg['embeds']:
+                                if embed.get('title'):
+                                    master_content.append(embed['title'])
+                                if embed.get('description'):
+                                    master_content.append(embed['description'])
+                                # This is the critical upgrade: read all the fields
+                                if embed.get('fields'):
+                                    for field in embed['fields']:
+                                        if field.get('name'):
+                                            master_content.append(field['name'])
+                                        if field.get('value'):
+                                            master_content.append(field['value'])
+                                if embed.get('footer') and embed['footer'].get('text'):
+                                    master_content.append(embed['footer']['text'])
+                        
+                        full_text = " ".join(master_content)
                         # --- END UPGRADE ---
 
-                        if not master_content.strip():
-                            continue # Skip messages with no readable content
+                        if not full_text.strip():
+                            continue
 
                         timestamp_obj = datetime.fromisoformat(msg['timestamp'])
                         processed_messages.append({
                             "id": int(msg['id']),
-                            "content": master_content.strip(), # Use the new master content
+                            "content": full_text, # Use the complete master text
                             "author": f"{msg['author']['username']}#{msg['author']['discriminator']}",
                             "timestamp": timestamp_obj
                         })
@@ -103,4 +115,3 @@ class DiscordInterface:
         if self.session and not self.session.closed:
             await self.session.close()
             logger.info("Discord session closed.")
-
