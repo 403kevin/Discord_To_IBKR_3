@@ -41,6 +41,7 @@ class Config:
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
+        # self.buzzwords_ignore = ["IGNORE"]
 
         # --- SURGICAL FIX: Make jargon_words a permanent part of the bot's memory ---
         self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE"]
