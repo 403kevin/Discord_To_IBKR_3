@@ -1,4 +1,3 @@
-# services/config.py
 import os
 from dotenv import load_dotenv
 from pathlib import Path
@@ -25,8 +24,8 @@ class Config:
         # With 1 channel, this is ~8 seconds. With 2, ~10 seconds.
         # WARNING: Setting these too low can risk getting flagged by Discord.
         self.polling_interval_seconds = 5  # Legacy setting, not used by the modern async loop.
-        self.delay_between_channels = 2   # Time to wait after checking each channel. (2-4)
-        self.delay_after_full_cycle = 5   # Time to wait after checking ALL channels. (5-10)
+        self.delay_between_channels = 2  # Time to wait after checking each channel. (2-4)
+        self.delay_after_full_cycle = 5  # Time to wait after checking ALL channels. (5-10)
         # --- END SURGICAL UPGRADE ---
 
         # =================================================================
@@ -39,15 +38,20 @@ class Config:
 
         self.signal_max_age_seconds = 60
         self.processed_message_cache_size = 25
-        self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE", "OPENING", "ADDED", "ENTERING", "GRABBED","POSITION"]
+        self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                              "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
-        jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE"]
-        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + jargon_words
+
+        # --- SURGICAL FIX: Make jargon_words a permanent part of the bot's memory ---
+        self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE"]
+        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + self.jargon_words
+        # --- END SURGICAL FIX ---
+
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
             "enabled": True,
-            "hour": 13,   # US/Mountain timezone
+            "hour": 13,  # US/Mountain timezone
             "minute": 00
         }
 
@@ -69,7 +73,7 @@ class Config:
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 7497 #4002 GATEWAY 7497 TWS
+        self.ibkr_port = 7497  # 402 GATEWAY 7497 TWS
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
