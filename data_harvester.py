@@ -5,12 +5,10 @@ from ib_insync import IB, Option
 import sys
 import os
 
-# --- Add project root to path to allow imports from other folders ---
-# This is a professional way to manage imports in a multi-directory project.
+# --- Add project root to path ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-# Now we can import from our existing, battle-hardened modules
 from services.config import Config
 from services.signal_parser import SignalParser
 
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 class DataHarvester:
     """
     A specialist module for downloading historical options data from IBKR.
-    This is the professional evolution of the successful IBKR_Historical_Options_Test.py.
+    This is the "Smart Edition" that reads a timestamped signal log.
     """
 
     def __init__(self, config):
@@ -45,27 +43,31 @@ class DataHarvester:
 
     async def fetch_and_save_data(self, signal_file: str, output_dir: str):
         """
-        Reads a file of signals, fetches historical data for each, and saves to CSV.
-        
-        Args:
-            signal_file (str): Path to a text file with one signal per line.
-            output_dir (str): Path to the directory where CSV files will be saved.
+        Reads a timestamped file of signals, fetches historical data for each, and saves to CSV.
         """
-        # Ensure the output directory exists
         os.makedirs(output_dir, exist_ok=True)
-        
         parser = SignalParser(self.config)
+        processed_contracts = set() # To avoid downloading data for the same contract twice
 
         with open(signal_file, 'r') as f:
-            for line in f:
-                signal_text = line.strip()
-                if not signal_text or signal_text.startswith('#'):
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line or line.startswith('#'):
                     continue
 
-                # Use our battle-hardened parser to translate the signal
-                parsed_signal = parser.parse_signal_message(signal_text, {}) # Pass empty profile
+                # --- SURGICAL UPGRADE: The "Smart" Line Parser ---
+                parts = line.split('|')
+                if len(parts) != 2:
+                    logger.warning(f"Skipping malformed line #{line_num}: '{line}'")
+                    continue
+                
+                timestamp_str, signal_text = parts
+                signal_text = signal_text.strip()
+                # --- END UPGRADE ---
+
+                parsed_signal = parser.parse_signal_message(signal_text, {})
                 if not parsed_signal:
-                    logger.warning(f"Could not parse signal: {signal_text}")
+                    logger.warning(f"Could not parse signal on line #{line_num}: '{signal_text}'")
                     continue
 
                 try:
@@ -78,48 +80,57 @@ class DataHarvester:
                         currency='USD'
                     )
                     await self.ib.qualifyContractsAsync(contract)
+
+                    # --- Efficiency Upgrade: Check if we already have this data ---
+                    if contract.conId in processed_contracts:
+                        logger.info(f"Already processed contract for {contract.localSymbol}. Skipping download.")
+                        continue
                     
                     logger.info(f"Fetching data for {contract.localSymbol}...")
 
-                    # This is the core logic from your successful prototype
-                    # We will fetch 1-minute bars for the last 30 days as an example
+                    lookback_str = f"{self.config.backtesting['lookback_days']} D"
+                    bar_size_str = self.config.backtesting['bar_size']
+
                     bars = await self.ib.reqHistoricalDataAsync(
-                        contract,
-                        endDateTime='',
-                        durationStr='30 D',
-                        barSizeSetting='1 min',
-                        whatToShow='TRADES',
-                        useRTH=True
+                        contract, endDateTime='', durationStr=lookback_str,
+                        barSizeSetting=bar_size_str, whatToShow='TRADES', useRTH=True
                     )
 
                     if not bars:
                         logger.warning(f"No historical data returned for {contract.localSymbol}.")
                         continue
 
-                    # Convert the data to a pandas DataFrame and save to CSV
                     df = pd.DataFrame([vars(b) for b in bars])
                     df['date'] = pd.to_datetime(df['date'])
                     
-                    # Create a unique, safe filename for the contract
                     filename = f"{contract.localSymbol.replace(' ', '_')}.csv"
                     filepath = os.path.join(output_dir, filename)
                     
                     df.to_csv(filepath, index=False)
                     logger.info(f"Successfully saved {len(df)} bars to {filepath}")
+                    processed_contracts.add(contract.conId) # Mark this contract as done
 
                 except Exception as e:
                     logger.error(f"Failed to process signal '{signal_text}': {e}", exc_info=True)
                 
-                await asyncio.sleep(10) # Be polite to the API, wait 10 seconds between requests
+                await asyncio.sleep(10)
 
 async def main():
     """Main entry point for the script."""
+    os.makedirs('backtester/historical_data', exist_ok=True)
+    
+    signal_file_path = 'backtester/signals_to_test.txt'
+    if not os.path.exists(signal_file_path):
+        with open(signal_file_path, 'w') as f:
+            f.write("# Format: YYYY-MM-DD HH:MM:SS | The exact signal text from Discord\n")
+            f.write("2025-07-07 08:37:00 | BTO SPY 600C 09/25\n")
+        logger.info(f"Created a sample signal file at: {signal_file_path}")
+
     harvester = DataHarvester(Config())
     try:
         await harvester.connect()
-        # You will need to create these files yourself
         await harvester.fetch_and_save_data(
-            signal_file='backtester/signals_to_test.txt',
+            signal_file=signal_file_path,
             output_dir='backtester/historical_data'
         )
     finally:
@@ -127,3 +138,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
