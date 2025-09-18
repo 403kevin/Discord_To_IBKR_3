@@ -8,16 +8,11 @@ logger = logging.getLogger(__name__)
 class DiscordInterface:
     """
     A specialist module responsible for all interactions with the Discord API.
-    This class uses a direct HTTP polling method to be discreet and "fly under the radar,"
-    adhering to the project's constitution. It does not use the official bot gateway.
+    This is the "Master Intelligence" edition, capable of parsing both
+    plain text messages and complex embeds.
     """
 
     def __init__(self, config):
-        """
-        Initializes the Discord interface.
-        Args:
-            config: The main configuration object.
-        """
         self.config = config
         self.token = self.config.discord_user_token
         self.session = None
@@ -27,8 +22,7 @@ class DiscordInterface:
 
     async def initialize(self):
         """
-        Initializes the aiohttp session and tests the connection by fetching user info.
-        This confirms the token is valid and the disguise is working.
+        Initializes the aiohttp session and tests the connection.
         """
         self.session = aiohttp.ClientSession(
             headers={
@@ -44,7 +38,7 @@ class DiscordInterface:
                     logger.info(f"Discord interface initialized successfully. Logged in as {self.user['username']}#{self.user['discriminator']}.")
                 else:
                     response_text = await response.text()
-                    logger.critical(f"Discord login failed. Status: {response.status}, Response: {response_text}. Please check your DISCORD_AUTH_TOKEN.")
+                    logger.critical(f"Discord login failed. Status: {response.status}, Response: {response_text}.")
                     raise ConnectionError("Improper token or credentials passed to Discord.")
         except Exception as e:
             logger.critical(f"An unexpected error occurred during Discord initialization: {e}", exc_info=True)
@@ -52,34 +46,44 @@ class DiscordInterface:
 
     async def get_latest_messages(self, channel_id: str, limit: int = 10) -> list:
         """
-        Asynchronously fetches the latest messages from a specific Discord channel using direct HTTP requests.
-        Includes enhanced diagnostic logging at the DEBUG level.
+        Asynchronously fetches and processes the latest messages, handling both
+        plain text and embeds.
         """
         if not self.session:
             logger.error("Discord session not initialized. Cannot fetch messages.")
             return []
 
         url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit={limit}"
-        # This is a routine check, log as DEBUG to keep the console clean.
         logger.debug(f"Fetching messages from channel ID: {channel_id}")
         try:
             async with self.session.get(url) as response:
-                # This is a routine check, log as DEBUG.
-                logger.debug(f"Discord API response status: {response.status}")
                 if response.status == 200:
                     messages = await response.json()
-                    # This is a routine check, log as DEBUG.
                     logger.debug(f"Received {len(messages)} message(s) from Discord.")
                     
-                    if not messages:
-                        return []
-
                     processed_messages = []
                     for msg in messages:
+                        # --- SURGICAL UPGRADE: The "Embed Reader" ---
+                        master_content = ""
+                        if msg.get('embeds'):
+                            # If embeds exist, combine their title and description
+                            for embed in msg['embeds']:
+                                if 'title' in embed:
+                                    master_content += embed['title'] + " "
+                                if 'description' in embed:
+                                    master_content += embed['description'] + " "
+                        
+                        # Always include the plain text content, either as primary or supplemental
+                        master_content += msg.get('content', '')
+                        # --- END UPGRADE ---
+
+                        if not master_content.strip():
+                            continue # Skip messages with no readable content
+
                         timestamp_obj = datetime.fromisoformat(msg['timestamp'])
                         processed_messages.append({
                             "id": int(msg['id']),
-                            "content": msg['content'],
+                            "content": master_content.strip(), # Use the new master content
                             "author": f"{msg['author']['username']}#{msg['author']['discriminator']}",
                             "timestamp": timestamp_obj
                         })
@@ -89,7 +93,7 @@ class DiscordInterface:
                     logger.error(f"Failed to fetch messages from channel {channel_id}. Status: {response.status}, Response: {response_text}")
                     return []
         except Exception as e:
-            logger.error(f"An unexpected error occurred while fetching messages from channel {channel_id}: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred while fetching messages: {e}", exc_info=True)
             return []
 
     async def close(self):
