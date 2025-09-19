@@ -46,18 +46,6 @@ def is_market_hours(timezone="US/Eastern"):
     return market_open <= now.time() <= market_close and now.weekday() < 5
 
 
-def is_pre_market_hours(config, timezone="US/Eastern"):
-    """
-    Checks if the current time is within the user-defined pre-market hours.
-    This is governed by the settings in `config.py`.
-    """
-    if not config.pre_market_trading.get("enabled", False):
-        return False
-    tz = pytz.timezone(timezone)
-    now = datetime.now(tz)
-    pre_market_start = datetime.strptime(config.pre_market_trading["start_time"], "%H:%M").time()
-    pre_market_end = datetime.strptime(config.pre_market_trading["end_time"], "%H:%M").time()
-    return pre_market_start <= now.time() < pre_market_end and now.weekday() < 5
 
 
 async def main():
