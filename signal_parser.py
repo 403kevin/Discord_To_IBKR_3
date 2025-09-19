@@ -1,13 +1,13 @@
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta # <-- SURGICAL FIX: The missing tool is now imported.
 
 logger = logging.getLogger(__name__)
 
 class SignalParser:
     """
     A specialist module for parsing trading signals from raw text messages.
-    This is the "Genius Translator" edition, with a Jargon Filter.
+    This is the "Genius Translator" edition, with a Jargon Filter and full literacy.
     """
 
     def __init__(self, config):
@@ -25,25 +25,21 @@ class SignalParser:
 
     def _parse_ticker(self, text):
         """
-        Finds a potential stock ticker by locating all capitalized words and
-        returning the first one that is not an action buzzword OR a jargon word.
+        Finds a potential stock ticker, handling optional '$' prefixes and ignoring jargon.
         """
         potential_tickers = re.findall(r'\$?([A-Z]{1,5})\b', text)
         if not potential_tickers:
             return None
         
-        # --- SURGICAL FIX: Look for jargon_words in the correct location ---
         for ticker in potential_tickers:
             if ticker not in self.config.buzzwords and ticker not in self.config.jargon_words:
                 return ticker
-        # --- END SURGICAL FIX ---
         
         return None
 
     def _parse_strike_and_type(self, text):
         """
-        Finds the strike price and option type, now understanding both
-        'C'/'P' and 'CALL'/'PUT'.
+        Finds the strike price and option type, understanding both 'C'/'P' and 'CALL'/'PUT'.
         """
         match = re.search(r'(\d+(?:\.\d+)?)\s*(C|P|CALL|PUT)\b', text, re.IGNORECASE)
         if match:
@@ -55,8 +51,7 @@ class SignalParser:
 
     def _parse_expiry(self, text, ticker, profile):
         """
-        Finds and formats the expiration date. Now uses the 'ambiguous_expiry_enabled'
-        setting as a fallback for signals with no date.
+        Finds and formats the expiration date. Uses 'ambiguous_expiry_enabled' as a fallback.
         """
         now = datetime.now()
         dt = None
