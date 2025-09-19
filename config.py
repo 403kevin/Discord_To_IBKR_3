@@ -25,7 +25,7 @@ class Config:
         # WARNING: Setting these too low can risk getting flagged by Discord.
         self.polling_interval_seconds = 5  # Legacy setting, not used by the modern async loop.
         self.delay_between_channels = 2  # Time to wait after checking each channel. (2-4)
-        self.delay_after_full_cycle = 5  # Time to wait after checking ALL channels. (5-10)
+        self.delay_after_full_cycle = 3  # Time to wait after checking ALL channels. (5-10)
         # --- END SURGICAL UPGRADE ---
 
         # =================================================================
@@ -44,7 +44,7 @@ class Config:
         # self.buzzwords_ignore = ["IGNORE"]
 
         # --- SURGICAL FIX: Make jargon_words a permanent part of the bot's memory ---
-        self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE"]
+        self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE", "SMALL"] #ignores
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + self.jargon_words
         # --- END SURGICAL FIX ---
 
@@ -74,7 +74,7 @@ class Config:
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 7497  # 402 GATEWAY 7497 TWS
+        self.ibkr_port = 4002  # 4002 GATEWAY 7497 TWS
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -89,7 +89,7 @@ class Config:
         # --- LEGEND: SENTIMENT ANALYSIS (VADER) ---
         # =================================================================
         self.sentiment_filter = {
-            "enabled": False,
+            "enabled": True,
             "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05
         }
@@ -535,8 +535,8 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server 09",
-                "enabled": True,
-                "assume_buy_on_ambiguous": False,  # NO buy buzzword
+                "enabled": False,
+                "assume_buy_on_ambiguous": True,  # NO buy buzzword
                 "ambiguous_expiry_enabled": True,  # next available expiry
                 "reject_if_contains": ["EARNINGS"],
                 "consecutive_loss_monitor": {"enabled": False, "max_losses": 2, "cooldown_minutes": 60},
