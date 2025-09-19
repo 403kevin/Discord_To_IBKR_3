@@ -56,14 +56,6 @@ class Config:
             "minute": 00
         }
 
-        self.pre_market_trading = {
-            "enabled": True,
-            "# NOTE: Times are in US/Eastern timezone": "",
-            "start_time": "04:00",
-            "end_time": "09:30",
-            "symbols": ["SPX", "SPY"],
-            "trade_quantity": 1
-        }
 
         self.master_shutdown_enabled = False
         self.master_shutdown_channel_id = "1392531225348014180"
@@ -74,7 +66,7 @@ class Config:
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 4002  # 4002 GATEWAY 7497 TWS
+        self.ibkr_port = 7497  # 4002 GATEWAY 7497 TWS
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
