@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 class SignalParser:
     """
     A specialist module for parsing trading signals from raw text messages.
-    This is the "Genius Translator" edition, with a Jargon Filter.
+    This is the "Master Linguist" edition, with an upgraded understanding
+    of complex signal formats.
     """
 
     def __init__(self, config):
@@ -25,35 +26,40 @@ class SignalParser:
 
     def _parse_ticker(self, text):
         """
-        Finds a potential stock ticker by locating all capitalized words and
-        returning the first one that is not an action buzzword OR a jargon word.
+        Finds a potential stock ticker, now handling optional '$' prefixes.
         """
-        potential_tickers = re.findall(r'\b([A-Z]{1,5})\b', text)
+        # This regex now looks for an optional '$' followed by 1-5 capital letters.
+        potential_tickers = re.findall(r'\$?([A-Z]{1,5})\b', text)
         if not potential_tickers:
             return None
         
-        # --- SURGICAL UPGRADE: The Jargon Filter ---
         for ticker in potential_tickers:
-            # The first one that is NOT a buzzword AND NOT jargon is our ticker.
-            if ticker not in self.config.buzzwords and ticker not in self.config.jargon_words:
+            if ticker not in self.config.buzzwords and ticker not in self.jargon_words:
                 return ticker
-        # --- END UPGRADE ---
         
         return None
 
     def _parse_strike_and_type(self, text):
-        """Finds the strike price and option type (C or P)."""
-        match = re.search(r'(\d+(?:\.\d+)?)\s*([CP])\b', text, re.IGNORECASE)
+        """
+        Finds the strike price and option type, now understanding both
+        'C'/'P' and 'CALL'/'PUT'.
+        """
+        # This regex now accepts C, P, CALL, or PUT, case-insensitively.
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(C|P|CALL|PUT)\b', text, re.IGNORECASE)
         if match:
             strike = float(match.group(1))
-            option_type = match.group(2).upper()
+            option_type_text = match.group(2).upper()
+            
+            # Normalize 'CALL' to 'C' and 'PUT' to 'P'
+            option_type = 'C' if option_type_text == 'CALL' else 'P' if option_type_text == 'PUT' else option_type_text
+            
             return strike, option_type
         return None, None
 
-    def _parse_expiry(self, text, ticker):
+    def _parse_expiry(self, text, ticker, profile):
         """
-        Finds and formats the expiration date. Reads both numeric (MM/DD)
-        and text-based (Sep 18th) dates.
+        Finds and formats the expiration date. Now uses the 'ambiguous_expiry_enabled'
+        setting as a fallback for signals with no date.
         """
         now = datetime.now()
         dt = None
@@ -80,15 +86,28 @@ class SignalParser:
                 except (IndexError, ValueError):
                     dt = None
         
-        if not dt and ticker in self.config.daily_expiry_tickers:
-            dt = now
+        # --- SURGICAL UPGRADE: The Ambiguous Expiry Protocol ---
+        # If no date was found AT ALL, we now check the profile's rule.
+        if not dt and profile.get("ambiguous_expiry_enabled", False):
+            logger.info(f"No explicit expiry found for {ticker}. Using 'ambiguous_expiry_enabled' rule.")
+            # For daily tickers, assume today.
+            if ticker in self.config.daily_expiry_tickers:
+                dt = now
+            else:
+                # For weekly tickers, find the next Friday.
+                today = now.weekday() # Monday is 0, Friday is 4
+                days_until_friday = (4 - today + 7) % 7
+                if days_until_friday == 0 and now.time().hour > 14: # If it's Friday afternoon, use next Friday
+                    days_until_friday = 7
+                dt = now + timedelta(days=days_until_friday)
+        # --- END UPGRADE ---
 
         if dt:
             if dt.date() < now.date():
                 dt = dt.replace(year=now.year + 1)
             
             if dt.weekday() >= 5:
-                logger.warning(f"Parse failed. Expiry date '{dt.strftime('%Y%m%d')}' is a weekend. Rejecting signal.")
+                logger.warning(f"Parse failed. Calculated expiry date '{dt.strftime('%Y%m%d')}' is a weekend. Rejecting signal.")
                 return None
             return dt.strftime('%Y%m%d')
 
@@ -107,7 +126,7 @@ class SignalParser:
         action = self._parse_action(text)
         ticker = self._parse_ticker(text)
         strike, option_type = self._parse_strike_and_type(text)
-        expiry = self._parse_expiry(text, ticker)
+        expiry = self._parse_expiry(text, ticker, profile) # Pass profile for rules
 
         if all([action, ticker, strike, option_type, expiry]):
             return {
@@ -119,3 +138,4 @@ class SignalParser:
             }
         
         return None
+
