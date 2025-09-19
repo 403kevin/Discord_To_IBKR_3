@@ -65,9 +65,9 @@ class SignalProcessor:
 
         sentiment_score = 'N/A'
         if self.config.sentiment_filter['enabled']:
-            sentiment_score = await self.sentiment_analyzer.analyze_sentiment(parsed_signal['ticker'])
+            sentiment_score = self.sentiment_analyzer.analyze_sentiment(message['content']) # Analyze the original message
             if sentiment_score is None or sentiment_score < self.config.sentiment_filter['sentiment_threshold']:
-                reason = f"Sentiment score {sentiment_score} below threshold {self.config.sentiment_filter['sentiment_threshold']}"
+                reason = f"Sentiment score {sentiment_score:.2f} below threshold {self.config.sentiment_filter['sentiment_threshold']}"
                 logger.warning(f"Trade for {contract_str} VETOED: {reason}")
                 veto_msg = (f"❌ **Trade Vetoed** ❌\n"
                             f"Source Channel: `{profile['channel_name']}`\n"
@@ -151,13 +151,14 @@ class SignalProcessor:
                     elif exit_strategy.get('momentum_exits', {}).get('rsi_hook_enabled'): momentum_exit = "RSI"
                     
                     contract_str = f"{contract.symbol} {contract.lastTradeDateOrContractMonth[4:6]}/{contract.lastTradeDateOrContractMonth[6:8]}/{contract.lastTradeDateOrContractMonth[2:4]} {int(contract.strike)}{contract.right}"
+                    sentiment_score_str = f"{trade_info['sentiment_score']:.2f}" if isinstance(trade_info['sentiment_score'], float) else "N/A"
 
                     entry_msg = (f"✅ **Trade Entry Confirmed** ✅\n"
                                  f"Source Channel: `{profile['channel_name']}`\n"
                                  f"Contract details: `{contract_str}`\n"
                                  f"Quantity: `{int(trade.order.totalQuantity)}`\n"
                                  f"Entry Price: `${entry_price:.2f}`\n"
-                                 f"Vader Sentiment Score: `{trade_info['sentiment_score']}`\n"
+                                 f"Vader Sentiment Score: `{sentiment_score_str}`\n"
                                  f"Trail method: `{exit_strategy['trail_method']}`\n"
                                  f"Momentum Exit: `{momentum_exit}`")
                     await self.telegram_interface.send_message(entry_msg)
@@ -203,7 +204,7 @@ class SignalProcessor:
                 trade_info['high_water_mark'] = max(trade_info['high_water_mark'], last_price)
                 high_water_mark = trade_info['high_water_mark']
                 
-                pullback_percent = trade_info['profile']['exit_strategy']['trail_settings']['pullback_percent']
+                pullback_percent = profile['exit_strategy']['trail_settings']['pullback_percent']
                 trailing_stop_price = high_water_mark * (1 - (pullback_percent / 100))
                 
                 entry_price = trade_info['entry_price']
