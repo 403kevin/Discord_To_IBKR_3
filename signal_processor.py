@@ -1,117 +1,154 @@
 import logging
-import asyncio
-import uuid
-from datetime import datetime, timezone
-from collections import deque
-from ib_insync import Option, MarketOrder, Order
-from services.signal_parser import SignalParser
+import re
+from services.config import Config
+from datetime import datetime, timedelta
 
-logger = logging.getLogger(__name__)
-
-class SignalProcessor:
+class SignalParser:
     """
-    The "brain" of the bot. This is the "Professional Trader" edition with the
-    critical Price Check Gatekeeper.
+    A specialist class for parsing trading signals from Discord messages.
+    It uses a multi-pass approach to handle various signal formats.
     """
 
-    def __init__(self, config, ib_interface, discord_interface, sentiment_analyzer, telegram_interface):
+    def __init__(self, config: Config):
+        self.logger = logging.getLogger(__name__)
         self.config = config
-        self.ib_interface = ib_interface
-        self.discord_interface = discord_interface
-        self.sentiment_analyzer = sentiment_analyzer
-        self.telegram_interface = telegram_interface
-        
-        self._channel_states = {}
-        self.active_trades = {}
-        self.processed_message_ids = deque(maxlen=self.config.processed_message_cache_size)
 
-    # ... (get_cooldown_status and reset_consecutive_losses are unchanged) ...
+    def parse_signal_message(self, message_content, profile):
+        """
+        Parses a message content based on a given profile.
+        This is the primary entry point for this class.
+        """
+        # --- Pre-computation for ambiguous expiry ---
+        today = datetime.now()
+        
+        # Check for rejection keywords first
+        if any(keyword.lower() in message_content.lower() for keyword in profile.get('reject_if_contains', [])):
+            self.logger.info(f"Message rejected due to keyword filter: '{message_content}'")
+            return None
 
-    async def process_signal(self, message: dict, profile: dict):
-        msg_id = message['id']
-        if msg_id in self.processed_message_ids: return
-        self.processed_message_ids.append(msg_id)
+        # --- First Pass: Standard Parser (Action-Ticker-Strike-Expiry) ---
+        # Example: BTO SPX 5200C 06/21
+        # Example: SELL NVDA 120P 6/21
+        pattern = re.compile(
+            r'\b(' + '|'.join(self.config.buzzwords) + r')\b'  # Action (BTO, STC, etc.)
+            r'\s+([A-Z]{1,5})'                            # Ticker (1-5 capital letters)
+            r'\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])'         # Strike and Type (e.g., 5200C, 120.5P)
+            r'\s+(\d{1,2}/\d{1,2})',                       # Expiry (e.g., 06/21, 6/21)
+            re.IGNORECASE
+        )
         
-        # ... (Age check and parsing logic are unchanged) ...
-        
-        parser = SignalParser(self.config)
-        parsed_signal = parser.parse_signal_message(message['content'], profile)
-        if not parsed_signal:
-            logger.debug(f"Signal IGNORED (ID: {msg_id}): Message content did not parse.")
-            return
+        match = pattern.search(message_content)
 
-        logger.info(f"Signal ACCEPTED (ID: {msg_id}): Parsed: {parsed_signal}")
-        
-        contract_str = (f"{parsed_signal['ticker']} "
-                        f"{parsed_signal['expiry'][4:6]}/{parsed_signal['expiry'][6:8]}/{parsed_signal['expiry'][2:4]} "
-                        f"{int(parsed_signal['strike'])}{parsed_signal['option_type']}")
+        if match:
+            action, ticker, strike, option_type, expiry_raw = match.groups()
+            
+            # --- Date Processing ---
+            month, day = map(int, expiry_raw.split('/'))
+            year = today.year
+            # Handle year rollover
+            if month < today.month or (month == today.month and day < today.day):
+                year += 1
+            expiry_str = f"{year}{month:02d}{day:02d}"
 
-        # ... (Sentiment analysis logic is unchanged) ...
-        
-        try:
-            contract = Option(
-                symbol=parsed_signal['ticker'],
-                lastTradeDateOrContractMonth=parsed_signal['expiry'],
-                strike=parsed_signal['strike'],
-                right=parsed_signal['option_type'],
-                exchange='SMART',
-                currency='USD'
+            # --- SURGICAL FIX: Validate the extracted ticker ---
+            # Check if the extracted "ticker" is actually a buzzword.
+            if ticker.upper() in self.config.buzzwords:
+                self.logger.warning(f"Parse failed. Ticker '{ticker}' is a buzzword. Rejecting signal.")
+                return None
+            # --- END SURGICAL FIX ---
+            
+            # --- SURGICAL FIX: Validate the expiry date ---
+            try:
+                expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
+                # Monday is 0 and Sunday is 6. We reject Saturdays (5) and Sundays (6).
+                if expiry_dt.weekday() >= 5:
+                    self.logger.warning(f"Parse failed. Expiry date '{expiry_str}' is a weekend. Rejecting signal.")
+                    return None
+            except ValueError:
+                self.logger.error(f"Parse failed. Invalid date format for expiry: '{expiry_str}'")
+                return None
+            # --- END SURGICAL FIX ---
+
+            return {
+                "action": "BUY" if action.upper() in self.config.buzzwords_buy else "SELL",
+                "ticker": ticker.upper(),
+                "strike": float(strike),
+                "option_type": option_type.upper(),
+                "expiry": expiry_str
+            }
+
+        # --- Second Pass: Ambiguous Signal (Ticker-Strike-Expiry only) ---
+        # This handles signals where the action (BTO/STC) is implied.
+        if profile.get('assume_buy_on_ambiguous', False):
+            pattern_ambiguous = re.compile(
+                r'([A-Z]{1,5})'                               # Ticker
+                r'\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])'          # Strike and Type
+                r'\s+(\d{1,2}/\d{1,2})',                        # Expiry
+                re.IGNORECASE
             )
-            qualified_contracts = await self.ib_interface.ib.qualifyContractsAsync(contract)
-            if not qualified_contracts:
-                # ... (Veto logic for non-existent contract is unchanged) ...
-                return
-        except Exception as e:
-            # ... (Veto logic for qualification error is unchanged) ...
-            return
+            match_ambiguous = pattern_ambiguous.search(message_content)
+            if match_ambiguous:
+                ticker, strike, option_type, expiry_raw = match_ambiguous.groups()
+                
+                # --- Date Processing ---
+                month, day = map(int, expiry_raw.split('/'))
+                year = today.year
+                if month < today.month or (month == today.month and day < today.day):
+                    year += 1
+                expiry_str = f"{year}{month:02d}{day:02d}"
 
-        # --- SURGICAL UPGRADE: The Price Check Gatekeeper ---
-        try:
-            # 1. Fetch the live market data.
-            ticker = self.ib_interface.ib.reqMktData(contract, '', False, False)
-            await asyncio.sleep(1.5) # Wait for the price to arrive
-            
-            # Use the most reliable price available (last, then close)
-            live_price = ticker.last if ticker.last and not ticker.last != ticker.last else ticker.close if ticker.close else 0
-            self.ib_interface.ib.cancelMktData(contract) # Clean up the data stream
+                # --- SURGICAL FIX (Duplicated for this path): Validate Ticker ---
+                if ticker.upper() in self.config.buzzwords:
+                    self.logger.warning(f"Ambiguous parse failed. Ticker '{ticker}' is a buzzword.")
+                    return None
+                # --- END SURGICAL FIX ---
 
-            if not live_price > 0:
-                reason = "Could not fetch a valid live price for the contract."
-                logger.error(f"Trade for {contract_str} VETOED: {reason}")
-                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
-                            f"Source Channel: `{profile['channel_name']}`\n"
-                            f"Contract details: `{contract_str}`\n"
-                            f"Reason: `{reason}`")
-                await self.telegram_interface.send_message(veto_msg)
-                return
+                # --- SURGICAL FIX (Duplicated for this path): Validate Expiry ---
+                try:
+                    expiry_dt = datetime.strptime(expiry_str, '%Y%m%d')
+                    if expiry_dt.weekday() >= 5:
+                        self.logger.warning(f"Ambiguous parse failed. Expiry '{expiry_str}' is a weekend.")
+                        return None
+                except ValueError:
+                    self.logger.error(f"Ambiguous parse failed. Invalid date format: '{expiry_str}'")
+                    return None
+                # --- END SURGICAL FIX ---
 
-            # 2. Enforce the constitution's price rules.
-            min_price = profile['trading']['min_price_per_contract']
-            max_price = profile['trading']['max_price_per_contract']
+                return {
+                    "action": "BUY", # Assumption based on profile
+                    "ticker": ticker.upper(),
+                    "strike": float(strike),
+                    "option_type": option_type.upper(),
+                    "expiry": expiry_str
+                }
 
-            if not (min_price <= live_price <= max_price):
-                reason = f"Live price ${live_price:.2f} is outside the allowed range (${min_price:.2f} - ${max_price:.2f})."
-                logger.warning(f"Trade for {contract_str} VETOED: {reason}")
-                veto_msg = (f"❌ **Trade Vetoed** ❌\n"
-                            f"Source Channel: `{profile['channel_name']}`\n"
-                            f"Contract details: `{contract_str}`\n"
-                            f"Reason: `{reason}`")
-                await self.telegram_interface.send_message(veto_msg)
-                return
+        # --- Third Pass: Ambiguous Expiry (e.g., "SPX 0DTE", "NVDA weekly") ---
+        if profile.get('ambiguous_expiry_enabled', False):
+            # This logic can be complex. For now, we'll handle simple cases.
+            # Example: "0DTE" means "zero days to expiry"
+            if "0dte" in message_content.lower():
+                # Find the parts of the signal around the 0DTE text
+                pattern_0dte = re.compile(
+                    r'([A-Z]{1,5})\s+(\d{2,5}(?:\.\d{1,2})?)\s*([PC])',
+                    re.IGNORECASE
+                )
+                match_0dte = pattern_0dte.search(message_content)
+                if match_0dte:
+                    ticker, strike, option_type = match_0dte.groups()
+                    
+                    # Set expiry to today's date
+                    expiry_str = today.strftime('%Y%m%d')
+                    
+                    # (No need to validate if today is a weekend, IB will reject it anyway,
+                    # but a robust implementation would check against a market calendar)
+                    
+                    return {
+                        "action": "BUY", # Assuming buy
+                        "ticker": ticker.upper(),
+                        "strike": float(strike),
+                        "option_type": option_type.upper(),
+                        "expiry": expiry_str
+                    }
 
-        except Exception as e:
-            reason = f"Price check failed: {e}"
-            logger.error(f"Trade for {contract_str} VETOED during price check: {reason}", exc_info=True)
-            veto_msg = (f"❌ **Trade Vetoed** ❌\n"
-                        f"Source Channel: `{profile['channel_name']}`\n"
-                        f"Contract details: `{contract_str}`\n"
-                        f"Reason: `{reason}`")
-            await self.telegram_interface.send_message(veto_msg)
-            self.ib_interface.ib.cancelMktData(contract) # Ensure cleanup on error
-            return
-        # --- END UPGRADE ---
-            
-        quantity = 1
-        order = MarketOrder(action=parsed_signal['action'].upper(), totalQuantity=quantity)
-
-        # ... (Place order and monitor_active_trades logic are unchanged) ...
+        self.logger.debug(f"Message did not match any known signal format: '{message_content}'")
+        return None
