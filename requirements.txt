@@ -7,5 +7,6 @@ pandas
 nltk
 aiohttp
 beautifulsoup4
+pandas-ta
 
 # In pycharm terminal - pip install -r requirements.txt
