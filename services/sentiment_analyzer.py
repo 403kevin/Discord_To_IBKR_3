@@ -1,44 +1,52 @@
+"""
+Services/sentiment_analyzer.py
+
+Author: 403-Forbidden
+Purpose: Provides sentiment analysis services for raw text messages using the
+         Vader (Valence Aware Dictionary and sEntiment Reasoner) model.
+"""
 import logging
-import nltk
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-
-logger = logging.getLogger(__name__)
-
 
 class SentimentAnalyzer:
     """
-    A specialist module for performing sentiment analysis on news headlines.
-    This is the corrected version with the proper method name.
+    A wrapper for the Vader sentiment analysis tool.
     """
-
-    def __init__(self, config):
-        self.config = config
-        # This ensures the necessary NLTK data is downloaded once if needed.
-        try:
-            nltk.data.find('sentiment/vader_lexicon.zip')
-        except LookupError:
-            logger.info("VADER lexicon not found. Downloading...")
-            nltk.download('vader_lexicon')
-
-        self.analyzer = SentimentIntensityAnalyzer()
-
-    def analyze_sentiment(self, text: str) -> float:
+    def __init__(self):
         """
-        Analyzes the sentiment of a given text and returns the compound score.
-        This is the corrected method name that the SignalProcessor expects.
+        Initializes the SentimentIntensityAnalyzer.
+        """
+        try:
+            self.analyzer = SentimentIntensityAnalyzer()
+        except Exception as e:
+            logging.error(f"Failed to initialize SentimentIntensityAnalyzer: {e}")
+            # Depending on criticality, you might want to raise the exception.
+            self.analyzer = None
+
+    def get_sentiment_score(self, text: str) -> float:
+        """
+        Analyzes a string of text and returns its compound sentiment score.
+
+        The compound score is a metric that calculates the sum of all lexicon ratings
+        which have been normalized between -1 (most extreme negative) and +1
+        (most extreme positive).
 
         Args:
-            text (str): The text to analyze (e.g., a news headline or message).
+            text (str): The raw text of the message to analyze.
 
         Returns:
-            float: A sentiment score from -1 (most negative) to 1 (most positive).
+            float: The compound sentiment score. Returns 0.0 if analyzer fails.
         """
-        # The VADER sentiment analysis tool returns a dictionary of scores.
-        # The 'compound' score is a single, normalized value that is easiest to work with.
+        if not self.analyzer:
+            logging.warning("Sentiment analyzer is not available.")
+            return 0.0
+            
+        # The polarity_scores() method returns a dict with 'neg', 'neu', 'pos', 'compound'
         sentiment_scores = self.analyzer.polarity_scores(text)
+        
+        # The 'compound' score is the most useful for a single-metric threshold.
         compound_score = sentiment_scores['compound']
-
-        logger.debug(f"Sentiment analysis for '{text[:30]}...': {compound_score}")
-
+        
+        logging.info(f"Analyzed sentiment for text: '{text[:50]}...'. Compound Score: {compound_score}")
+        
         return compound_score
-
