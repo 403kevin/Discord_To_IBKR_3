@@ -45,7 +45,7 @@ class Config:
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
-        self.buzzwords_ignore = os.getenv("IGNORE_WORDS", "ignore,test").split(',') # <-- SURGICAL INSERTION 1
+        self.buzzwords_ignore = os.getenv("IGNORE_WORDS", "ignore,test").split(',') # <-- SURGICAL INSERTION
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "trade_log.csv")
 
 
@@ -65,6 +65,11 @@ class Config:
         self.master_shutdown_channel_id = "1392531225348014180"
         self.master_shutdown_command = "terminate"
         self.oversold_monitor_enabled = True
+        
+        # =================================================================
+        # --- LEGEND: ANALYSIS & RESAMPLING ---
+        # =================================================================
+        self.min_ticks_per_bar = int(os.getenv("MIN_TICKS_PER_BAR", 20)) # <-- SURGICAL INSERTION
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
@@ -88,7 +93,7 @@ class Config:
             "enabled": False,
             "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05,
-            "put_sentiment_threshold": -0.05 # <-- SURGICAL INSERTION 2
+            "put_sentiment_threshold": -0.05 # <-- SURGICAL INSERTION
         }
 
         # =================================================================
@@ -123,6 +128,7 @@ class Config:
                     "timeout_exit_minutes": 120,
 
                     # --- UPDATED: Graceful Exit Strategy Toggle ---
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"], # <-- SURGICAL INSERTION
                     # Defines the primary trailing stop method.
                     # Options: "atr", "pullback_percent"
                     "trail_method": "atr",
@@ -136,7 +142,7 @@ class Config:
                         "psar_enabled": False,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
                         "rsi_hook_enabled": False,
-                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30} # <-- SURGICAL INSERTION 3
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30} # <-- SURGICAL INSERTION
                     }
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
