@@ -2,6 +2,8 @@
 
 
 
+
+
 Project Revision 3: Discord to IBKR Bot (Internal "Source of Truth")
 This document serves as the binding directive for all development on this project. Its purpose is to provide essential context, define the project's philosophy, and prevent architectural drift. All AI assisting with this code must adhere strictly to the principles laid out herein.
 
@@ -151,3 +153,38 @@ message_parsers.py - The Translator. Decodes raw Discord messages.
 trailing_stop_manager.py - The Safety Net. Manages stop-loss calculations.
 
 utils.py - The Gadgets. Contains various helper functions.
+
+Edit with the Docs app
+Make tweaks, leave comments, and share with others to edit at the same time.
+NO THANKSUSE THE APP
+
+
+
+Backtesting Workflow: Quick Guide
+*********************************
+This is a professional, multi-part mission. Follow these steps in order.
+
+Phase 1: Create the Battle Plan
+ (signals_to_test.txt)
+
+Automated Start (Optional): Save a Discord channel as discord_export.html in the backtester/ folder, then run the command below to auto-generate a signal list.
+
+python backtester/html_to_signals.py
+
+Manual Curation (Required): Open backtester/signals_to_test.txt. Manually clean, edit, and perfect this file. Use the snowflake_to_timestamp.py tool for precise timestamps. The format must be:
+YYYY-MM-DD HH:MM:SS | Channel Name | Signal Text
+
+Phase 2: Gather the Fuel
+
+ (data_harvester.py)
+Requirement: This is the only step that requires a live connection to a running TWS or IB Gateway.
+Action: From the main project folder, run the harvester. It will read your "Battle Plan" and download all necessary price history into .csv files.
+
+python backtester/data_harvester.py
+
+Phase 3: Run the Simulation
+
+ (backtest_engine.py)
+Requirement: This step is offline and does not require TWS to be running.
+Action: From the main project folder, run the "Time Machine." It will simulate all trades based on the harvested data.
+python backtester/backtest_engine.py
