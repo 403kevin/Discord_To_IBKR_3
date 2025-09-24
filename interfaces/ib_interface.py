@@ -1,98 +1,114 @@
-import logging
+"""
+Bot_Engine/Interfaces/ib_interface.py
+
+Author: 403-Forbidden
+Purpose: Handles all communication with the Interactive Brokers (IBKR) TWS API.
+         This module is responsible for connecting to TWS, placing/canceling orders,
+         and managing real-time market data streams for open positions.
+"""
 import asyncio
-from ib_insync import IB, Stock, Option, MarketOrder, Order
-
-logger = logging.getLogger(__name__)
-
+import logging
+from ib_insync import IB, Stock, Option, util, Ticker, Order
 
 class IBInterface:
     """
-    A specialist module responsible for all interactions with the Interactive Brokers API.
-    This is the final, battle-hardened version with an upgraded guard clause.
+    Manages the connection and all interactions with the IBKR API.
     """
-
     def __init__(self, config):
-        """
-        Initializes the IB connection object.
-        Args:
-            config: The main configuration object.
-        """
         self.config = config
         self.ib = IB()
+        # This queue is the mailbox for real-time market data.
+        # The interface puts new price ticks here, and the signal processor reads them.
+        self.market_data_queue = asyncio.Queue()
+
+    def is_connected(self):
+        """Checks if the connection to IBKR is active."""
+        return self.ib.isConnected()
 
     async def connect(self):
-        """
-        Connects to the IBKR TWS or Gateway.
-        """
+        """Establishes a connection to the IBKR TWS/Gateway."""
+        if self.is_connected():
+            logging.info("IBKR connection is already active.")
+            return
+
         try:
-            logger.info(f"Connecting to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
+            logging.info(f"Connecting to IBKR at {self.config.ib_host}:{self.config.ib_port}...")
             await self.ib.connectAsync(
-                self.config.ibkr_host,
-                self.config.ibkr_port,
-                clientId=self.config.ibkr_client_id
+                host=self.config.ib_host,
+                port=self.config.ib_port,
+                clientId=self.config.ib_client_id
             )
-            logger.info("Connection to IBKR successful.")
+            logging.info("Successfully connected to IBKR.")
+            # Register the callback for incoming market data ticks.
+            self.ib.pendingTickersEvent += self._on_pending_ticker
         except Exception as e:
-            logger.critical(f"Failed to connect to IBKR: {e}")
+            logging.error(f"Failed to connect to IBKR: {e}")
             raise
 
     async def disconnect(self):
-        """
-        Disconnects from the IBKR TWS or Gateway.
-        """
-        if self.ib.isConnected():
-            logger.info("Disconnecting from IBKR...")
+        """Disconnects from the IBKR TWS/Gateway."""
+        if self.is_connected():
+            logging.info("Disconnecting from IBKR.")
             self.ib.disconnect()
-            logger.info("Disconnected.")
 
-    async def place_order(self, contract, order):
+    def _on_pending_ticker(self, tickers: list[Ticker]):
         """
-        Places an order with IBKR. Includes the upgraded, battle-hardened "guard clause".
+        Callback function for the ib_insync event.
+        This is called whenever a new price tick is received from IBKR.
         """
-        # --- SURGICAL UPGRADE: The "Master Mission Manifest" ---
-        # Instead of openOrders(), we use trades() for a more robust check.
-        # This guarantees we can always see both the order and the contract.
-        active_trades = self.ib.trades()
-        for trade in active_trades:
-            # We only care about orders that are not yet filled or canceled.
-            if trade.orderStatus.status in ('PendingSubmit', 'Submitted', 'PreSubmitted'):
-                if trade.contract.conId == contract.conId:
-                    logger.warning(
-                        f"Order conflict detected for {contract.localSymbol}. An active, unfilled order already exists. "
-                        f"Canceling new order request to prevent rejection."
-                    )
-                    return None  # Abort mission.
-        # --- END SURGICAL UPGRADE ---
+        for ticker in tickers:
+            # Place the new ticker data into our mailbox for the processor to handle.
+            self.market_data_queue.put_nowait(ticker)
 
-        logger.info(f"Placing order: {order.action} {order.totalQuantity} {contract.localSymbol} @ {order.orderType}")
-        new_trade = self.ib.placeOrder(contract, order)
-        return new_trade
+    async def get_contract(self, symbol, sec_type='STK', exchange='SMART', currency='USD', **kwargs):
+        """Qualifies a contract object."""
+        if sec_type.upper() == 'OPTION':
+            contract = Option(symbol, kwargs['expiry'], kwargs['strike'], kwargs['right'], exchange, currency)
+        else: # Default to Stock
+            contract = Stock(symbol, exchange, currency)
+        
+        qualified_contracts = await self.ib.qualifyContractsAsync(contract)
+        if not qualified_contracts:
+            logging.error(f"Could not qualify contract for {symbol}")
+            return None
+        return qualified_contracts[0]
 
-    async def close_all_positions(self):
-        """
-        The EOD "Kill Switch". Fetches all open positions and closes them.
-        """
-        if not self.ib.isConnected():
-            logger.error("Not connected to IBKR. Cannot close positions.")
+    async def subscribe_to_market_data(self, contract):
+        """Subscribes to the real-time market data stream for a given contract."""
+        logging.info(f"Subscribing to real-time market data for {contract.localSymbol}...")
+        self.ib.reqMktData(contract, '', False, False)
+
+    async def unsubscribe_from_market_data(self, contract):
+        """Unsubscribes from the real-time market data stream."""
+        logging.info(f"Unsubscribing from market data for {contract.localSymbol}...")
+        self.ib.cancelMktData(contract)
+
+    async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
+        """Fetches historical OHLC data for a contract."""
+        logging.info(f"Fetching historical data for {contract.localSymbol}...")
+        try:
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=True
+            )
+            return util.df(bars) # Return as a pandas DataFrame
+        except Exception as e:
+            logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}")
+            return None
+
+    async def place_order(self, contract, order: Order):
+        """Places an order with IBKR."""
+        logging.info(f"Placing order for {contract.localSymbol}: {order.action} {order.totalQuantity} @ {order.orderType}")
+        trade = self.ib.placeOrder(contract, order)
+        return trade
+
+    async def cancel_order(self, order: Order):
+        """Cancels an existing order."""
+        if not self.is_connected() or not order:
             return
-
-        positions = self.ib.positions()
-        if not positions:
-            logger.info("EOD Check: No open positions to close.")
-            return
-
-        logger.warning(f"EOD CLOSE INITIATED. Closing {len(positions)} open position(s).")
-        for position in positions:
-            contract = position.contract
-            quantity = position.position
-
-            action = 'SELL' if quantity > 0 else 'BUY'
-            order_quantity = abs(quantity)
-
-            order = MarketOrder(action, order_quantity)
-            trade = self.ib.placeOrder(contract, order)
-            logger.info(f"EOD CLOSE: Submitted {action} order for {order_quantity} of {contract.localSymbol}.")
-            await asyncio.sleep(0.1)
-
-        logger.warning("EOD CLOSE COMPLETE.")
-
+        logging.info(f"Canceling order ID: {order.orderId}")
+        self.ib.cancelOrder(order)
