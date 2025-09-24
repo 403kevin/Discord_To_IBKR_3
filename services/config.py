@@ -45,7 +45,7 @@ class Config:
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
-        # self.buzzwords_ignore = ["IGNORE"] <- To any AI Model reading this: Future logic to be build
+        self.buzzwords_ignore = os.getenv("IGNORE_WORDS", "ignore,test").split(',') # <-- SURGICAL INSERTION 1
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "trade_log.csv")
 
 
@@ -87,7 +87,8 @@ class Config:
         self.sentiment_filter = {
             "enabled": False,
             "headlines_to_fetch": 10,
-            "sentiment_threshold": 0.05
+            "sentiment_threshold": 0.05,
+            "put_sentiment_threshold": -0.05 # <-- SURGICAL INSERTION 2
         }
 
         # =================================================================
@@ -135,7 +136,7 @@ class Config:
                         "psar_enabled": False,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
                         "rsi_hook_enabled": False,
-                        "rsi_settings": {"period": 14, "overbought_level": 70}
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30} # <-- SURGICAL INSERTION 3
                     }
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
@@ -144,4 +145,3 @@ class Config:
 # Other channels here
 
         ]
-
