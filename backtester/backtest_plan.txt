@@ -1,0 +1,35 @@
+==============================================================================
+Backtest Signal Log - The "Battle Plan"
+==============================================================================
+INSTRUCTIONS:
+1. This file is your "shopping list" for the data_harvester.py script.
+2. Add one historical signal per line.
+3. The harvester will read each line, parse the signal, find the exact option
+contract, and download its historical price data into a .csv file.
+FORMAT:
+YYYY-MM-DD HH:MM:SS | The exact signal text as it appeared in Discord
+NOTES:
+- The timestamp is CRITICAL. It tells the backtester exactly when the signal "happened."
+- The pipe symbol "|" is the separator.
+- Lines starting with "#" are comments and will be ignored.
+- The signal text can be in almost any format; our battle-hardened parser
+is smart enough to find the ticker, strike, type, and expiry.
+==============================================================================
+--- EXAMPLE SIGNALS ---
+Standard Format
+2025-08-12 09:45:00 | BTO AMZN 230C 08/22
+
+Different Action Word and Ticker
+2025-07-29 10:11:00 | BUY TSLA 342.5C 08/01
+
+Signal with Extra "Chatter"
+2025-07-22 11:40:00 | I grabbed nvda 180c 08/01
+
+Signal with a Put Option
+2025-07-25 11:44:00 | OPEN smci 51p 08/01
+
+Daily Expiry Ticker (SPX) - Parser will handle this intelligently
+2025-09-18 07:30:00 | BTO SPX 6650C 09/18
+
+Another Daily Expiry Ticker (SPY) with a different date format
+2025-09-19 11:05:00 | SELL SPY 650P 9-19-2025

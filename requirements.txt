@@ -1,0 +1,11 @@
+ib-insync
+discord.py==2.3.2
+vaderSentiment==3.3.2
+pytz==2024.1
+python-dotenv==1.0.1
+pandas
+nltk
+aiohttp
+beautifulsoup4
+pandas-ta
+

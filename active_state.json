@@ -1,0 +1,207 @@
+{
+    "active_trades": {
+        "56a97631-4d7c-40e1-9b1c-25a964ea411f": {
+            "trade_obj": {
+                "Trade": {
+                    "contract": {
+                        "Option": {
+                            "secType": "OPT",
+                            "conId": 805146201,
+                            "symbol": "SHOP",
+                            "lastTradeDateOrContractMonth": "20250926",
+                            "strike": 150.0,
+                            "right": "C",
+                            "multiplier": "100",
+                            "exchange": "SMART",
+                            "currency": "USD",
+                            "localSymbol": "SHOP  250926C00150000",
+                            "tradingClass": "SHOP"
+                        }
+                    },
+                    "order": {
+                        "MarketOrder": {
+                            "orderId": 297,
+                            "clientId": 1,
+                            "permId": 1904391362,
+                            "action": "BUY",
+                            "totalQuantity": 2.0,
+                            "orderType": "MKT",
+                            "lmtPrice": 0.0,
+                            "auxPrice": 0.0,
+                            "softDollarTier": {
+                                "SoftDollarTier": {}
+                            }
+                        }
+                    },
+                    "orderStatus": {
+                        "OrderStatus": {
+                            "orderId": 297,
+                            "status": "Filled",
+                            "filled": 2.0,
+                            "avgFillPrice": 4.3,
+                            "permId": 1904391362,
+                            "lastFillPrice": 4.3,
+                            "clientId": 1
+                        }
+                    },
+                    "fills": [
+                        {
+                            "contract": {
+                                "Option": {
+                                    "secType": "OPT",
+                                    "conId": 805146201,
+                                    "symbol": "SHOP",
+                                    "lastTradeDateOrContractMonth": "20250926",
+                                    "strike": 150.0,
+                                    "right": "C",
+                                    "multiplier": "100",
+                                    "exchange": "SMART",
+                                    "currency": "USD",
+                                    "localSymbol": "SHOP  250926C00150000",
+                                    "tradingClass": "SHOP"
+                                }
+                            },
+                            "execution": {
+                                "Execution": {
+                                    "execId": "00020057.68d2dcd6.01.01",
+                                    "time": "2025-09-23T16:30:51+00:00",
+                                    "acctNumber": "DU1322099",
+                                    "exchange": "SAPPHIRE",
+                                    "side": "BOT",
+                                    "shares": 2.0,
+                                    "price": 4.3,
+                                    "permId": 1904391362,
+                                    "clientId": 1,
+                                    "orderId": 297,
+                                    "cumQty": 2.0,
+                                    "avgPrice": 4.3,
+                                    "lastLiquidity": 2
+                                }
+                            },
+                            "commissionReport": {
+                                "CommissionReport": {
+                                    "execId": "00020057.68d2dcd6.01.01",
+                                    "commission": 0.4413,
+                                    "currency": "USD"
+                                }
+                            },
+                            "time": "2025-09-23T16:30:51.448171+00:00"
+                        }
+                    ],
+                    "log": [
+                        {
+                            "TradeLogEntry": {
+                                "time": "2025-09-23T16:30:50.270032+00:00",
+                                "status": "PendingSubmit"
+                            }
+                        },
+                        {
+                            "TradeLogEntry": {
+                                "time": "2025-09-23T16:30:51.420186+00:00",
+                                "status": "Submitted"
+                            }
+                        },
+                        {
+                            "TradeLogEntry": {
+                                "time": "2025-09-23T16:30:51.448171+00:00",
+                                "status": "Submitted",
+                                "message": "Fill 2.0@4.3"
+                            }
+                        },
+                        {
+                            "TradeLogEntry": {
+                                "time": "2025-09-23T16:30:51.449169+00:00",
+                                "status": "Filled"
+                            }
+                        }
+                    ]
+                }
+            },
+            "profile": {
+                "channel_id": "1392531225348014180",
+                "channel_name": "test_server",
+                "enabled": true,
+                "assume_buy_on_ambiguous": false,
+                "ambiguous_expiry_enabled": true,
+                "reject_if_contains": [
+                    "RISK",
+                    "earnings",
+                    "play"
+                ],
+                "consecutive_loss_monitor": {
+                    "enabled": false,
+                    "max_losses": 3,
+                    "cooldown_minutes": 60
+                },
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.3,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY",
+                    "fill_timeout_seconds": 20
+                },
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "timeout_exit_minutes": 120,
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 10,
+                        "atr_period": 14,
+                        "atr_multiplier": 1.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": false,
+                        "psar_settings": {
+                            "start": 0.02,
+                            "increment": 0.02,
+                            "max": 0.2
+                        },
+                        "rsi_hook_enabled": false,
+                        "rsi_settings": {
+                            "period": 14,
+                            "overbought_level": 70
+                        }
+                    }
+                },
+                "safety_net": {
+                    "enabled": true,
+                    "native_trail_percent": 35
+                }
+            },
+            "fill_processed": true,
+            "entry_price": 4.3,
+            "sentiment_score": "N/A",
+            "high_water_mark": 4.3,
+            "native_trail_attached": true,
+            "breakeven_armed": false
+        }
+    },
+    "processed_message_ids": [
+        1420061201018130543,
+        1420066479394783372,
+        1420071364412309605,
+        1420077295091318897,
+        1420077295879716976,
+        1419753324823052308,
+        1419758807139221504,
+        1420016903803633734,
+        1420039541720612895,
+        1420058432303665163,
+        1420041746846322779,
+        1420042776938283060,
+        1420045370326515722,
+        1420051634079404212,
+        1420051739662618748,
+        1420050161500946473,
+        1420051914585935935,
+        1420056601531912274,
+        1420059565872906280,
+        1420074088507904172,
+        1417880103152517140,
+        1419686297857167372,
+        1419704970877341719,
+        1419707198174396567,
+        1420052410394476574
+    ]
+}
