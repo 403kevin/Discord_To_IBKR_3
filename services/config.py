@@ -22,7 +22,6 @@ class Config:
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
-        self.MARKET_TIMEZONE = "US/Mountain"
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
@@ -38,7 +37,6 @@ class Config:
         self.signal_max_age_seconds = 60
         self.processed_message_cache_size = 25
         
-        # --- SURGICAL FIX: Add the missing blueprint instruction ---
         self.STATE_FILE_PATH = os.getenv("STATE_FILE_PATH", "state/open_positions.json")
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "trade_log.csv")
 
@@ -128,4 +126,3 @@ class Config:
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
         ]
-
