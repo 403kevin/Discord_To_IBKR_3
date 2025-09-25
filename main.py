@@ -58,35 +58,37 @@ def is_market_hours(timezone="US/Eastern"):
     return market_open <= now.time() <= market_close and now.weekday() < 5
 
 
+# THIS IS THE CHANGE FOR main.py
+
 async def main():
     """
-    The main asynchronous entry point and orchestrator for the trading bot.
-    This function initializes all components and runs the primary event loop.
+    The main asynchronous function that initializes and runs the bot.
+    This is the "Orchestrator" of the entire application.
     """
-    # Initialize interfaces to None to ensure they exist in the `finally` block
-    # for a clean shutdown, even if initialization fails.
+    telegram_interface = None
     ib_interface = None
     discord_interface = None
-    telegram_interface = None
-    eod_close_triggered_today = False
     try:
-        # --- COMPONENT INITIALIZATION ---
+        logging.info("--- 🚀 LAUNCHING TRADING BOT 🚀 ---")
+
+        # --- Initialize Components ---
         config = Config()
         state_manager = StateManager(config)
-        ib_interface = IBInterface(config)
-        discord_interface = DiscordInterface(config)
         sentiment_analyzer = SentimentAnalyzer()
+
+        ib_interface = IBInterface(config)
         telegram_interface = TelegramInterface(config)
+        discord_interface = DiscordInterface(config)
 
-        # --- SURGICAL UPGRADE: The "Amnesia Vaccine" Startup Sequence ---
-        # 1. Connect to the broker first. We need a live connection to understand state.
+        # --- Pre-flight Connections ---
         await ib_interface.connect()
+        await telegram_interface.initialize()
+        await discord_interface.initialize_and_login()
 
-        # 2. Command the Scribe to load the last known state.
-        # It needs the live ib instance to correctly "rehydrate" trade objects.
+        # --- Load State ---
         loaded_trades, loaded_ids = state_manager.load_state()
 
-        # 3. Brief the General ("brain") with the restored memory and the Scribe.
+        # --- Instantiate the Brain ---
         signal_processor = SignalProcessor(
             config=config,
             ib_interface=ib_interface,
@@ -94,143 +96,30 @@ async def main():
             discord_interface=discord_interface,
             state_manager=state_manager,
             sentiment_analyzer=sentiment_analyzer,
-            initial_positions=loaded_trades,  # <-- CORRECTED LABEL
+            initial_positions=loaded_trades,
             initial_processed_ids=loaded_ids
         )
 
-        # --- 2. CONNECTION & STARTUP (Continued) ---
-        await discord_interface.initialize()
-        await telegram_interface.initialize()
-        logger.info("VADER sentiment analyzer initialized successfully.")
-
-        # ... (The rest of the main function, the while True: loop, follows here) ...
-
-        # --- 3. MAIN EVENT LOOP ---
-        logger.info("Starting main event loop...")
-        await telegram_interface.send_message("✅ **Bot is online and running.**")
-        while True:
-            # --- Global Shutdown Check ---
-            # This allows for a remote shutdown command via a specific Discord channel.
-            if config.master_shutdown_enabled:
-                try:
-                    shutdown_messages = await discord_interface.get_latest_messages(
-                        config.master_shutdown_channel_id, limit=1
-                    )
-                    if shutdown_messages and shutdown_messages[0][
-                        'content'].strip().lower() == config.master_shutdown_command:
-                        logger.info("Master shutdown command received. Terminating.")
-                        await telegram_interface.send_message("⚠️ **Shutdown command received. Bot is terminating.**")
-                        break  # Exit the main while loop
-                except Exception as e:
-                    logger.error(f"Error checking for shutdown command: {e}")
-
-                    # --- SURGICAL UPGRADE: The Corrected EOD Safety Net Check ---
-                    if config.eod_close["enabled"] and not eod_close_triggered_today:
-                        tz = pytz.timezone("US/Eastern")
-                        now_eastern = datetime.now(tz)
-
-                        # Create a simple time object for the closing time
-                        close_time = dt_time(config.eod_close["hour"], config.eod_close["minute"])
-
-                        # The two checks are now clean and separate
-                        is_after_close_time = now_eastern.time() >= close_time
-                        is_weekday = now_eastern.weekday() < 5  # Monday is 0, Friday is 4
-
-                        if is_after_close_time and is_weekday:
-                            logger.warning("EOD CLOSE TRIGGERED. Initiating closing of all positions.")
-                            await telegram_interface.send_message(
-                                "⚠️ **EOD CLOSE TRIGGERED** ⚠️\nInitiating closing of all open positions.")
-
-                            try:
-                                await ib_interface.close_all_positions()
-                                eod_close_triggered_today = True  # Mark as triggered to prevent re-running
-                                await telegram_interface.send_message("✅ **EOD CLOSE COMPLETE** ✅")
-                            except Exception as e:
-                                logger.critical(f"EOD close procedure failed: {e}", exc_info=True)
-                                await telegram_interface.send_message(f"🚨 **EOD CLOSE FAILED** 🚨\nReason: `{e}`")
-                    # --- END SURGICAL UPGRADE ---
-
-                    # --- Discord Polling Cycle ---
-
-            # --- Discord Polling Cycle ---
-            # Iterate through each channel profile defined in the config.
-            for profile in config.profiles:
-                if not profile.get('enabled', False):
-                    continue  # Skip disabled profiles
-
-                # --- Consecutive Loss Cooldown Check ---
-                # If a channel has too many losses in a row, it's put on a timeout.
-                cooldown_info = signal_processor.get_cooldown_status(profile['channel_id'])
-                if cooldown_info['on_cooldown']:
-                    now_utc = datetime.now(pytz.utc)
-                    if now_utc < cooldown_info['end_time']:
-                        continue  # Still on cooldown, skip this profile
-                    else:
-                        # Cooldown has expired, reset the counter.
-                        signal_processor.reset_consecutive_losses(profile['channel_id'])
-                        logger.info(f"Cooldown for channel {profile['channel_name']} has ended.")
-
-                try:
-                    # Fetch the latest messages from the Discord channel.
-                    messages = await discord_interface.get_latest_messages(profile['channel_id'], limit=5)
-                    if messages:
-                        # Process messages from oldest to newest to maintain order.
-                        for message in reversed(messages):
-                            await signal_processor.process_signal(message, profile)
-                except Exception as e:
-                    logger.error(f"Error fetching or processing messages for channel {profile['channel_name']}: {e}")
-
-                # A brief, polite pause between polling different channels.
-                await asyncio.sleep(config.delay_between_channels)
-
-            # --- Active Trade Monitoring & Management ---
-            # After checking for new signals, manage all ongoing trades.
-            try:
-                await signal_processor.monitor_active_trades()
-            except Exception as e:
-                logger.error(f"Error during active trade monitoring: {e}", exc_info=True)
-
-            # A longer pause after a full cycle of polling and monitoring.
-            await asyncio.sleep(config.delay_after_full_cycle)
+        # --- GO LIVE ---
+        # The start() method now contains all the logic and loops.
+        # It will run indefinitely until a shutdown is triggered.
+        logging.info("Starting main event loop...")
+        await signal_processor.start()
 
     except Exception as e:
-        logger.critical(f"A critical error occurred in the main setup or loop: {e}", exc_info=True)
-        if telegram_interface:  # <-- ADD THIS BLOCK
-            await telegram_interface.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
-        logger.info("Bot has shut down.")
-        if telegram_interface:  # <-- ADD THIS BLOCK
-            await telegram_interface.send_message(f"🚨 **FATAL BOT CRASH** 🚨\n\n`{e}`")
-
-        if discord_interface:
-            await discord_interface.close()
-        if telegram_interface:  # <-- ADD THIS BLOCK
-            await telegram_interface.close()
-
-
-# --- SCRIPT ENTRY POINT ---
-# This is the standard Python way to make a script runnable.
-if __name__ == "__main__":
-    # This is a small but important fix for asyncio on Windows.
-    # It prevents a `RuntimeError: Event loop is closed` on shutdown.
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-    try:
-        # `asyncio.run()` starts the asynchronous event loop.
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        # This catches manual shutdown signals (like Ctrl+C).
-        logger.info("Shutdown signal received. Exiting.")
-
-
-# ====================================================================================
-# --- LEGACY MAIN BLOCK (FOR REFERENCE & EDUCATIONAL PURPOSES ONLY) ---
-# The code below this point represents the previous, synchronous version of the bot.
-# It is NOT executed. It is preserved here as a "battle scar" to show the project's
-# architectural evolution from a simple, blocking script to a more robust,
-# asynchronous application. This is a key part of the project's history.
-# ====================================================================================
-
+        logging.critical("A critical error occurred in the main setup or loop: %s", e, exc_info=True)
+        if telegram_interface and telegram_interface.is_initialized():
+            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed. Check logs.\n\nError: {e}")
+    finally:
+        logging.info("--- 😴 Bot is shutting down. ---")
+        # Gracefully close all connections
+        if telegram_interface and telegram_interface.is_initialized():
+            await telegram_interface.send_message("😴 Bot is shutting down.")
+            await telegram_interface.shutdown()
+        if ib_interface and ib_interface.is_connected():
+            await ib_interface.disconnect()
+        if discord_interface and discord_interface.is_initialized():
+            await discord_interface.shutdown()
 def legacy_main_disabled():
     """
     This function represents the old, single-threaded architecture.
