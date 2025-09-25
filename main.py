@@ -88,12 +88,15 @@ async def main():
 
         # 3. Brief the General ("brain") with the restored memory and the Scribe.
         signal_processor = SignalProcessor(
-            config, ib_interface, discord_interface,
-            sentiment_analyzer, telegram_interface, state_manager,  # Pass the Scribe
-            initial_trades=loaded_trades,  # Pass the restored memory
+            config=config,
+            ib_interface=ib_interface,
+            telegram_interface=telegram_interface,
+            discord_interface=discord_interface,
+            state_manager=state_manager,
+            sentiment_analyzer=sentiment_analyzer,
+            initial_positions=loaded_trades,  # <-- CORRECTED LABEL
             initial_processed_ids=loaded_ids
         )
-        # --- END UPGRADE ---
 
         # --- 2. CONNECTION & STARTUP (Continued) ---
         await discord_interface.initialize()
