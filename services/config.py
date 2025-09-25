@@ -22,6 +22,10 @@ class Config:
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
+        
+        # How often the bot should ask the broker for a list of all open
+        # positions to guard against state desynchronization. (in seconds)
+        self.reconciliation_interval_seconds = 300 # 5 minutes
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
@@ -38,7 +42,7 @@ class Config:
         self.processed_message_cache_size = 25
         
         self.STATE_FILE_PATH = os.getenv("STATE_FILE_PATH", "state/open_positions.json")
-        self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "trade_log.csv")
+        self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "logs/trade_log.csv")
 
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
@@ -92,7 +96,7 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": False,
+                "enabled": True, # Set to True for testing
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
@@ -109,17 +113,25 @@ class Config:
                 "exit_strategy": {
                     "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
-                    "exit_priority": ["rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    
+                    # --- LEGEND: Graceful Exit Strategy Toggle ---
+                    # Defines the primary software-based trailing stop method used by the bot.
+                    # This is separate from the "safety_net" native trail which is always active.
+                    # Options:
+                    #   "atr": An adaptive trail based on market volatility (Average True Range).
+                    #   "pullback_percent": A simple trail based on a fixed percentage from the high.
                     "trail_method": "atr",
+
                     "trail_settings": {
                         "pullback_percent": 10,
                         "atr_period": 14,
                         "atr_multiplier": 1.5
                     },
                     "momentum_exits": {
-                        "psar_enabled": False,
+                        "psar_enabled": True,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
-                        "rsi_hook_enabled": False,
+                        "rsi_hook_enabled": True,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
