@@ -75,7 +75,7 @@ async def main():
         state_manager = StateManager(config)
         ib_interface = IBInterface(config)
         discord_interface = DiscordInterface(config)
-        sentiment_analyzer = SentimentAnalyzer(config)
+        sentiment_analyzer = SentimentAnalyzer()
         telegram_interface = TelegramInterface(config)
 
         # --- SURGICAL UPGRADE: The "Amnesia Vaccine" Startup Sequence ---
