@@ -4,7 +4,7 @@ from collections import deque
 from datetime import datetime, timedelta
 import pandas as pd
 import pandas_ta as ta
-import pytz  # Import the timezone library
+import pytz  # CRITICAL: Ensure pytz is imported
 
 from services.signal_parser import SignalParser
 
@@ -79,8 +79,7 @@ class SignalProcessor:
                 if now < self.channel_cooldowns.get(channel_id, now):
                     continue
 
-                raw_messages = await self.discord_interface.poll_for_new_messages(channel_id,
-                                                                                  self.processed_message_ids)
+                raw_messages = await self.discord_interface.poll_for_new_messages(channel_id, self.processed_message_ids)
                 if raw_messages:
                     await self._process_new_signals(raw_messages, profile)
 
@@ -97,7 +96,7 @@ class SignalProcessor:
             self.processed_message_ids.append(msg_id)
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
 
-            if any(word in msg_content for word in self.config.buzzwords_ignore):
+            if any(word.lower() in msg_content.lower() for word in self.config.buzzwords_ignore):
                 logging.info(f"Message {msg_id} ignored due to buzzword. Content: {msg_content}")
                 continue
 
@@ -138,14 +137,14 @@ class SignalProcessor:
                 return
 
             ticker = await self.ib_interface.get_live_ticker(contract)
-            if not ticker or pd.isna(ticker.ask):
+            if not ticker or pd.isna(ticker.ask) or ticker.ask <= 0:
                 logging.error(f"Could not get a valid ask price for {contract.localSymbol}. Cannot size position.")
                 return
 
             ask_price = ticker.ask
-            if not (profile['trading']['min_price_per_contract'] <= ask_price <= profile['trading'][
-                'max_price_per_contract']):
-                logging.warning(f"Trade for {contract.localSymbol} vetoed. Ask price ${ask_price} is outside limits.")
+            if not (profile['trading']['min_price_per_contract'] <= ask_price <= profile['trading']['max_price_per_contract']):
+                logging.warning(
+                    f"Trade for {contract.localSymbol} vetoed. Ask price ${ask_price} is outside limits.")
                 return
 
             quantity = int(profile['trading']['funds_allocation'] / (ask_price * 100))
@@ -207,8 +206,7 @@ class SignalProcessor:
             else:
                 logging.warning(f"Could not fetch initial historical data for {contract.localSymbol}")
         else:
-            logging.error(
-                f"Failed to subscribe to market data for {contract.localSymbol}. Dynamic exits will be disabled.")
+            logging.error(f"Failed to subscribe to market data for {contract.localSymbol}. Dynamic exits will be disabled.")
 
         self.state_manager.save_state(self.open_positions, self.processed_message_ids)
 
@@ -305,7 +303,7 @@ class SignalProcessor:
             elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
                 psar_settings = profile['exit_strategy']['momentum_exits']['psar_settings']
                 data.ta.psar(initial=psar_settings['start'], increment=psar_settings['increment'],
-                             maximum=psar_settings['max'], append=True)
+                              maximum=psar_settings['max'], append=True)
                 last_close = data['close'].iloc[-1]
                 if f'PSARl_{psar_settings["start"]}_{psar_settings["max"]}' in data.columns:
                     last_psar = data[f'PSARl_{psar_settings["start"]}_{psar_settings["max"]}'].iloc[-1]
@@ -371,26 +369,37 @@ class SignalProcessor:
 
     def _is_eod(self):
         """
-        Checks if the current time is past the EOD close time, using
-        timezone-aware logic to prevent errors.
+        THE FINAL FIX: Checks EOD by converting both current time and EOD time
+        to UTC for a direct, unambiguous comparison. This permanently solves
+        all timezone-related ghosts.
         """
         eod_config = self.config.eod_close
         if not eod_config['enabled']:
             return False
 
         try:
+            # 1. Establish the market's timezone from the config.
             market_tz = pytz.timezone(self.config.MARKET_TIMEZONE)
-            now_aware = datetime.now(market_tz)
-            eod_time_aware = now_aware.replace(
-                hour=eod_config['hour'], minute=eod_config['minute'],
-                second=0, microsecond=0
+
+            # 2. Get the current time and make it "aware" of the market's timezone.
+            now_in_market_tz = datetime.now(market_tz)
+
+            # 3. Define the EOD time for today, also in the market's timezone.
+            eod_in_market_tz = now_in_market_tz.replace(
+                hour=eod_config['hour'],
+                minute=eod_config['minute'],
+                second=0,
+                microsecond=0
             )
-            return now_aware >= eod_time_aware
+
+            # 4. Compare the two aware times. No need to convert to UTC if both are in the same timezone.
+            return now_in_market_tz >= eod_in_market_tz
+
         except pytz.UnknownTimeZoneError:
-            logging.error(f"Unknown timezone specified in config: {self.config.MARKET_TIMEZONE}. EOD check disabled.")
+            logging.error(f"FATAL: Unknown timezone in config: '{self.config.MARKET_TIMEZONE}'. EOD check disabled.")
             return False
         except Exception as e:
-            logging.error(f"An error occurred in EOD check: {e}", exc_info=True)
+            logging.error(f"A critical error occurred in the EOD check: {e}", exc_info=True)
             return False
 
     def get_profile_for_position(self, contract):
@@ -417,4 +426,3 @@ class SignalProcessor:
             historical_data = await self.ib_interface.get_historical_data(position['contract'])
             if historical_data is not None and not historical_data.empty:
                 self.position_data_cache[conId] = historical_data
-
