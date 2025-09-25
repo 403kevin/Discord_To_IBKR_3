@@ -2,6 +2,15 @@ import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import sys
+
+# --- SURGICAL FIX: Add project root to the Python path ---
+# This is the "GPS" for our fortress. It ensures that all module imports
+# work correctly, regardless of how or where the script is executed. This
+# is a non-negotiable, professional-grade solution for portability.
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # --- Core Components ---
 from services.config import Config
@@ -16,32 +25,41 @@ from bot_engine.interfaces.telegram_interface import TelegramInterface
 
 
 def setup_logging():
-    # ... (logging setup is unchanged)
-    pass
+    """Sets up a robust, rotating logger for the application."""
+    log_formatter = logging.Formatter('%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
+    
+    log_file = os.getenv("TRADE_BOT_LOG_FILE", "logs/trading_bot.log")
+    
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-# = a bunch of unchanged code
+    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)
+    file_handler.setFormatter(log_formatter)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    logging.info("Custom logger initialized.")
+
 
 async def main():
     """
     The main asynchronous function that initializes and runs the bot.
     This is the "Orchestrator" of the entire application.
     """
-    # Initialize all components to None for robust cleanup in the finally block
-    config = None
-    state_manager = None
-    sentiment_analyzer = None
-    ib_interface = None
     telegram_interface = None
+    ib_interface = None
     discord_interface = None
     signal_processor = None
-    
-    # This will hold our main running tasks
     main_tasks = []
 
     try:
         logging.info("--- 🚀 LAUNCHING TRADING BOT 🚀 ---")
         
-        # --- 1. Assemble the Machine ---
         config = Config()
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
@@ -50,13 +68,11 @@ async def main():
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
         
-        # --- 2. Pre-flight Connections & State Load ---
         await ib_interface.connect()
         await telegram_interface.initialize()
         await discord_interface.initialize_and_login()
         loaded_trades, loaded_ids = state_manager.load_state()
 
-        # --- 3. Instantiate the Brain ---
         signal_processor = SignalProcessor(
             config=config,
             ib_interface=ib_interface,
@@ -68,17 +84,10 @@ async def main():
             initial_processed_ids=loaded_ids
         )
 
-        # --- 4. GO LIVE: Create the main task for the SignalProcessor ---
-        # THE FINAL FIX: We now create the processor's main loop as a background
-        # task instead of directly awaiting it. This allows the main() function
-        # to continue running and keep the program alive.
         logging.info("Starting main event loop...")
         processor_task = asyncio.create_task(signal_processor.start())
         main_tasks.append(processor_task)
 
-        # --- 5. Keep the main function alive ---
-        # The main() function will now run forever, monitoring the primary task.
-        # This is the "heartbeat" that prevents the script from exiting prematurely.
         await asyncio.gather(*main_tasks)
 
     except asyncio.CancelledError:
@@ -90,13 +99,11 @@ async def main():
     finally:
         logging.info("--- 😴 Bot is shutting down. ---")
         
-        # Gracefully cancel all running tasks
         for task in main_tasks:
             task.cancel()
         if signal_processor:
-            await signal_processor.shutdown() # Ensure internal shutdown event is set
+            await signal_processor.shutdown()
 
-        # Gracefully close all connections
         if telegram_interface and telegram_interface.is_initialized():
             await telegram_interface.send_message("😴 Bot is shutting down.")
             await telegram_interface.shutdown()
@@ -107,7 +114,6 @@ async def main():
 
 if __name__ == "__main__":
     setup_logging()
-    # To handle Ctrl+C gracefully
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
