@@ -84,7 +84,7 @@ async def main():
 
         # 2. Command the Scribe to load the last known state.
         # It needs the live ib instance to correctly "rehydrate" trade objects.
-        loaded_trades, loaded_ids = state_manager.load_state(ib_interface.ib)
+        loaded_trades, loaded_ids = state_manager.load_state()
 
         # 3. Brief the General ("brain") with the restored memory and the Scribe.
         signal_processor = SignalProcessor(
