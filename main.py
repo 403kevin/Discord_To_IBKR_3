@@ -72,7 +72,7 @@ async def main():
     try:
         # --- COMPONENT INITIALIZATION ---
         config = Config()
-        state_manager = StateManager()  # <-- Create the Scribe
+        state_manager = StateManager(config)
         ib_interface = IBInterface(config)
         discord_interface = DiscordInterface(config)
         sentiment_analyzer = SentimentAnalyzer(config)
