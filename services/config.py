@@ -22,6 +22,7 @@ class Config:
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
+        self.MARKET_TIMEZONE = "US/Mountain"
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
