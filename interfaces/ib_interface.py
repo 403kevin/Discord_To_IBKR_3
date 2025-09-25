@@ -1,106 +1,155 @@
 import asyncio
 import logging
-from ib_insync import IB, Stock, Option, util, Ticker, Order, MarketOrder
+from ib_insync import IB, Stock, Option, util, Ticker, Order, Trade
+import pandas as pd
 
 class IBInterface:
     """
-    Manages the connection and all interactions with the IBKR API via ib_insync.
-    This includes connecting, placing/canceling orders, and managing real-time
-    market data streams for open positions.
+    Manages the connection and all interactions with the IBKR API.
+    Handles order placement, data streaming, and portfolio reconciliation.
     """
     def __init__(self, config):
         self.config = config
         self.ib = IB()
         self.market_data_queue = asyncio.Queue()
 
+    def is_connected(self):
+        return self.ib.isConnected()
+
     async def connect(self):
-        """Establishes connection to TWS or Gateway."""
+        """Establishes and manages the connection to IBKR TWS/Gateway."""
         try:
-            if not self.ib.isConnected():
+            if not self.is_connected():
+                logging.info(f"Connecting to {self.config.ibkr_host}:{self.config.ibkr_port} with clientId {self.config.ibkr_client_id}...")
                 await self.ib.connectAsync(
                     self.config.ibkr_host,
                     self.config.ibkr_port,
                     clientId=self.config.ibkr_client_id
                 )
-                logging.info("Successfully connected to IBKR.")
+                logging.info("API connection ready")
                 self.ib.pendingTickersEvent += self._on_pending_tickers
-        except Exception as e:
-            logging.error("Failed to connect to IBKR: %s", e)
-            raise ConnectionError("Could not connect to IBKR TWS/Gateway.")
-
-    async def disconnect(self):
-        """Disconnects from TWS or Gateway."""
-        if self.ib.isConnected():
-            self.ib.disconnect()
-            logging.info("Disconnected from IBKR.")
-
-    def _on_pending_tickers(self, tickers):
-        """
-        Callback for real-time market data updates.
-        Validates the ticker and puts it into the queue for the SignalProcessor.
-        """
-        for ticker in tickers:
-            # --- SURGICAL UPGRADE: VALIDATION LAYER ---
-            # Ensure the ticker has a valid last price before queuing
-            if ticker and not util.isNan(ticker.last):
-                logging.debug("Received tick: %s at %s", ticker.contract.symbol, ticker.last)
-                self.market_data_queue.put_nowait(ticker)
+                self.ib.filledOrderEvent += self._on_order_filled_callback # Forwards to signal processor
             else:
-                logging.warning("Received invalid or empty tick for %s. Discarding.", ticker.contract.symbol if ticker else "Unknown")
-
-
-    async def get_contract_details(self, ticker, option_type, strike, expiry_str):
-        """
-        Fetches contract details from IBKR for a given signal.
-        Returns a Contract object or None if not found.
-        """
-        try:
-            contract = Option(ticker, expiry_str, strike, option_type[0].upper(), 'SMART')
-            details = await self.ib.reqContractDetailsAsync(contract)
-            if details:
-                logging.info("Found contract details for %s", details[0].contract.localSymbol)
-                return details[0].contract
-            else:
-                logging.warning("No contract details found for signal: %s %s %sC%s", ticker, expiry_str, strike, option_type)
-                return None
-        except Exception as e:
-            logging.error("Error fetching contract details: %s", e)
-            return None
-
-    async def place_order(self, contract, action, quantity):
-        """Places a market order for a given contract."""
-        try:
-            order = MarketOrder(action, quantity)
-            trade = self.ib.placeOrder(contract, order)
-            logging.info("Placed order for %s %s of %s", action, quantity, contract.localSymbol)
-            return trade
-        except Exception as e:
-            logging.error("Error placing order for %s: %s", contract.localSymbol, e)
-            return None
-
-    async def subscribe_to_market_data(self, contract):
-        """Subscribes to real-time tick data for a contract."""
-        try:
-            self.ib.reqMktData(contract, '', False, False)
-            logging.info("Subscribed to market data for %s.", contract.localSymbol)
+                logging.info("Already connected to IBKR.")
+            await self.ib.reqMarketDataTypeAsync(3) # Set to delayed-frozen data
+            logging.info("Successfully connected to IBKR.")
             return True
         except Exception as e:
-            logging.error("Failed to subscribe to market data for %s: %s", contract.localSymbol, e)
+            logging.error(f"Failed to connect to IBKR: {e}", exc_info=True)
+            return False
+
+    async def disconnect(self):
+        """Disconnects from the IBKR API."""
+        if self.is_connected():
+            logging.info("Disconnecting from IBKR.")
+            self.ib.disconnect()
+
+    def set_order_filled_callback(self, callback):
+        """Allows the SignalProcessor to register its own fill handler."""
+        self._on_order_filled_callback = callback
+    
+    # =================================================================
+    # --- NEW CAPABILITY: Portfolio Reconciliation ---
+    # =================================================================
+    async def get_open_positions(self):
+        """
+        Asks the broker for a list of all currently held positions.
+        This is the core of the state reconciliation logic.
+        """
+        if not self.is_connected():
+            logging.error("Cannot get open positions, not connected to IBKR.")
+            return []
+        try:
+            # reqPositionsAsync will return a live-updating list of positions
+            positions = await self.ib.reqPositionsAsync()
+            logging.info(f"Reconciliation: Found {len(positions)} positions held at broker.")
+            return positions
+        except Exception as e:
+            logging.error(f"Error fetching open positions from IBKR: {e}", exc_info=True)
+            return []
+
+    # =================================================================
+    # --- Core Trading Functions ---
+    # =================================================================
+    async def create_option_contract(self, symbol, expiry, strike, right):
+        """Creates a qualified IBKR Option contract object."""
+        try:
+            contract = Option(symbol, expiry, strike, right, 'SMART', currency='USD')
+            details = await self.ib.reqContractDetailsAsync(contract)
+            if details:
+                return details[0].contract
+            else:
+                logging.error(f"No contract details found for {symbol} {expiry} {strike}{right}")
+                return None
+        except Exception as e:
+            logging.error(f"Error creating contract: {e}", exc_info=True)
+            return None
+
+    async def place_order(self, contract, order_type, quantity, action='BUY'):
+        """Places a trade order."""
+        try:
+            order = Order(action=action, orderType=order_type, totalQuantity=quantity)
+            trade = self.ib.placeOrder(contract, order)
+            logging.info(f"Placed {action} order for {quantity} of {contract.localSymbol}")
+            return trade
+        except Exception as e:
+            logging.error(f"Error placing order for {contract.localSymbol}: {e}", exc_info=True)
+            return None
+
+    # ... (rest of the file is unchanged)
+
+    async def get_live_ticker(self, contract):
+        """Requests a single, live market data snapshot for a contract."""
+        if not self.is_connected(): return None
+        try:
+            ticker = await self.ib.reqMktDataAsync(contract, '', False, False)
+            await asyncio.sleep(0.5) # Give a moment for data to arrive
+            self.ib.cancelMktData(contract)
+            
+            # Validation Layer
+            if ticker and ticker.last is not None and not pd.isna(ticker.last):
+                return ticker
+            else:
+                logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}")
+                return None
+        except Exception as e:
+            logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}", exc_info=True)
+            return None
+
+    # =================================================================
+    # --- Real-Time Data Streaming ---
+    # =================================================================
+
+    async def subscribe_to_market_data(self, contract):
+        """Subscribes to a real-time market data stream for a contract."""
+        if not self.is_connected(): return False
+        try:
+            self.ib.reqMktData(contract, '', False, False)
+            logging.info(f"Subscribed to market data for {contract.localSymbol}")
+            return True
+        except Exception as e:
+            logging.error(f"Error subscribing to market data for {contract.localSymbol}: {e}", exc_info=True)
             return False
 
     async def unsubscribe_from_market_data(self, contract):
-        """Unsubscribes from real-time tick data for a contract."""
+        """Unsubscribes from a real-time market data stream."""
+        if not self.is_connected(): return
         try:
             self.ib.cancelMktData(contract)
-            logging.info("Unsubscribed from market data for %s.", contract.localSymbol)
+            logging.info(f"Unsubscribed from market data for {contract.localSymbol}")
         except Exception as e:
-            logging.error("Failed to unsubscribe from market data for %s: %s", contract.localSymbol, e)
+            logging.error(f"Error unsubscribing from market data for {contract.localSymbol}: {e}", exc_info=True)
 
-    async def get_historical_data(self, contract, duration, bar_size):
-        """
-        Fetches historical OHLC data for a contract.
-        Returns a pandas DataFrame.
-        """
+    def _on_pending_tickers(self, tickers):
+        """Internal callback that listens for all real-time data ticks."""
+        for ticker in tickers:
+            # Validation Layer
+            if ticker and ticker.contract and ticker.last is not None and not pd.isna(ticker.last):
+                 self.market_data_queue.put_nowait(ticker)
+
+    async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
+        """Fetches historical bar data for a contract."""
+        if not self.is_connected(): return None
         try:
             bars = await self.ib.reqHistoricalDataAsync(
                 contract,
@@ -111,32 +160,9 @@ class IBInterface:
                 useRTH=True
             )
             if bars:
-                df = util.df(bars)
-                logging.info("Fetched %d bars of historical data for %s.", len(df), contract.localSymbol)
-                return df
+                return util.df(bars).set_index('date')
             else:
-                logging.warning("No historical data returned for %s.", contract.localSymbol)
-                return None
+                return pd.DataFrame()
         except Exception as e:
-            logging.error("Error fetching historical data for %s: %s", contract.localSymbol, e)
-            return None
-            
-    async def get_live_ticker(self, contract):
-        """
-        Fetches a single snapshot of the current market data for a contract.
-        Returns a Ticker object.
-        """
-        try:
-            ticker = await self.ib.reqTickersAsync(contract)
-            if ticker and ticker[0]:
-                 # --- SURGICAL UPGRADE: VALIDATION LAYER ---
-                 # Ensure the ticker has a valid price before returning
-                if not util.isNan(ticker[0].last) and not util.isNan(ticker[0].ask):
-                    return ticker[0]
-                else:
-                    logging.warning("Live ticker for %s has invalid price data.", contract.symbol)
-                    return None
-            return None
-        except Exception as e:
-            logging.error("Error fetching live ticker for %s: %s", contract.symbol, e)
+            logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
             return None
