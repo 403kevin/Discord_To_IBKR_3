@@ -1,175 +1,222 @@
-import pandas as pd
 import logging
-from datetime import datetime, timedelta
+import pandas as pd
 import pandas_ta as ta
+from datetime import datetime
 import os
-import glob
-from services.config import Config
 
-# --- Basic Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from services.config import Config
+from services.signal_parser import SignalParser
 
 class BacktestEngine:
     """
     A true, event-driven backtesting engine that simulates the live bot's
     tick-processing and decision-making logic with high fidelity.
     """
-    def __init__(self, config):
+    def __init__(self, config, signal_file_path, data_folder_path):
         self.config = config
-        self.signals_to_test = []
-        self.historical_data = {}  # {symbol_expiry_strike_right: DataFrame}
-        self.event_queue = []
-        self.open_positions = {} # {conId: position_details}
-        self.position_data_cache = {} # Mirrors the live bot's cache
+        self.signal_parser = SignalParser(config)
+        self.signal_file_path = signal_file_path
+        self.data_folder_path = data_folder_path
+        
+        # Simulation state
+        self.portfolio = {'cash': 100000, 'positions': {}}
         self.trade_log = []
+        
+        # Mirrored logic from the live bot
+        self.position_data_cache = {}
+        self.tick_buffer = {}
+        self.last_bar_timestamp = {}
+        self.trailing_highs = {}
+        self.breakeven_activated = {}
+        
+        logging.info("Backtest Engine initialized.")
 
     def run_simulation(self):
-        """Main entry point to run the entire backtesting simulation."""
-        logging.info("--- LAUNCHING THE TIME MACHINE ---")
-        self._load_signals()
-        self._load_historical_data()
-        self._prepare_event_queue()
-        self._process_events()
-        self._generate_report()
-        logging.info("--- SIMULATION COMPLETE ---")
+        """
+        The main entry point for the backtester. It loads all data, creates an
+        event queue, and processes events chronologically.
+        """
+        logging.info("--- 🚀 Starting Backtest Simulation 🚀 ---")
+        
+        # 1. Load signals
+        signals = self._load_signals()
+        if not signals:
+            logging.error("No signals to test. Aborting simulation.")
+            return
+
+        # 2. Create the master event queue
+        event_queue = self._create_event_queue(signals)
+        if not event_queue:
+            logging.error("Failed to create event queue. Aborting simulation.")
+            return
+
+        # 3. Process events chronologically
+        for timestamp, event_type, data in sorted(event_queue, key=lambda x: x[0]):
+            if event_type == 'SIGNAL':
+                self._process_signal_event(timestamp, data)
+            elif event_type == 'TICK':
+                self._process_tick_event(timestamp, data)
+        
+        self._log_results()
+        logging.info("--- 🏁 Backtest Simulation Complete 🏁 ---")
 
     def _load_signals(self):
-        """Loads the curated signals from signals_to_test.txt."""
-        path = 'backtester/signals_to_test.txt'
-        logging.info("Phase 1: Loading Battle Plan from %s", path)
-        with open(path, 'r') as f:
+        """Loads signals from the signals_to_test.txt file."""
+        signals = []
+        with open(self.signal_file_path, 'r') as f:
             for line in f:
-                parts = line.strip().split(' | ')
-                if len(parts) == 3:
-                    self.signals_to_test.append({
-                        "timestamp": datetime.strptime(parts[0], '%Y-%m-%d %H:%M:%S'),
-                        "channel": parts[1],
-                        "text": parts[2]
+                if '|' in line:
+                    parts = line.strip().split('|')
+                    timestamp_str, channel_name, signal_text = parts
+                    signals.append({
+                        'timestamp': datetime.strptime(timestamp_str.strip(), '%Y-%m-%d %H:%M:%S'),
+                        'channel_name': channel_name.strip(),
+                        'signal_text': signal_text.strip()
                     })
-        logging.info("Loaded %d signals to test.", len(self.signals_to_test))
+        logging.info(f"Loaded {len(signals)} signals from the battle plan.")
+        return signals
 
-    def _load_historical_data(self):
-        """Loads all harvested tick data from CSV files."""
-        path = 'backtester/data/*.csv'
-        logging.info("Phase 2: Gathering Fuel from %s", path)
-        csv_files = glob.glob(path)
-        for file in csv_files:
-            # Key is filename without extension, e.g., "SPY_20250104_500_C"
-            key = os.path.basename(file).replace('.csv', '')
-            df = pd.read_csv(file, parse_dates=['time'])
-            self.historical_data[key] = df
-        logging.info("Loaded historical data for %d contracts.", len(self.historical_data))
-
-
-    def _prepare_event_queue(self):
-        """Creates a chronological event queue of signals and market ticks."""
-        logging.info("Preparing chronological event queue...")
+    def _create_event_queue(self, signals):
+        """Loads all historical tick data and merges it with signals into a single event queue."""
+        event_queue = []
+        
         # Add signal events
-        for i, signal in enumerate(self.signals_to_test):
-            self.event_queue.append((signal['timestamp'], "SIGNAL", {"signal_id": i, "data": signal}))
+        for signal in signals:
+            event_queue.append((signal['timestamp'], 'SIGNAL', signal))
 
-        # Add tick events
-        for key, df in self.historical_data.items():
-            for row in df.itertuples():
-                self.event_queue.append((row.time, "TICK", {"contract_key": key, "price": row.price}))
+        # Load tick data for all unique tickers mentioned in signals
+        unique_tickers = set()
+        for signal in signals:
+            parsed = self.signal_parser.parse_signal(signal['signal_text'], self.config.profiles[0]) # Assumes first profile
+            if parsed:
+                unique_tickers.add(parsed['ticker'])
         
-        # Sort all events by timestamp
-        self.event_queue.sort(key=lambda x: x[0])
-        logging.info("Event queue prepared with %d total events.", len(self.event_queue))
+        for ticker in unique_tickers:
+            file_path = os.path.join(self.data_folder_path, f"{ticker}_1_min_data.csv")
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path, parse_dates=['date'])
+                # In a true tick-based backtest, this would be tick data.
+                # We are simulating ticks from 1-min bars for now.
+                for row in df.itertuples():
+                    event_queue.append((row.date, 'TICK', {'ticker': ticker, 'price': row.close}))
+            else:
+                logging.warning(f"No historical data found for {ticker} at {file_path}")
 
-    def _process_events(self):
-        """Processes all events in the queue in chronological order."""
-        logging.info("Phase 3: Running Simulation...")
-        for timestamp, event_type, data in self.event_queue:
-            if event_type == "SIGNAL":
-                self._handle_signal_event(timestamp, data)
-            elif event_type == "TICK":
-                self._handle_tick_event(timestamp, data)
+        logging.info(f"Created event queue with {len(event_queue)} total events.")
+        return event_queue
+
+    def _process_signal_event(self, timestamp, signal_data):
+        """Simulates the bot's reaction to a new signal."""
+        profile = self.config.profiles[0] # Using first profile for all backtests for now
+        parsed_signal = self.signal_parser.parse_signal(signal_data['signal_text'], profile)
+        if not parsed_signal:
+            return
+
+        # Simulate position sizing
+        # NOTE: This uses a fixed price for simplicity. A more advanced backtester
+        # would look at the next available tick for a fill price.
+        mock_ask_price = 1.5 # Using a mock price of $1.50
+        quantity = int(profile['trading']['funds_allocation'] / (mock_ask_price * 100))
+        
+        if quantity > 0:
+            position_key = f"{parsed_signal['ticker']}_{parsed_signal['expiry_date']}_{parsed_signal['strike']}{parsed_signal['contract_type'][0]}"
+            cost = quantity * mock_ask_price * 100
+            
+            self.portfolio['cash'] -= cost
+            self.portfolio['positions'][position_key] = {
+                'entry_price': mock_ask_price,
+                'quantity': quantity,
+                'entry_time': timestamp,
+                'ticker': parsed_signal['ticker']
+            }
+            logging.info(f"{timestamp} | OPENED {quantity} of {position_key} at ${mock_ask_price:.2f}")
+
+    def _process_tick_event(self, timestamp, tick_data):
+        """
+        Processes a single market data tick, resamples it into bars, and evaluates
+        exit logic for any relevant open positions. This mirrors the live engine.
+        """
+        for key, pos in list(self.portfolio['positions'].items()):
+            if pos['ticker'] == tick_data['ticker']:
+                # This is a simplified version of the live resampling logic
+                # A true high-fidelity backtester would have a more complex bar creation mechanism
+                
+                # For simplicity, we'll just evaluate on every tick for now
+                self._evaluate_simulated_exit(timestamp, key, tick_data['price'])
+
+    def _evaluate_simulated_exit(self, timestamp, position_key, current_price):
+        """Mirrors the exit logic evaluation from the live SignalProcessor."""
+        position = self.portfolio['positions'][position_key]
+        profile = self.config.profiles[0]
+        exit_reason = None
+
+        # This is a simplified mirror. It doesn't use pandas-ta to avoid re-calculating
+        # on every tick, which would be too slow for a backtest.
+        # It demonstrates the logic flow.
+        pnl_percent = ((current_price - position['entry_price']) / position['entry_price']) * 100
+
+        # Placeholder for breakeven check
+        if pnl_percent > profile['exit_strategy']['breakeven_trigger_percent']:
+            if current_price <= position['entry_price']:
+                exit_reason = "Simulated Breakeven Stop"
+        
+        if exit_reason:
+            self._close_simulated_position(timestamp, position_key, current_price, exit_reason)
+
+    def _close_simulated_position(self, timestamp, position_key, exit_price, reason):
+        """Closes a position in the simulation and logs the trade."""
+        if position_key in self.portfolio['positions']:
+            position = self.portfolio['positions'].pop(position_key)
+            
+            pnl = (exit_price - position['entry_price']) * position['quantity'] * 100
+            self.portfolio['cash'] += (exit_price * position['quantity'] * 100)
+            
+            log_entry = {
+                'entry_time': position['entry_time'],
+                'exit_time': timestamp,
+                'position': position_key,
+                'entry_price': position['entry_price'],
+                'exit_price': exit_price,
+                'quantity': position['quantity'],
+                'pnl': pnl,
+                'exit_reason': reason
+            }
+            self.trade_log.append(log_entry)
+            logging.info(f"{timestamp} | CLOSED {position['quantity']} of {position_key} at ${exit_price:.2f} for P/L of ${pnl:.2f}. Reason: {reason}")
     
-    def _handle_signal_event(self, timestamp, data):
-        """Simulates the bot receiving and processing a new signal."""
-        # This is a simplified simulation of parsing and entry.
-        # A more advanced version would use the actual SignalParser.
-        signal = data['data']
-        logging.info("EVENT at %s: Received signal from %s: %s", timestamp, signal['channel'], signal['text'])
-        
-        # Conceptual: Find the corresponding historical data for this signal
-        # For simplicity, we'll assume the backtest runs on pre-identified contracts
-        # In a real scenario, you'd parse signal['text'] here.
-        pass # Entry logic is triggered by the backtest engine itself, not simulated signals for now.
-
-
-    def _handle_tick_event(self, timestamp, data):
-        """Mirrors the live bot's tick processing and resampling logic."""
-        contract_key = data['contract_key']
-        
-        # This is a conceptual mapping. In a real sim, conId would be used.
-        if contract_key in self.position_data_cache:
-            cache = self.position_data_cache[contract_key]
-            
-            cache["ticks"].append({
-                "time": timestamp,
-                "price": data['price']
-            })
-            
-            if timestamp >= cache["last_bar_timestamp"] + timedelta(minutes=1):
-                self._resample_ticks_to_bar(contract_key)
-                self._evaluate_dynamic_exit(contract_key)
-
-    def _resample_ticks_to_bar(self, contract_key):
-        """A near-direct copy of the live bot's resampling logic."""
-        cache = self.position_data_cache[contract_key]
-        ticks_df = pd.DataFrame(cache["ticks"])
-
-        if len(ticks_df) < self.config.min_ticks_per_bar:
-            cache["ticks"] = []
-            cache["last_bar_timestamp"] = cache.get("last_bar_timestamp", datetime.min) + timedelta(minutes=1)
+    def _log_results(self):
+        """Prints a summary of the backtest results."""
+        df = pd.DataFrame(self.trade_log)
+        if df.empty:
+            logging.warning("No trades were executed during the simulation.")
             return
 
-        ticks_df.set_index('time', inplace=True)
-        resampled = ticks_df['price'].resample('1Min').ohlc()
-        if not resampled.empty:
-            new_bar = resampled.iloc[-1]
-            new_bar_timestamp = new_bar.name.to_pydatetime()
-
-            new_row = pd.DataFrame([{
-                "date": new_bar_timestamp, "open": new_bar.open, "high": new_bar.high,
-                "low": new_bar.low, "close": new_bar.close,
-                "volume": ticks_df['price'].resample('1Min').count().iloc[-1]
-            }])
-            
-            cache["df"] = pd.concat([cache["df"], new_row], ignore_index=True)
-            cache["ticks"] = []
-            cache["last_bar_timestamp"] = new_bar_timestamp
-
-    def _evaluate_dynamic_exit(self, contract_key):
-        """A near-direct copy of the live bot's exit evaluation logic."""
-        # This is a placeholder for the full exit logic evaluation
-        # It would check RSI, PSAR, ATR etc. based on the newly formed bar
-        pass
-
-    def _generate_report(self):
-        """Generates a summary of the backtest results."""
-        # In a real implementation, this would analyze the self.trade_log
-        # and print P/L, win rate, Sharpe ratio, etc.
-        logging.info("--- Backtest Report ---")
-        if not self.trade_log:
-            logging.info("No trades were executed during the simulation.")
-            return
-            
-        report_df = pd.DataFrame(self.trade_log)
-        total_pnl = report_df['pnl'].sum()
-        win_rate = len(report_df[report_df['pnl'] > 0]) / len(report_df) * 100
+        total_pnl = df['pnl'].sum()
+        win_rate = (df['pnl'] > 0).mean() * 100
+        num_trades = len(df)
         
-        logging.info("Total Trades: %d", len(report_df))
-        logging.info("Win Rate: %.2f%%", win_rate)
-        logging.info("Total P/L: $%.2f", total_pnl)
-        logging.info("\nTrade Log:\n%s", report_df.to_string())
+        logging.info("\n--- Backtest Results Summary ---")
+        logging.info(f"Total Trades: {num_trades}")
+        logging.info(f"Win Rate: {win_rate:.2f}%")
+        logging.info(f"Total P/L: ${total_pnl:.2f}")
+        logging.info(f"Final Portfolio Value: ${self.portfolio['cash']:.2f}")
+        logging.info("--------------------------------\n")
+        
+        # Save log to CSV
+        log_path = os.path.join(self.data_folder_path, "backtest_results.csv")
+        df.to_csv(log_path, index=False)
+        logging.info(f"Full trade log saved to {log_path}")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    # This allows the script to be run directly for testing
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
     config = Config()
-    engine = BacktestEngine(config)
-    # The engine still needs to be wired up to actually simulate trades.
-    # The current state provides the high-fidelity event-driven architecture.
-    logging.info("Backtest engine loaded. Further implementation needed to simulate trade entries and exits based on signals.")
-    # engine.run_simulation() # This would be called to run the full sim
+    
+    # Define paths relative to the main project root
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    signal_file = os.path.join(project_root, 'backtester', 'signals_to_test.txt')
+    data_folder = os.path.join(project_root, 'backtester', 'data')
+
+    engine = BacktestEngine(config, signal_file, data_folder)
+    engine.run_simulation()
