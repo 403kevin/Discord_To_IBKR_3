@@ -129,12 +129,12 @@ class Config:
                         "atr_multiplier": 1.5
                     },
                     "momentum_exits": {
-                        "psar_enabled": True,
+                        "psar_enabled": False,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
-                        "rsi_hook_enabled": True,
+                        "rsi_hook_enabled": False,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 35}
+                "safety_net": {"enabled": False, "native_trail_percent": 35}
             },
         ]
