@@ -50,7 +50,7 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": True,
+            "enabled": False,
             "hour": 13,
             "minute": 00
         }
