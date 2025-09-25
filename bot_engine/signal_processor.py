@@ -1,306 +1,443 @@
 import asyncio
 import logging
+from collections import deque
+from datetime import datetime, timedelta
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime, timedelta
+
+from services.signal_parser import SignalParser
 
 class SignalProcessor:
     """
-    The main brain of the bot. Orchestrates the entire lifecycle of a trade,
-    from signal ingestion to real-time position management and execution.
+    The central brain of the trading bot. This class orchestrates the entire
+    process from signal detection to trade execution and management.
     """
-    def __init__(self, config, ib_interface, telegram_interface, signal_parser, state_manager, sentiment_analyzer):
+    def __init__(self, config, ib_interface, telegram_interface, discord_interface, 
+                 state_manager, sentiment_analyzer, initial_positions, initial_processed_ids):
         self.config = config
         self.ib_interface = ib_interface
         self.telegram_interface = telegram_interface
-        self.signal_parser = signal_parser
+        self.discord_interface = discord_interface
         self.state_manager = state_manager
         self.sentiment_analyzer = sentiment_analyzer
+        self.signal_parser = SignalParser(config)
+
+        # Live operational state
+        self.open_positions = initial_positions
+        self.processed_message_ids = deque(initial_processed_ids, maxlen=config.processed_message_cache_size)
+        self.channel_cooldowns = {}
         
-        # In-memory caches for real-time operations
-        self.position_data_cache = {}  # {conId: {"df": DataFrame, "ticks": [], "last_bar": datetime}}
-        self.active_trades = {}  # {conId: trade_object_from_ib}
-        self.processed_message_ids = set()
+        # Real-time data management
+        self.position_data_cache = {} # {conId: pd.DataFrame}
+        self.tick_buffer = {} # {conId: [ticks]}
+        self.last_bar_timestamp = {} # {conId: datetime}
+
+        self._shutdown_event = asyncio.Event()
 
     async def start(self):
         """The main entry point. Sets up concurrent tasks for all bot operations."""
         logging.info("Starting Signal Processor...")
-        await self.telegram_interface.send_message("🤖 Bot is ONLINE.")
-        
-        # Load existing open positions from state file
-        await self._load_positions_from_state()
+        await self.telegram_interface.send_message("🤖 Bot is starting up...")
 
+        # Initialize and login to Discord
+        await self.discord_interface.initialize_and_login()
+
+        # Resubscribe to market data for any positions loaded from state
+        await self._resubscribe_to_open_positions()
+
+        # Define and run all concurrent tasks
         tasks = [
-            self.poll_discord_for_signals(),
-            self.process_market_data_stream()
+            self._poll_discord_for_signals(),
+            self._process_market_data_stream(),
+            # self._monitor_for_shutdown_command() # Optional: A task to listen for a shutdown command
         ]
         await asyncio.gather(*tasks)
+        await self.shutdown()
 
-    async def _load_positions_from_state(self):
-        """On startup, load positions from state and subscribe to their data."""
-        open_positions = self.state_manager.get_open_positions()
-        logging.info("Loading %d open positions from state file...", len(open_positions))
-        for pos in open_positions:
-            contract = pos['contract']
-            self.active_trades[contract.conId] = pos # Store the whole position dict
-            await self._initialize_position_cache(contract)
-            await self.ib_interface.subscribe_to_market_data(contract)
-            logging.info("Successfully re-initialized and subscribed to data for open position: %s", contract.localSymbol)
-
-
-    async def poll_discord_for_signals(self):
-        """Continuously polls Discord for new signals based on channel profiles."""
-        # This function would contain the logic to iterate through discord channels
-        # For brevity, this is a conceptual placeholder for the polling loop.
-        # In a real implementation, it would call a method like self.discord_interface.poll()
-        while True:
-            # Placeholder for actual Discord polling logic
-            await asyncio.sleep(self.config.polling_interval_seconds)
-
-
-    async def process_market_data_stream(self):
-        """Continuously processes real-time data from the IBKR queue."""
-        while True:
-            try:
-                ticker = await self.ib_interface.market_data_queue.get()
-                conId = ticker.contract.conId
-
-                if conId in self.position_data_cache:
-                    await self._append_tick_to_cache(ticker)
-                    await self.evaluate_dynamic_exit(ticker.contract)
-
-            except Exception as e:
-                logging.error("Error in market data processing loop: %s", e)
-
-    async def execute_trade_from_signal(self, raw_signal, profile):
-        """The main workflow for processing a single parsed signal."""
-        parsed_signal, raw_message = self.signal_parser.parse_signal(raw_signal, profile)
-        if not parsed_signal:
-            return
-
-        # --- SENTIMENT ANALYSIS PRE-FLIGHT CHECK ---
-        if profile.get('sentiment_filter', {}).get('enabled', False):
-            sentiment_score = self.sentiment_analyzer.get_sentiment_score(raw_message)
-            is_call = parsed_signal['option_type'] == 'Call'
-            
-            # Bi-directional sentiment logic
-            if is_call and sentiment_score < profile['sentiment_filter']['sentiment_threshold']:
-                reason = f"Sentiment score {sentiment_score:.4f} is below threshold {profile['sentiment_filter']['sentiment_threshold']} for a CALL."
-                await self._notify_trade_veto(parsed_signal, profile, reason)
-                return
-            elif not is_call and sentiment_score > profile['sentiment_filter']['put_sentiment_threshold']:
-                reason = f"Sentiment score {sentiment_score:.4f} is above threshold {profile['sentiment_filter']['put_sentiment_threshold']} for a PUT."
-                await self._notify_trade_veto(parsed_signal, profile, reason)
-                return
-
-        # --- POSITION SIZING ---
-        contract = await self.ib_interface.get_contract_details(
-            parsed_signal['ticker'], parsed_signal['option_type'], 
-            parsed_signal['strike'], parsed_signal['expiry_str']
-        )
-        if not contract:
-            return
-
-        live_ticker = await self.ib_interface.get_live_ticker(contract)
-        if not live_ticker:
-            logging.error("Could not get live ticker for %s, cannot calculate position size.", contract.localSymbol)
-            return
-
-        ask_price = live_ticker.ask
-        trade_params = profile['trading']
+    async def shutdown(self):
+        """Gracefully shuts down all bot components."""
+        logging.info("Initiating graceful shutdown...")
+        self._shutdown_event.set()
+        # The main 'start' method will handle the rest
         
-        if not (trade_params['min_price_per_contract'] <= ask_price <= trade_params['max_price_per_contract']):
-            logging.warning("Trade VETOED for %s: Ask price $%.2f is outside configured limits.", contract.localSymbol, ask_price)
-            return
+    # =================================================================
+    # --- CORE LOGIC: Signal Processing and Trade Execution ---
+    # =================================================================
 
-        quantity = int(trade_params['funds_allocation'] / (ask_price * 100))
-        if quantity == 0:
-            logging.warning("Trade VETOED for %s: Insufficient funds allocation for 1 contract at ask price $%.2f.", contract.localSymbol, ask_price)
-            return
+    async def _poll_discord_for_signals(self):
+        """Task to continuously poll Discord for new signals."""
+        while not self._shutdown_event.is_set():
+            if self._is_eod():
+                await self.flatten_all_positions()
+                await self.shutdown()
+                break
 
-        # --- EXECUTION ---
-        trade = await self.ib_interface.place_order(contract, parsed_signal['action'], quantity)
-        if trade:
-            self.active_trades[contract.conId] = trade
-            trade.filledEvent += self._on_order_filled
+            for profile in self.config.profiles:
+                if not profile['enabled']:
+                    continue
 
-    async def _on_order_filled(self, trade, fill):
-        """Callback triggered when a trade order is filled."""
+                channel_id = profile['channel_id']
+                now = datetime.now()
+                if now < self.channel_cooldowns.get(channel_id, now):
+                    continue
+
+                raw_messages = await self.discord_interface.poll_for_new_messages(channel_id, self.processed_message_ids)
+                if raw_messages:
+                    await self._process_new_signals(raw_messages, profile)
+
+                self.channel_cooldowns[channel_id] = now + timedelta(seconds=self.config.delay_between_channels)
+
+            await asyncio.sleep(self.config.delay_after_full_cycle)
+
+    async def _process_new_signals(self, messages, profile):
+        """Processes a batch of new messages for a given profile."""
+        for msg_id, msg_content, msg_timestamp in messages:
+            if msg_id in self.processed_message_ids:
+                continue
+            
+            self.processed_message_ids.append(msg_id)
+            logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
+
+            # 1. Pre-flight check: Ignore buzzwords
+            if any(word in msg_content for word in self.config.buzzwords_ignore):
+                logging.info(f"Message {msg_id} ignored due to buzzword. Content: {msg_content}")
+                continue
+
+            # 2. Parse the signal
+            parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
+            if not parsed_signal:
+                continue
+
+            # 3. Pre-flight check: Sentiment Analysis
+            if self.config.sentiment_filter['enabled']:
+                sentiment_score = self.sentiment_analyzer.get_sentiment_score(msg_content)
+                is_call = parsed_signal['contract_type'].upper() == 'CALL'
+                
+                threshold = self.config.sentiment_filter['sentiment_threshold'] if is_call else self.config.sentiment_filter['put_sentiment_threshold']
+                
+                if (is_call and sentiment_score < threshold) or (not is_call and sentiment_score > threshold):
+                    veto_reason = f"Sentiment score {sentiment_score:.4f} is outside threshold {threshold} for a {parsed_signal['contract_type']}."
+                    logging.warning(f"Trade VETOED for {parsed_signal['ticker']}. Reason: {veto_reason}")
+                    trade_info = {
+                        'ticker': parsed_signal['ticker'],
+                        'option': f"{parsed_signal['strike']}{parsed_signal['contract_type'][0].upper()}",
+                        'expiry': parsed_signal['expiry_date'],
+                        'source': profile['channel_name'],
+                        'reason': veto_reason
+                    }
+                    await self.telegram_interface.send_trade_notification(trade_info, "VETOED")
+                    continue
+            
+            # 4. Execute the trade
+            await self._execute_trade_from_signal(parsed_signal, profile)
+
+    async def _execute_trade_from_signal(self, signal, profile):
+        """Validates and executes a single trade based on a parsed signal."""
+        try:
+            contract = await self.ib_interface.create_option_contract(
+                signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
+            )
+            if not contract:
+                logging.error(f"Could not create or find unique contract for signal: {signal}")
+                return
+            
+            # --- Intelligent Sizing ---
+            ticker = await self.ib_interface.get_live_ticker(contract)
+            if not ticker or pd.isna(ticker.ask):
+                logging.error(f"Could not get a valid ask price for {contract.localSymbol}. Cannot size position.")
+                return
+            
+            ask_price = ticker.ask
+            if not (profile['trading']['min_price_per_contract'] <= ask_price <= profile['trading']['max_price_per_contract']):
+                logging.warning(f"Trade for {contract.localSymbol} vetoed. Ask price ${ask_price} is outside limits.")
+                return
+            
+            quantity = int(profile['trading']['funds_allocation'] / (ask_price * 100))
+            if quantity == 0:
+                logging.warning(f"Trade for {contract.localSymbol} vetoed. Not enough funds to purchase a single contract at ${ask_price}.")
+                return
+
+            logging.info(f"Calculated quantity: {quantity} for {contract.localSymbol} at ask price ${ask_price}")
+            
+            # --- Place Order ---
+            order = await self.ib_interface.place_order(contract, 'MKT', quantity)
+            if order:
+                logging.info(f"Successfully placed order for {quantity} of {contract.localSymbol}")
+                # The _on_order_filled callback will handle the rest
+                trade_info = {
+                    'ticker': signal['ticker'],
+                    'option': f"{signal['strike']}{signal['contract_type'][0].upper()}",
+                    'expiry': signal['expiry_date'],
+                    'source': profile['channel_name'],
+                }
+                # Call the new structured notification method
+                await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
+
+        except Exception as e:
+            logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
+
+    def _on_order_filled(self, trade):
+        """Callback executed by IBInterface when an order is filled."""
         contract = trade.contract
-        logging.info("ORDER FILLED: %s %d %s @ %.2f", contract.symbol, fill.execution.shares, "BUY" if fill.execution.side == "BOT" else "SELL", fill.execution.price)
+        fill_price = trade.execution.avgPrice
+        quantity = trade.execution.shares
         
+        logging.info(f"Order filled: {quantity} of {contract.localSymbol} at ${fill_price}")
+
+        # Store position details
         position_details = {
-            "contract": contract,
-            "entry_price": fill.execution.price,
-            "quantity": fill.execution.shares,
-            "entry_timestamp": datetime.now()
+            'contract': contract,
+            'entry_price': fill_price,
+            'quantity': quantity,
+            'entry_time': datetime.now(),
+            'profile_name': self.get_profile_for_position(contract) # Placeholder for multi-profile logic
         }
-        self.state_manager.add_position(position_details)
+        self.open_positions[contract.conId] = position_details
+
+        asyncio.create_task(self._post_fill_actions(trade, position_details))
+
+    async def _post_fill_actions(self, trade, position_details):
+        """Actions to take after an order is confirmed filled."""
+        contract = trade.contract
+        profile = self._get_profile_by_name(position_details['profile_name'])
+
+        # 1. Attach Native Trail
+        if profile and profile['safety_net']['enabled']:
+            trail_percent = profile['safety_net']['native_trail_percent']
+            await self.ib_interface.attach_native_trail(trade.order, trail_percent)
+
+        # 2. Subscribe to market data for dynamic exits
+        subscription_successful = await self.ib_interface.subscribe_to_market_data(contract)
+        if subscription_successful:
+            # 3. Fetch initial historical data to build the first bar set
+            historical_data = await self.ib_interface.get_historical_data(contract)
+            if historical_data is not None and not historical_data.empty:
+                self.position_data_cache[contract.conId] = historical_data
+                logging.info(f"Initialized historical data cache for {contract.localSymbol}")
+            else:
+                 logging.warning(f"Could not fetch initial historical data for {contract.localSymbol}")
+        else:
+            logging.error(f"Failed to subscribe to market data for {contract.localSymbol}. Dynamic exits will be disabled.")
         
-        # HARDENED: Initialize cache and subscribe to data, confirming success.
-        await self._initialize_position_cache(contract)
-        subscription_success = await self.ib_interface.subscribe_to_market_data(contract)
+        # 4. Save the new state
+        self.state_manager.save_state(self.open_positions, self.processed_message_ids)
 
-        fill_message = (
-            f"✅ **Trade Filled** ✅\n\n"
-            f"**Ticker:** `{contract.symbol}`\n"
-            f"**Contract:** `{contract.localSymbol}`\n"
-            f"**Action:** `{'BUY' if trade.order.action == 'BUY' else 'SELL'}`\n"
-            f"**Quantity:** `{int(trade.order.totalQuantity)}`\n"
-            f"**Avg Price:** `${fill.execution.price:.2f}`\n\n"
-            f"**Data Stream:** `{'Subscribed' if subscription_success else 'FAILED'}`"
-        )
-        await self.telegram_interface.send_message(fill_message)
+    # =================================================================
+    # --- CORE LOGIC: Real-time Position Management ---
+    # =================================================================
+    
+    async def _process_market_data_stream(self):
+        """Task to continuously process real-time market data from the queue."""
+        while not self._shutdown_event.is_set():
+            try:
+                ticker = await asyncio.wait_for(self.ib_interface.market_data_queue.get(), timeout=1.0)
+                if ticker.contract.conId in self.open_positions:
+                    await self._resample_ticks_to_bar(ticker)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logging.error(f"Error processing market data stream: {e}", exc_info=True)
 
-    async def _initialize_position_cache(self, contract):
-        """Fetches initial historical data for a new position."""
-        # Fetch 2 days of data to ensure enough bars for indicators
-        df = await self.ib_interface.get_historical_data(contract, duration='2 D', bar_size='1 min')
-        self.position_data_cache[contract.conId] = {
-            "df": df if df is not None else pd.DataFrame(),
-            "ticks": [],
-            "last_bar_timestamp": df.iloc[-1]['date'] if df is not None and not df.empty else datetime.now()
-        }
-
-    async def _append_tick_to_cache(self, ticker):
-        """Appends a new tick and triggers resampling if a new bar is formed."""
+    async def _resample_ticks_to_bar(self, ticker):
+        """Collects ticks and resamples them into time-based bars for analysis."""
         conId = ticker.contract.conId
-        cache = self.position_data_cache[conId]
+        now = datetime.now()
         
-        current_time = datetime.now()
-        
-        cache["ticks"].append({
-            "time": current_time,
-            "price": ticker.last
-        })
-        
-        # Check if a minute has passed since the last bar was created
-        if current_time >= cache["last_bar_timestamp"] + timedelta(minutes=1):
-            await self._resample_ticks_to_bar(conId)
+        # Initialize buffers if not present
+        if conId not in self.tick_buffer:
+            self.tick_buffer[conId] = []
+            self.last_bar_timestamp[conId] = now.replace(second=0, microsecond=0)
 
-    async def _resample_ticks_to_bar(self, conId):
-        """QUALITY CONTROL: Creates a new 1-minute bar from collected ticks."""
-        cache = self.position_data_cache[conId]
-        ticks_df = pd.DataFrame(cache["ticks"])
+        # Append the latest tick data (timestamp, price)
+        # Using last price, but could use bid/ask for more precision
+        if ticker.last > 0:
+            self.tick_buffer[conId].append((now, ticker.last))
 
-        # Quality Control: Only create a bar if there's a minimum number of ticks
-        if len(ticks_df) < self.config.min_ticks_per_bar:
-            logging.debug("Skipping bar creation for conId %d, not enough ticks (%d)", conId, len(ticks_df))
-            # Clear ticks so we don't re-evaluate the same small sample
-            cache["ticks"] = []
-            cache["last_bar_timestamp"] = datetime.now() # Update timestamp to wait for next interval
+        # Check if a minute has passed
+        if now >= self.last_bar_timestamp[conId] + timedelta(minutes=1):
+            profile = self._get_profile_by_name(self.open_positions[conId]['profile_name'])
+            min_ticks = profile['exit_strategy'].get('min_ticks_per_bar', 1)
+
+            # Quality Control: Only form a bar if we have enough ticks
+            if len(self.tick_buffer[conId]) >= min_ticks:
+                
+                # Create a new bar (OHLC) from the buffered ticks
+                prices = [p for t, p in self.tick_buffer[conId]]
+                new_bar = {
+                    'open': prices[0],
+                    'high': max(prices),
+                    'low': min(prices),
+                    'close': prices[-1],
+                    'volume': len(prices) # Use tick count as a proxy for volume
+                }
+                
+                new_bar_df = pd.DataFrame([new_bar], index=[self.last_bar_timestamp[conId]])
+                
+                # Append the new bar to our historical data cache
+                if conId in self.position_data_cache:
+                    self.position_data_cache[conId] = pd.concat([self.position_data_cache[conId], new_bar_df])
+                else:
+                    self.position_data_cache[conId] = new_bar_df
+                
+                # Run exit logic on the updated data
+                await self._evaluate_dynamic_exit(conId)
+
+            # Reset for the next bar
+            self.tick_buffer[conId] = []
+            self.last_bar_timestamp[conId] = now.replace(second=0, microsecond=0)
+
+
+    async def _evaluate_dynamic_exit(self, conId):
+        """Evaluates all configured dynamic exit strategies for a position."""
+        if conId not in self.open_positions:
             return
 
-        ticks_df.set_index('time', inplace=True)
+        position = self.open_positions[conId]
+        profile = self._get_profile_by_name(position['profile_name'])
+        data = self.position_data_cache.get(conId)
+
+        if profile is None or data is None or data.empty:
+            return
         
-        # Resample to 1-minute bars
-        resampled = ticks_df['price'].resample('1Min').ohlc()
-        if not resampled.empty:
-            new_bar = resampled.iloc[-1]
-            new_bar_timestamp = new_bar.name.to_pydatetime()
-
-            new_row = pd.DataFrame([{
-                "date": new_bar_timestamp,
-                "open": new_bar.open,
-                "high": new_bar.high,
-                "low": new_bar.low,
-                "close": new_bar.close,
-                "volume": ticks_df['price'].resample('1Min').count().iloc[-1] # Tick count as volume
-            }])
-            
-            # Append new bar to the main DataFrame
-            cache["df"] = pd.concat([cache["df"], new_row], ignore_index=True)
-            
-            # Clear ticks for the next bar
-            cache["ticks"] = []
-            cache["last_bar_timestamp"] = new_bar_timestamp
-            logging.info("New 1-min bar created for conId %d. Total bars: %d", conId, len(cache["df"]))
-
-
-    async def evaluate_dynamic_exit(self, contract):
-        """HIERARCHY: Evaluates all configured exit conditions in the specified priority order."""
-        conId = contract.conId
-        position = self.state_manager.get_open_positions(conId) # Assumes get by conId
-        profile = self.get_profile_for_position(position) # Assumes helper function
-        df = self.position_data_cache[conId]["df"]
-
-        if df.empty or len(df) < profile['exit_strategy']['trail_settings']['atr_period']:
-            return # Not enough data to evaluate
-
-        is_call = contract.right == 'C'
-        current_price = df.iloc[-1]['close']
+        is_call = position['contract'].right == 'C'
+        exit_reason = None
 
         # --- Breakeven Logic ---
-        breakeven_pct = profile['exit_strategy']['breakeven_trigger_percent']
-        entry_price = position['entry_price']
-        profit_pct = (current_price - entry_price) / entry_price * 100
-
-        # This is a conceptual placeholder. Real implementation would require managing a breakeven order state.
-        if profit_pct >= breakeven_pct:
-            # TODO: Add logic to place/modify a stop order to the entry price
-            logging.info("Breakeven triggered for %s.", contract.localSymbol)
+        # TODO: This logic needs to be more robust. It should probably set a stop order.
+        current_price = data['close'].iloc[-1]
+        pnl_percent = ((current_price - position['entry_price']) / position['entry_price']) * 100
+        if pnl_percent >= profile['exit_strategy']['breakeven_trigger_percent']:
+            # This is a conceptual implementation. Real implementation would manage a stop order.
+            logging.info(f"Position {position['contract'].localSymbol} hit breakeven trigger.")
 
 
-        # --- Configurable Exit Priority Loop ---
+        # --- Configurable Exit Hierarchy ---
         for exit_type in profile['exit_strategy']['exit_priority']:
-            if exit_type == "atr_trail":
-                # Logic for ATR Trail
-                pass
-            elif exit_type == "pullback_stop":
-                # Logic for Pullback Stop
-                pass
-            elif exit_type == "rsi_hook":
-                df.ta.rsi(length=profile['rsi_settings']['period'], append=True)
-                last_rsi = df.iloc[-1][f'RSI_{profile["rsi_settings"]["period"]}']
-                prev_rsi = df.iloc[-2][f'RSI_{profile["rsi_settings"]["period"]}']
+            if exit_reason: break # Exit if a reason has been found
+
+            if exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
+                # ATR logic would be here. It's complex as it needs to maintain a trailing value.
+                pass # Placeholder
+
+            elif exit_type == "pullback_stop" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
+                # Pullback logic would be here.
+                pass # Placeholder
+
+            elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
+                rsi_settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
+                data.ta.rsi(length=rsi_settings['period'], append=True)
+                last_rsi = data[f'RSI_{rsi_settings["period"]}'].iloc[-1]
                 
-                if is_call and last_rsi < profile['rsi_settings']['overbought_level'] and prev_rsi >= profile['rsi_settings']['overbought_level']:
-                    await self.execute_close_trade(contract, "RSI Hook Exit (Overbought)")
-                    return
-                elif not is_call and last_rsi > profile['rsi_settings']['oversold_level'] and prev_rsi <= profile['rsi_settings']['oversold_level']:
-                    await self.execute_close_trade(contract, "RSI Hook Exit (Oversold)")
-                    return
-            # ... add other exit types like psar_flip
-    
-    async def execute_close_trade(self, contract, reason):
-        """Executes a market order to close a position."""
-        position = next((p for p in self.state_manager.get_open_positions() if p['contract'].conId == contract.conId), None)
-        if not position:
-            logging.warning("Attempted to close a position that is not in state: %s", contract.localSymbol)
-            return
+                if is_call and last_rsi > rsi_settings['overbought_level']:
+                    exit_reason = f"RSI crossed overbought level ({last_rsi:.2f} > {rsi_settings['overbought_level']})"
+                elif not is_call and last_rsi < rsi_settings['oversold_level']:
+                    exit_reason = f"RSI crossed oversold level ({last_rsi:.2f} < {rsi_settings['oversold_level']})"
 
-        quantity = position['quantity']
-        trade = await self.ib_interface.place_order(contract, "SELL", quantity)
-        
-        if trade:
-            await self.ib_interface.unsubscribe_from_market_data(contract)
-            self.state_manager.remove_position(contract.conId)
-            del self.position_data_cache[contract.conId]
+            elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
+                psar_settings = profile['exit_strategy']['momentum_exits']['psar_settings']
+                data.ta.psar(initial=psar_settings['start'], increment=psar_settings['increment'], maximum=psar_settings['max'], append=True)
+                last_close = data['close'].iloc[-1]
+                # Check for PSARl (long) or PSARs (short) columns
+                if f'PSARl_{psar_settings["start"]}_{psar_settings["max"]}' in data.columns:
+                    last_psar = data[f'PSARl_{psar_settings["start"]}_{psar_settings["max"]}'].iloc[-1]
+                    if is_call and last_close < last_psar:
+                        exit_reason = f"Price crossed below PSAR ({last_close:.2f} < {last_psar:.2f})"
+                if f'PSARs_{psar_settings["start"]}_{psar_settings["max"]}' in data.columns:
+                    last_psar = data[f'PSARs_{psar_settings["start"]}_{psar_settings["max"]}'].iloc[-1]
+                    if not is_call and last_close > last_psar:
+                        exit_reason = f"Price crossed above PSAR ({last_close:.2f} > {last_psar:.2f})"
+
+        if exit_reason:
+            logging.info(f"Dynamic exit triggered for {position['contract'].localSymbol}. Reason: {exit_reason}")
+            await self._execute_close_trade(conId, exit_reason)
+
+
+    async def _execute_close_trade(self, conId, reason):
+        """Closes a position and updates the state."""
+        if conId in self.open_positions:
+            position_to_close = self.open_positions[conId]
+            contract = position_to_close['contract']
+            quantity = position_to_close['quantity']
             
-            close_message = (
-                f"🔴 **Position Closed** 🔴\n\n"
-                f"**Ticker:** `{contract.symbol}`\n"
-                f"**Contract:** `{contract.localSymbol}`\n"
-                f"**Reason:** `{reason}`"
-            )
-            await self.telegram_interface.send_message(close_message)
-            trade.filledEvent += lambda t, f: logging.info("CLOSE ORDER FILLED for %s @ %.2f", t.contract.localSymbol, f.execution.price)
+            order = await self.ib_interface.place_order(contract, 'MKT', quantity, action='SELL')
 
-    async def _notify_trade_veto(self, parsed_signal, profile, reason):
-        """Sends a formatted Telegram message when a trade is vetoed."""
-        veto_message = (
-            f"❌ **Trade Vetoed** ❌\n\n"
-            f"**Ticker:** `{parsed_signal['ticker']}`\n"
-            f"**Option:** `{parsed_signal['strike']}{'C' if parsed_signal['option_type'] == 'Call' else 'P'}`\n"
-            f"**Expiry:** `{parsed_signal['expiry_str']}`\n"
-            f"**Source:** `{profile['channel_name']}`\n\n"
-            f"**Reason:** {reason}"
-        )
-        await self.telegram_interface.send_message(veto_message)
-        logging.info("Trade vetoed for %s. Reason: %s", parsed_signal['ticker'], reason)
+            if order:
+                logging.info(f"Successfully placed closing order for {quantity} of {contract.localSymbol}")
+                
+                # Unsubscribe from market data
+                await self.ib_interface.unsubscribe_from_market_data(contract)
+                
+                # Remove from live management
+                del self.open_positions[conId]
+                self.position_data_cache.pop(conId, None)
+                self.tick_buffer.pop(conId, None)
+                self.last_bar_timestamp.pop(conId, None)
 
-    # Helper function to find the profile for a given position
-    def get_profile_for_position(self, position):
-        # This is a conceptual placeholder. You'd need a way to link a position
-        # back to the profile that created it, perhaps by storing channel_id with the position.
-        return self.config.profiles[0]
+                # SURGICAL FIX: Save the state after closing a position
+                self.state_manager.save_state(self.open_positions, self.processed_message_ids)
+
+                # TODO: We need the fill price to calculate P/L for the notification
+                trade_info = {
+                    'ticker': contract.symbol,
+                    'option': f"{contract.strike}{contract.right[0]}",
+                    'expiry': contract.lastTradeDateOrContractMonth,
+                    'source': self._get_profile_by_name(position_to_close['profile_name'])['channel_name'],
+                    'pnl': "N/A - Fill price not yet available",
+                    'exit_reason': reason
+                }
+                await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
+
+
+    # =================================================================
+    # --- UTILITY AND HELPER METHODS ---
+    # =================================================================
+
+    async def flatten_all_positions(self):
+        """Closes all open positions. Triggered at EOD."""
+        logging.warning("EOD reached. Flattening all open positions.")
+        await self.telegram_interface.send_message("🚨 EOD reached. Flattening all positions. 🚨")
+        
+        # Create a copy of the keys to avoid issues with modifying dict during iteration
+        position_ids_to_close = list(self.open_positions.keys())
+        
+        for conId in position_ids_to_close:
+            await self._execute_close_trade(conId, "EOD Flatten")
+
+    def _is_eod(self):
+        """Checks if the current time is past the EOD close time."""
+        eod_config = self.config.eod_close
+        if not eod_config['enabled']:
+            return False
+        
+        now = datetime.now() # TODO: Make this timezone-aware
+        eod_time = now.replace(hour=eod_config['hour'], minute=eod_config['minute'], second=0, microsecond=0)
+        
+        return now >= eod_time
+
+    def get_profile_for_position(self, contract):
+        # This is a placeholder. A real implementation would need a way
+        # to know which profile initiated which trade.
+        # For now, we'll assume the first enabled profile.
+        for profile in self.config.profiles:
+            if profile['enabled']:
+                return profile['channel_name']
+        return "default"
+
+    def _get_profile_by_name(self, profile_name):
+        for profile in self.config.profiles:
+            if profile['channel_name'] == profile_name:
+                return profile
+        return None
+    
+    async def _resubscribe_to_open_positions(self):
+        """Resubscribes to market data for all positions loaded from state."""
+        if not self.open_positions:
+            return
+            
+        logging.info(f"Resubscribing to market data for {len(self.open_positions)} loaded position(s)...")
+        for conId, position in self.open_positions.items():
+            await self.ib_interface.subscribe_to_market_data(position['contract'])
+            # Also re-initialize the data cache if needed
+            historical_data = await self.ib_interface.get_historical_data(position['contract'])
+            if historical_data is not None and not historical_data.empty:
+                self.position_data_cache[conId] = historical_data
