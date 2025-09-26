@@ -4,24 +4,23 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 
-# --- SURGICAL FIX: Add project root to the Python path ---
-# This is the "GPS" for our fortress. It ensures that all module imports
-# work correctly, regardless of how or where the script is executed. This
-# is a non-negotiable, professional-grade solution for portability.
+# --- This "GPS" is still 100% necessary ---
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# --- Core Components ---
+# --- Core Components (Corrected Paths) ---
 from services.config import Config
 from services.state_manager import StateManager
 from services.sentiment_analyzer import SentimentAnalyzer
 from bot_engine.signal_processor import SignalProcessor
 
-# --- Interfaces ---
-from bot_engine.interfaces.discord_interface import DiscordInterface
-from bot_engine.interfaces.ib_interface import IBInterface
-from bot_engine.interfaces.telegram_interface import TelegramInterface
+# --- Interfaces (THE FINAL FIX: Corrected Import Paths) ---
+# We are now importing directly from the 'interfaces' and 'services' packages,
+# because they are top-level folders, not nested inside bot_engine.
+from interfaces.discord_interface import DiscordInterface
+from interfaces.ib_interface import IBInterface
+from interfaces.telegram_interface import TelegramInterface
 
 
 def setup_logging():
