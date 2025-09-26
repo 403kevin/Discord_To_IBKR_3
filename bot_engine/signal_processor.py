@@ -98,26 +98,27 @@ class SignalProcessor:
             if msg_id in self.processed_message_ids:
                 continue
             
+            # --- THE "ONE AND DONE" FIX ---
+            # Mark the message as processed IMMEDIATELY to prevent re-processing on failure.
+            self.processed_message_ids.append(msg_id)
+
             # --- THE STALE SIGNAL CHECK ---
             now_utc = datetime.now(timezone.utc)
             signal_age = now_utc - msg_timestamp
             if signal_age.total_seconds() > self.config.signal_max_age_seconds:
                 stale_message_count += 1
-                self.processed_message_ids.append(msg_id) # Mark as processed to avoid re-checking
-                continue
+                continue # Silently continue to the next message
 
-            # If we get here, the message is not stale and not a duplicate
-            self.processed_message_ids.append(msg_id)
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
 
             if any(word.lower() in msg_content.lower() for word in self.config.buzzwords_ignore):
-                logging.info(f"Message {msg_id} ignored due to buzzword. Content: {msg_content}")
+                logging.debug(f"Message {msg_id} ignored due to buzzword.") # Demoted to DEBUG
                 continue
 
             parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
             
             if not isinstance(parsed_signal, dict):
-                logging.info(f"Message {msg_id} did not parse into a valid signal dictionary. Skipping.")
+                logging.debug(f"Message {msg_id} did not parse into a valid signal dictionary.") # Demoted to DEBUG
                 continue
 
             if self.config.sentiment_filter['enabled']:
@@ -141,10 +142,9 @@ class SignalProcessor:
             
             await self._execute_trade_from_signal(parsed_signal, profile)
         
-        # --- THE "END OF SHIFT" REPORT FIX ---
-        # After the loop, report the total number of stale messages found.
+        # --- THE "SILENT SENTRY" FIX ---
         if stale_message_count > 0:
-            logging.info(f"Ignored {stale_message_count} stale message(s) from this poll cycle.")
+            logging.debug(f"Ignored {stale_message_count} stale message(s) from this poll cycle.") # Demoted to DEBUG
 
     async def _execute_trade_from_signal(self, signal, profile):
         """Validates and executes a single trade, aware of its origin."""
@@ -153,7 +153,6 @@ class SignalProcessor:
                 signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
             )
             if not contract:
-                # Error is already logged in ib_interface
                 return
 
             ticker = await self.ib_interface.get_live_ticker(contract)
@@ -376,7 +375,7 @@ class SignalProcessor:
     def _is_eod(self):
         """Checks if the current time is past the EOD close time, using timezone-aware logic."""
         eod_config = self.config.eod_close
-        if not eod_config['enabled']:
+        if not e_config['enabled']:
             return False
         
         try:
