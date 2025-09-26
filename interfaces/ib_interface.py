@@ -6,7 +6,7 @@ import pandas as pd
 class IBInterface:
     """
     Manages the connection and all interactions with the IBKR API.
-    Handles order placement, data streaming, and portfolio reconciliation.
+    This version contains critical fixes for API compatibility.
     """
     def __init__(self, config):
         self.config = config
@@ -34,7 +34,10 @@ class IBInterface:
                 self.ib.orderStatusEvent += self._on_order_status
             else:
                 logging.info("Already connected to IBKR.")
-            await self.ib.reqMarketDataTypeAsync(3) # Set to delayed-frozen data
+
+            # SURGICAL FIX: Use the correct synchronous method name.
+            self.ib.reqMarketDataType(3) # Set to delayed-frozen data
+
             logging.info("Successfully connected to IBKR.")
             return True
         except Exception as e:
