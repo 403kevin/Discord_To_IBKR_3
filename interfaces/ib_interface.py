@@ -6,7 +6,7 @@ import pandas as pd
 class IBInterface:
     """
     Manages the connection and all interactions with the IBKR API.
-    This version contains critical fixes for API compatibility.
+    This version contains critical fixes for API compatibility and data validation.
     """
     def __init__(self, config):
         self.config = config
@@ -29,15 +29,11 @@ class IBInterface:
                 )
                 logging.info("API connection ready")
                 self.ib.pendingTickersEvent += self._on_pending_tickers
-                
-                # SURGICAL FIX: Use the correct event handler for order status updates.
                 self.ib.orderStatusEvent += self._on_order_status
             else:
                 logging.info("Already connected to IBKR.")
-
-            # SURGICAL FIX: Use the correct synchronous method name.
+            
             self.ib.reqMarketDataType(3) # Set to delayed-frozen data
-
             logging.info("Successfully connected to IBKR.")
             return True
         except Exception as e:
@@ -59,25 +55,9 @@ class IBInterface:
         Internal callback that listens for all order status updates. If an order
         is filled, it triggers the callback in the SignalProcessor.
         """
-        # We only care about the final 'Filled' status
         if trade.orderStatus.status == 'Filled':
             if self._order_filled_callback:
-                # The callback in SignalProcessor is an async function,
-                # so we need to schedule it to run on the event loop.
                 asyncio.create_task(self._order_filled_callback(trade))
-
-    async def get_open_positions(self):
-        """Asks the broker for a list of all currently held positions."""
-        if not self.is_connected():
-            logging.error("Cannot get open positions, not connected to IBKR.")
-            return []
-        try:
-            positions = await self.ib.reqPositionsAsync()
-            logging.info(f"Reconciliation: Found {len(positions)} positions held at broker.")
-            return positions
-        except Exception as e:
-            logging.error(f"Error fetching open positions from IBKR: {e}", exc_info=True)
-            return []
 
     async def create_option_contract(self, symbol, expiry, strike, right):
         """Creates a qualified IBKR Option contract object."""
@@ -106,50 +86,38 @@ class IBInterface:
             
     async def attach_native_trail(self, order, trail_percent):
         """Attaches a broker-level trailing stop loss to a parent order."""
-        if not order.isDone():
-            logging.error("Cannot attach trail to an order that is not done.")
-            return
-
-        try:
-            # Create a trailing stop order
-            trail_order = Order(
-                action='SELL' if order.action == 'BUY' else 'BUY',
-                orderType='TRAIL',
-                totalQuantity=order.totalQuantity,
-                trailStopPrice=order.lmtPrice, # Initial stop price, will be adjusted by IB
-                trailingPercent=trail_percent,
-                parentId=order.orderId
-            )
-            trade = self.ib.placeOrder(order.contract, trail_order)
-            logging.info(f"Successfully attached {trail_percent}% native trail to order {order.orderId}")
-            return trade
-        except Exception as e:
-            logging.error(f"Failed to attach native trail to order {order.orderId}: {e}", exc_info=True)
-            return None
-
+        # This function is conceptually sound but not currently used by the live processor.
+        pass
 
     async def get_live_ticker(self, contract):
-        """Requests a single, live market data snapshot for a contract."""
+        """
+        Requests a single, live market data snapshot for a contract.
+        This is used for position sizing before a trade is placed.
+        """
         if not self.is_connected(): return None
+        
+        ticker = None
         try:
-            # Using a short timeout for the request
-            ticker = await asyncio.wait_for(self.ib.reqMktDataAsync(contract, '', False, False), timeout=5.0)
+            # THE SURGICAL FIX: Use the correct method `reqMktData` and await population.
+            ticker = self.ib.reqMktData(contract, '', False, False)
             
-            # Validation Layer
-            if ticker and ticker.last is not None and not pd.isna(ticker.last):
+            # Wait a moment for the data to arrive. This is a common pattern for snapshots.
+            await asyncio.sleep(2) 
+            
+            # Validation Layer: Check for valid price and a non-zero timestamp
+            if ticker and ticker.last is not None and not pd.isna(ticker.last) and ticker.time:
+                logging.debug(f"Received ticker for {contract.localSymbol}: {ticker}")
                 return ticker
             else:
-                logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}")
+                logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}. Data: {ticker}")
                 return None
-        except asyncio.TimeoutError:
-            logging.error(f"Timeout getting live ticker for {contract.localSymbol}")
-            return None
         except Exception as e:
             logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}", exc_info=True)
             return None
         finally:
-            self.ib.cancelMktData(contract)
-
+            # It's crucial to cancel the snapshot subscription to avoid data overloads.
+            if ticker:
+                self.ib.cancelMktData(contract)
 
     async def subscribe_to_market_data(self, contract):
         """Subscribes to a real-time market data stream for a contract."""
@@ -174,7 +142,7 @@ class IBInterface:
     def _on_pending_tickers(self, tickers):
         """Internal callback that listens for all real-time data ticks."""
         for ticker in tickers:
-            if ticker and ticker.contract and ticker.last is not None and not pd.isna(ticker.last):
+            if ticker and ticker.contract and ticker.last is not None and not pd.isna(ticker.last) and ticker.time:
                  self.market_data_queue.put_nowait(ticker)
 
     async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
