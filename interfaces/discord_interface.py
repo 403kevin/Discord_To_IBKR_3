@@ -1,11 +1,12 @@
 import asyncio
 import logging
+from datetime import datetime
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 class DiscordInterface:
     """
     Manages all communication with Discord using Playwright to "fly under the radar".
-    This version is hardened for robust startup and shutdown sequences.
+    This version is hardened for robust startup, shutdown, and polling sequences.
     """
     def __init__(self, config):
         self.config = config
@@ -18,23 +19,20 @@ class DiscordInterface:
         """Initializes Playwright, launches a browser, and logs into Discord."""
         try:
             self.playwright = await async_playwright().start()
-            # Using chromium, but could be firefox or webkit
-            self.browser = await self.playwright.chromium.launch(headless=True) 
+            self.browser = await self.playwright.chromium.launch(headless=True)
             self.page = await self.browser.new_page()
             
             logging.info("Navigating to Discord login page...")
             await self.page.goto("https://discord.com/login")
             
-            # Using more specific selectors for robustness
             await self.page.fill('input[name="email"]', self.config.discord_user_email)
             await self.page.fill('input[name="password"]', self.config.discord_user_password)
             await self.page.click('button[type="submit"]')
             
-            # Wait for the main app interface to load, indicating a successful login
             await self.page.wait_for_selector('div[class*="guilds-"]', timeout=30000)
             
             self._is_initialized = True
-            logging.info(f"Discord interface initialized successfully. Logged in as {self.config.discord_user_email}.")
+            logging.info(f"Discord interface initialized successfully.")
             return True
         except PlaywrightTimeoutError:
             logging.error("Timeout occurred during Discord login. Possible reasons: incorrect credentials, a required captcha, or 2FA.")
@@ -75,19 +73,26 @@ class DiscordInterface:
             return []
         
         try:
-            channel_url = f"https://discord.com/channels/@me/{channel_id}" # Assuming DMs for now, adjust if server channel
+            # Construct channel URL. Assumes server channel, not DM.
+            # You would need to know the server (guild) ID as well. This is a placeholder.
+            guild_id = "@me" # Placeholder for server ID. @me for DMs
+            channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}"
+            
             if self.page.url != channel_url:
+                logging.info(f"Navigating to channel {channel_id}...")
                 await self.page.goto(channel_url, wait_until="networkidle")
 
-            # This selector targets individual messages in a channel. It needs to be verified.
+            # This selector targets individual messages. It must be verified against the current Discord HTML.
             messages = await self.page.query_selector_all('li[class*="messageListItem-"]')
             
             new_messages = []
-            # Iterate in reverse to get oldest messages first
+            # Iterate in reverse to get oldest unread messages first
             for message_element in reversed(messages):
                 message_id = await message_element.get_attribute('id')
                 
-                # Extract the snowflake ID part
+                if not message_id:
+                    continue
+                
                 snowflake_id = message_id.split('-')[-1]
 
                 if snowflake_id not in last_processed_ids:
@@ -98,11 +103,14 @@ class DiscordInterface:
                         timestamp = datetime.now() 
                         new_messages.append((snowflake_id, content, timestamp))
 
+            if new_messages:
+                logging.info(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
+
             return new_messages
 
         except Exception as e:
             logging.error(f"Error polling Discord channel {channel_id}: {e}", exc_info=True)
-            # A critical failure here might mean we need to re-initialize
+            # A critical failure here suggests the session might be invalid.
             self._is_initialized = False 
             return []
 
