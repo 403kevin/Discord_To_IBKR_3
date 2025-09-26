@@ -16,16 +16,19 @@ class Config:
 
     def __init__(self):
         # =================================================================
+        # --- LEGEND: MASTER CONTROL & SIMULATION ---
+        # =================================================================
+        # THE REALITY SWITCH: Set to "True" in your .env file to run the bot
+        # in flight simulator mode, disconnected from the live broker.
+        self.USE_MOCK_BROKER = os.getenv('USE_MOCK_BROKER', 'False').lower() in ('true', '1', 't')
+        
+        # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
         # =================================================================
         self.polling_interval_seconds = 3
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
-        
-        # How often the bot should ask the broker for a list of all open
-        # positions to guard against state desynchronization. (in seconds)
-        self.reconciliation_interval_seconds = 300 # 5 minutes
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
@@ -54,15 +57,11 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": False,
+            "enabled": True,
             "hour": 13,
             "minute": 00
         }
-
-        self.master_shutdown_enabled = False
-        self.master_shutdown_channel_id = "1392531225348014180"
-        self.master_shutdown_command = "terminate"
-        self.oversold_monitor_enabled = True
+        self.MARKET_TIMEZONE = "US/Mountain"
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
@@ -96,7 +95,7 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True, # Set to True for testing
+                "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
@@ -115,12 +114,6 @@ class Config:
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     
-                    # --- LEGEND: Graceful Exit Strategy Toggle ---
-                    # Defines the primary software-based trailing stop method used by the bot.
-                    # This is separate from the "safety_net" native trail which is always active.
-                    # Options:
-                    #   "atr": An adaptive trail based on market volatility (Average True Range).
-                    #   "pullback_percent": A simple trail based on a fixed percentage from the high.
                     "trail_method": "atr",
 
                     "trail_settings": {
@@ -129,12 +122,12 @@ class Config:
                         "atr_multiplier": 1.5
                     },
                     "momentum_exits": {
-                        "psar_enabled": False,
+                        "psar_enabled": True,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
-                        "rsi_hook_enabled": False,
+                        "rsi_hook_enabled": True,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": False, "native_trail_percent": 35}
+                "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
         ]
