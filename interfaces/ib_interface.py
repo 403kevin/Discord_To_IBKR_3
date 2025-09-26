@@ -12,6 +12,7 @@ class IBInterface:
         self.config = config
         self.ib = IB()
         self.market_data_queue = asyncio.Queue()
+        self._order_filled_callback = None
 
     def is_connected(self):
         return self.ib.isConnected()
@@ -28,7 +29,9 @@ class IBInterface:
                 )
                 logging.info("API connection ready")
                 self.ib.pendingTickersEvent += self._on_pending_tickers
-                self.ib.filledOrderEvent += self._on_order_filled_callback # Forwards to signal processor
+                
+                # SURGICAL FIX: Use the correct event handler for order status updates.
+                self.ib.orderStatusEvent += self._on_order_status
             else:
                 logging.info("Already connected to IBKR.")
             await self.ib.reqMarketDataTypeAsync(3) # Set to delayed-frozen data
@@ -46,21 +49,26 @@ class IBInterface:
 
     def set_order_filled_callback(self, callback):
         """Allows the SignalProcessor to register its own fill handler."""
-        self._on_order_filled_callback = callback
-    
-    # =================================================================
-    # --- NEW CAPABILITY: Portfolio Reconciliation ---
-    # =================================================================
+        self._order_filled_callback = callback
+
+    def _on_order_status(self, trade: Trade):
+        """
+        Internal callback that listens for all order status updates. If an order
+        is filled, it triggers the callback in the SignalProcessor.
+        """
+        # We only care about the final 'Filled' status
+        if trade.orderStatus.status == 'Filled':
+            if self._order_filled_callback:
+                # The callback in SignalProcessor is an async function,
+                # so we need to schedule it to run on the event loop.
+                asyncio.create_task(self._order_filled_callback(trade))
+
     async def get_open_positions(self):
-        """
-        Asks the broker for a list of all currently held positions.
-        This is the core of the state reconciliation logic.
-        """
+        """Asks the broker for a list of all currently held positions."""
         if not self.is_connected():
             logging.error("Cannot get open positions, not connected to IBKR.")
             return []
         try:
-            # reqPositionsAsync will return a live-updating list of positions
             positions = await self.ib.reqPositionsAsync()
             logging.info(f"Reconciliation: Found {len(positions)} positions held at broker.")
             return positions
@@ -68,9 +76,6 @@ class IBInterface:
             logging.error(f"Error fetching open positions from IBKR: {e}", exc_info=True)
             return []
 
-    # =================================================================
-    # --- Core Trading Functions ---
-    # =================================================================
     async def create_option_contract(self, symbol, expiry, strike, right):
         """Creates a qualified IBKR Option contract object."""
         try:
@@ -95,16 +100,37 @@ class IBInterface:
         except Exception as e:
             logging.error(f"Error placing order for {contract.localSymbol}: {e}", exc_info=True)
             return None
+            
+    async def attach_native_trail(self, order, trail_percent):
+        """Attaches a broker-level trailing stop loss to a parent order."""
+        if not order.isDone():
+            logging.error("Cannot attach trail to an order that is not done.")
+            return
 
-    # ... (rest of the file is unchanged)
+        try:
+            # Create a trailing stop order
+            trail_order = Order(
+                action='SELL' if order.action == 'BUY' else 'BUY',
+                orderType='TRAIL',
+                totalQuantity=order.totalQuantity,
+                trailStopPrice=order.lmtPrice, # Initial stop price, will be adjusted by IB
+                trailingPercent=trail_percent,
+                parentId=order.orderId
+            )
+            trade = self.ib.placeOrder(order.contract, trail_order)
+            logging.info(f"Successfully attached {trail_percent}% native trail to order {order.orderId}")
+            return trade
+        except Exception as e:
+            logging.error(f"Failed to attach native trail to order {order.orderId}: {e}", exc_info=True)
+            return None
+
 
     async def get_live_ticker(self, contract):
         """Requests a single, live market data snapshot for a contract."""
         if not self.is_connected(): return None
         try:
-            ticker = await self.ib.reqMktDataAsync(contract, '', False, False)
-            await asyncio.sleep(0.5) # Give a moment for data to arrive
-            self.ib.cancelMktData(contract)
+            # Using a short timeout for the request
+            ticker = await asyncio.wait_for(self.ib.reqMktDataAsync(contract, '', False, False), timeout=5.0)
             
             # Validation Layer
             if ticker and ticker.last is not None and not pd.isna(ticker.last):
@@ -112,13 +138,15 @@ class IBInterface:
             else:
                 logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}")
                 return None
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout getting live ticker for {contract.localSymbol}")
+            return None
         except Exception as e:
             logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}", exc_info=True)
             return None
+        finally:
+            self.ib.cancelMktData(contract)
 
-    # =================================================================
-    # --- Real-Time Data Streaming ---
-    # =================================================================
 
     async def subscribe_to_market_data(self, contract):
         """Subscribes to a real-time market data stream for a contract."""
@@ -143,7 +171,6 @@ class IBInterface:
     def _on_pending_tickers(self, tickers):
         """Internal callback that listens for all real-time data ticks."""
         for ticker in tickers:
-            # Validation Layer
             if ticker and ticker.contract and ticker.last is not None and not pd.isna(ticker.last):
                  self.market_data_queue.put_nowait(ticker)
 
@@ -166,3 +193,4 @@ class IBInterface:
         except Exception as e:
             logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
             return None
+
