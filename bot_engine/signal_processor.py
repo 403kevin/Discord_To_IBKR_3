@@ -339,7 +339,9 @@ class SignalProcessor:
     async def _execute_close_trade(self, conId, reason):
         """Closes a position and updates the state."""
         if conId in self.open_positions:
+            # Pop the position from the dict atomically to prevent race conditions
             position_to_close = self.open_positions.pop(conId)
+            
             contract = position_to_close['contract']
             quantity = position_to_close['quantity']
             
@@ -355,13 +357,14 @@ class SignalProcessor:
                 self.state_manager.save_state(self.open_positions, self.processed_message_ids)
 
                 profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
+                
+                # We need the fill price for accurate P/L, which we don't have yet.
+                # This is a known limitation to be addressed.
                 trade_info = {
-                    'ticker': contract.symbol,
-                    'option': f"{contract.strike}{contract.right[0]}",
-                    'expiry': contract.lastTradeDateOrContractMonth,
-                    'source': profile['channel_name'] if profile else 'N/A',
-                    'pnl': "N/A - Fill price not yet available",
-                    'exit_reason': reason
+                    'source_channel': profile['channel_name'] if profile else 'N/A',
+                    'contract_details': contract.localSymbol,
+                    'exit_price': 'N/A', # Placeholder
+                    'reason': reason
                 }
                 await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
 
