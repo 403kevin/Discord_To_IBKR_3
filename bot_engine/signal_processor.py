@@ -375,7 +375,9 @@ class SignalProcessor:
     def _is_eod(self):
         """Checks if the current time is past the EOD close time, using timezone-aware logic."""
         eod_config = self.config.eod_close
-        if not e_config['enabled']:
+        
+        # --- THE SURGICAL FIX: Corrected the variable name from 'e_config' to 'eod_config' ---
+        if not eod_config['enabled']:
             return False
         
         try:
