@@ -64,13 +64,15 @@ async def main():
         discord_interface = DiscordInterface(config)
         
         # --- 2. Pre-flight Connections & State Load ---
-        # SURGICAL FIX: We now initialize all interfaces BEFORE creating the SignalProcessor.
-        # This guarantees all communication lines are open before the first command is given.
         await ib_interface.connect()
-        await telegram_interface.initialize() # Messenger's horse is now saddled.
+        await telegram_interface.initialize()
         await discord_interface.initialize()
         
         loaded_trades, loaded_ids = state_manager.load_state()
+
+        # --- THE SURGICAL FIX: The Startup Message ---
+        # With all systems online, the Orchestrator now sends the startup signal.
+        await telegram_interface.send_message("*🚀 Bot is starting up\\.\\.\\.*")
 
         # --- 3. Instantiate the Brain (with live connections) ---
         signal_processor = SignalProcessor(
@@ -85,8 +87,6 @@ async def main():
         )
 
         # --- 4. GO LIVE ---
-        # The SignalProcessor's start() method will now send the startup message
-        # with the confidence that the Telegram connection is already active.
         logging.info("Starting main event loop...")
         processor_task = asyncio.create_task(signal_processor.start())
         main_tasks.append(processor_task)
@@ -98,19 +98,19 @@ async def main():
     except Exception as e:
         logging.critical("A critical error occurred in the main setup or loop: %s", e, exc_info=True)
         if telegram_interface and telegram_interface.is_initialized():
-            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed. Check logs.")
+            # Sanitize the error message for Telegram
+            sanitized_error = telegram_interface._sanitize_markdown(str(e))
+            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed\\. Check logs\\.\n\n*Error:* `{sanitized_error}`")
     finally:
         logging.info("--- 😴 Bot is shutting down. ---")
         
-        # Gracefully cancel all running tasks
         for task in main_tasks:
             task.cancel()
         if signal_processor:
             await signal_processor.shutdown()
 
-        # Gracefully close all connections
         if telegram_interface and telegram_interface.is_initialized():
-            await telegram_interface.send_message("😴 Bot is shutting down.")
+            await telegram_interface.send_message("*😴 Bot is shutting down\\.*")
             await telegram_interface.shutdown()
         if ib_interface and ib_interface.is_connected():
             await ib_interface.disconnect()
