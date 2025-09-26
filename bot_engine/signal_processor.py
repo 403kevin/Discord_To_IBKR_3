@@ -44,6 +44,7 @@ class SignalProcessor:
         """The main entry point. Sets up concurrent tasks for all bot operations."""
         logging.info("Starting Signal Processor...")
         
+        # Set the callback that the IBInterface will use to notify us of a fill
         self.ib_interface.set_order_filled_callback(self._on_order_filled)
         
         await self._resubscribe_to_open_positions()
@@ -180,8 +181,11 @@ class SignalProcessor:
         except Exception as e:
             logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
 
-    def _on_order_filled(self, trade):
-        """Callback executed by IBInterface when an order is filled."""
+    async def _on_order_filled(self, trade):
+        """
+        Callback executed by IBInterface when an order is filled.
+        This is now an async function.
+        """
         contract = trade.contract
         order = trade.order
         channel_id = getattr(order, 'channel_id', None)
@@ -212,7 +216,7 @@ class SignalProcessor:
         self.trailing_highs[contract.conId] = fill_price 
         self.breakeven_activated[contract.conId] = False
 
-        asyncio.create_task(self._post_fill_actions(trade, position_details, sentiment_score))
+        await self._post_fill_actions(trade, position_details, sentiment_score)
 
     async def _post_fill_actions(self, trade, position_details, sentiment_score):
         """Actions to take after an order is confirmed filled, with full reporting data."""
