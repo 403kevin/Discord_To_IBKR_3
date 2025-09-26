@@ -1,116 +1,93 @@
 import asyncio
 import logging
 from datetime import datetime
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from aiohttp import ClientSession, ClientError
 
 class DiscordInterface:
     """
-    Manages all communication with Discord using Playwright to "fly under the radar".
-    This version is hardened for robust startup, shutdown, and polling sequences.
+    The true, lightweight, custom polling engine. It makes direct, authenticated
+    HTTP requests to Discord's API to fetch messages, adhering to the project's
+    core "fly under the radar" philosophy.
     """
     def __init__(self, config):
         self.config = config
-        self.playwright = None
-        self.browser = None
-        self.page = None
+        self.token = config.discord_user_token
+        self.session = None
         self._is_initialized = False
+        # Disguise our bot as a standard web browser
+        self.headers = {
+            "Authorization": self.token,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
 
     async def initialize(self):
-        """Initializes Playwright, launches a browser, and logs into Discord."""
-        try:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(headless=True)
-            self.page = await self.browser.new_page()
-            
-            logging.info("Navigating to Discord login page...")
-            await self.page.goto("https://discord.com/login")
-            
-            await self.page.fill('input[name="email"]', self.config.discord_user_email)
-            await self.page.fill('input[name="password"]', self.config.discord_user_password)
-            await self.page.click('button[type="submit"]')
-            
-            await self.page.wait_for_selector('div[class*="guilds-"]', timeout=30000)
-            
+        """Initializes the aiohttp session for making API requests."""
+        if not self.session or self.session.closed:
+            self.session = ClientSession(headers=self.headers)
             self._is_initialized = True
-            logging.info(f"Discord interface initialized successfully.")
-            return True
-        except PlaywrightTimeoutError:
-            logging.error("Timeout occurred during Discord login. Possible reasons: incorrect credentials, a required captcha, or 2FA.")
-            await self.shutdown()
-            return False
-        except Exception as e:
-            logging.error(f"An unexpected error occurred during Discord initialization: {e}", exc_info=True)
-            await self.shutdown()
-            return False
+            logging.info("Discord HTTP interface initialized successfully.")
+            # We immediately do a quick test call to verify the auth token is valid
+            await self._verify_token()
+
+    async def _verify_token(self):
+        """Makes a simple API call to verify the auth token is valid."""
+        if not self.is_initialized(): return
+        try:
+            # This is the standard endpoint to check the current user's details
+            async with self.session.get("https://discord.com/api/v9/users/@me") as response:
+                if response.status == 200:
+                    user_data = await response.json()
+                    logging.info(f"Discord token verified. Authenticated as {user_data['username']}#{user_data['discriminator']}")
+                else:
+                    logging.error(f"Discord token is INVALID. Status: {response.status}. Please check your .env file.")
+                    self._is_initialized = False
+        except ClientError as e:
+            logging.error(f"An error occurred during Discord token verification: {e}")
+            self._is_initialized = False
 
     def is_initialized(self):
-        """
-        SURGICAL FIX: New method for the main orchestrator to safely check
-        if the interface is active before attempting shutdown.
-        """
-        return self._is_initialized and self.page and not self.page.is_closed()
+        """Checks if the interface is active."""
+        return self._is_initialized and self.session and not self.session.closed
 
     async def shutdown(self):
-        """
-        SURGICAL FIX: New method to gracefully close the browser and Playwright,
-        preventing ghost processes.
-        """
-        if self.browser and not self.browser.is_closed():
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        """Gracefully closes the aiohttp session."""
+        if self.session and not self.session.closed:
+            await self.session.close()
         self._is_initialized = False
-        logging.info("Discord interface has been shut down.")
+        logging.info("Discord HTTP interface has been shut down.")
         
     async def poll_for_new_messages(self, channel_id, last_processed_ids):
-        """
-        Polls a specific channel for new messages that have not yet been processed.
-        NOTE: This is the most fragile part of the bot. Discord UI changes can
-        break these selectors.
-        """
+        """Polls a specific channel for new messages using a direct API call."""
         if not self.is_initialized():
             logging.error("Cannot poll for messages, Discord interface is not initialized.")
             return []
         
+        # This is the official Discord API endpoint for fetching channel messages
+        url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
+        
         try:
-            # Construct channel URL. Assumes server channel, not DM.
-            # You would need to know the server (guild) ID as well. This is a placeholder.
-            guild_id = "@me" # Placeholder for server ID. @me for DMs
-            channel_url = f"https://discord.com/channels/{guild_id}/{channel_id}"
-            
-            if self.page.url != channel_url:
-                logging.info(f"Navigating to channel {channel_id}...")
-                await self.page.goto(channel_url, wait_until="networkidle")
-
-            # This selector targets individual messages. It must be verified against the current Discord HTML.
-            messages = await self.page.query_selector_all('li[class*="messageListItem-"]')
-            
-            new_messages = []
-            # Iterate in reverse to get oldest unread messages first
-            for message_element in reversed(messages):
-                message_id = await message_element.get_attribute('id')
+            async with self.session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    logging.error(f"Failed to fetch Discord messages. Status: {response.status}, Response: {await response.text()}")
+                    return []
                 
-                if not message_id:
-                    continue
+                messages = await response.json()
+                new_messages = []
+                # API returns newest first, so we reverse to process oldest unread first
+                for msg in reversed(messages):
+                    if msg['id'] not in last_processed_ids:
+                        timestamp = datetime.fromisoformat(msg['timestamp'])
+                        # We only need to pass the raw data upstream
+                        new_messages.append((msg['id'], msg['content'], timestamp))
                 
-                snowflake_id = message_id.split('-')[-1]
-
-                if snowflake_id not in last_processed_ids:
-                    content_element = await message_element.query_selector('div[class*="contents-"]')
-                    if content_element:
-                        content = await content_element.inner_text()
-                        # This is a basic timestamp from the client; not ideal but a starting point
-                        timestamp = datetime.now() 
-                        new_messages.append((snowflake_id, content, timestamp))
-
-            if new_messages:
-                logging.info(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
-
-            return new_messages
-
+                if new_messages:
+                    logging.info(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
+                
+                return new_messages
+        except asyncio.TimeoutError:
+            logging.error(f"Request to Discord API timed out for channel {channel_id}.")
+            return []
         except Exception as e:
-            logging.error(f"Error polling Discord channel {channel_id}: {e}", exc_info=True)
-            # A critical failure here suggests the session might be invalid.
-            self._is_initialized = False 
+            logging.error(f"An unexpected error occurred while polling Discord channel {channel_id}: {e}", exc_info=True)
             return []
 
