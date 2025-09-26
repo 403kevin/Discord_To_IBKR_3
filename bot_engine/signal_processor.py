@@ -44,9 +44,6 @@ class SignalProcessor:
         """The main entry point. Sets up concurrent tasks for all bot operations."""
         logging.info("Starting Signal Processor...")
         
-        # SURGICAL FIX: The startup message responsibility has been moved to main.py
-        # to eliminate the race condition. This function is now leaner and more focused.
-        
         self.ib_interface.set_order_filled_callback(self._on_order_filled)
         
         await self._resubscribe_to_open_positions()
@@ -101,13 +98,16 @@ class SignalProcessor:
             if msg_id in self.processed_message_ids:
                 continue
             
+            # --- THE "GROUNDHOG DAY" FIX ---
+            # Mark the message as processed IMMEDIATELY to prevent re-processing on failure.
             self.processed_message_ids.append(msg_id)
 
+            # --- THE STALE SIGNAL CHECK ---
             now_utc = datetime.now(timezone.utc)
             signal_age = now_utc - msg_timestamp
             if signal_age.total_seconds() > self.config.signal_max_age_seconds:
                 stale_message_count += 1
-                continue
+                continue # Silently continue to the next message
 
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
 
@@ -121,6 +121,7 @@ class SignalProcessor:
                 logging.debug(f"Message {msg_id} did not parse into a valid signal dictionary.")
                 continue
 
+            sentiment_score = None # Initialize for later reporting
             if self.config.sentiment_filter['enabled']:
                 sentiment_score = self.sentiment_analyzer.get_sentiment_score(msg_content)
                 is_call = parsed_signal['contract_type'].upper() == 'CALL'
@@ -131,22 +132,20 @@ class SignalProcessor:
                     veto_reason = f"Sentiment score {sentiment_score:.4f} is outside threshold {threshold} for a {parsed_signal['contract_type']}."
                     logging.warning(f"Trade VETOED for {parsed_signal['ticker']}. Reason: {veto_reason}")
                     trade_info = {
-                        'ticker': parsed_signal['ticker'],
-                        'option': f"{parsed_signal['strike']}{parsed_signal['contract_type'][0].upper()}",
-                        'expiry': parsed_signal['expiry_date'],
-                        'source': profile['channel_name'],
+                        'source_channel': profile['channel_name'],
+                        'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0].upper()}",
                         'reason': veto_reason
                     }
                     await self.telegram_interface.send_trade_notification(trade_info, "VETOED")
                     continue
             
-            await self._execute_trade_from_signal(parsed_signal, profile)
+            await self._execute_trade_from_signal(parsed_signal, profile, sentiment_score)
         
         if stale_message_count > 0:
             logging.debug(f"Ignored {stale_message_count} stale message(s) from this poll cycle.")
 
-    async def _execute_trade_from_signal(self, signal, profile):
-        """Validates and executes a single trade, aware of its origin."""
+    async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
+        """Validates and executes a single trade, now with sentiment score for reporting."""
         try:
             contract = await self.ib_interface.create_option_contract(
                 signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
@@ -173,15 +172,10 @@ class SignalProcessor:
             
             order = await self.ib_interface.place_order(contract, 'MKT', quantity)
             if order:
+                # Attach metadata to the order object so the fill handler can use it
                 order.channel_id = profile['channel_id']
+                order.sentiment_score = sentiment_score
                 logging.info(f"Successfully placed order for {quantity} of {contract.localSymbol} from channel {profile['channel_name']}")
-                trade_info = {
-                    'ticker': signal['ticker'],
-                    'option': f"{signal['strike']}{signal['contract_type'][0].upper()}",
-                    'expiry': signal['expiry_date'],
-                    'source': profile['channel_name'],
-                }
-                await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
 
         except Exception as e:
             logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
@@ -191,6 +185,7 @@ class SignalProcessor:
         contract = trade.contract
         order = trade.order
         channel_id = getattr(order, 'channel_id', None)
+        sentiment_score = getattr(order, 'sentiment_score', None)
 
         if channel_id is None:
             logging.warning(f"Could not determine originating channel for fill of {contract.localSymbol}. Using first enabled profile.")
@@ -199,8 +194,10 @@ class SignalProcessor:
                     channel_id = profile['channel_id']
                     break
         
-        fill_price = trade.execution.avgPrice
-        quantity = trade.execution.shares
+        # --- THE API MISMATCH FIX ---
+        # The correct fill info is in the orderStatus object for a filled trade.
+        fill_price = trade.orderStatus.avgFillPrice
+        quantity = trade.orderStatus.filled
         
         logging.info(f"Order filled: {quantity} of {contract.localSymbol} at ${fill_price}")
 
@@ -215,12 +212,32 @@ class SignalProcessor:
         self.trailing_highs[contract.conId] = fill_price 
         self.breakeven_activated[contract.conId] = False
 
-        asyncio.create_task(self._post_fill_actions(trade, position_details))
+        asyncio.create_task(self._post_fill_actions(trade, position_details, sentiment_score))
 
-    async def _post_fill_actions(self, trade, position_details):
-        """Actions to take after an order is confirmed filled."""
+    async def _post_fill_actions(self, trade, position_details, sentiment_score):
+        """Actions to take after an order is confirmed filled, with full reporting data."""
         contract = trade.contract
         profile = self._get_profile_by_channel_id(position_details['channel_id'])
+
+        # --- THE AVIONICS UPGRADE ---
+        # Gather all data for the new, professional Telegram report.
+        if profile:
+            momentum_exits = []
+            if profile['exit_strategy']['momentum_exits'].get('psar_enabled'):
+                momentum_exits.append("PSAR")
+            if profile['exit_strategy']['momentum_exits'].get('rsi_hook_enabled'):
+                momentum_exits.append("RSI")
+            
+            trade_info = {
+                'source_channel': profile['channel_name'],
+                'contract_details': contract.localSymbol,
+                'quantity': position_details['quantity'],
+                'entry_price': position_details['entry_price'],
+                'sentiment_score': sentiment_score,
+                'trail_method': profile['exit_strategy']['trail_method'].upper(),
+                'momentum_exit': ", ".join(momentum_exits) if momentum_exits else "None"
+            }
+            await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
 
         if profile and profile['safety_net']['enabled']:
             trail_percent = profile['safety_net']['native_trail_percent']
