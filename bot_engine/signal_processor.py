@@ -92,19 +92,21 @@ class SignalProcessor:
 
     async def _process_new_signals(self, messages, profile):
         """Processes a batch of new messages for a given profile."""
+        stale_message_count = 0
+
         for msg_id, msg_content, msg_timestamp in messages:
             if msg_id in self.processed_message_ids:
                 continue
             
-            # --- THE STALE SIGNAL FIX ---
-            # Timestamps from Discord are timezone-aware (UTC).
+            # --- THE STALE SIGNAL CHECK ---
             now_utc = datetime.now(timezone.utc)
             signal_age = now_utc - msg_timestamp
             if signal_age.total_seconds() > self.config.signal_max_age_seconds:
-                logging.warning(f"Message {msg_id} is stale ({signal_age.total_seconds():.2f}s old). Ignoring.")
-                self.processed_message_ids.append(msg_id)
+                stale_message_count += 1
+                self.processed_message_ids.append(msg_id) # Mark as processed to avoid re-checking
                 continue
 
+            # If we get here, the message is not stale and not a duplicate
             self.processed_message_ids.append(msg_id)
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
 
@@ -114,7 +116,6 @@ class SignalProcessor:
 
             parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
             
-            # --- THE DEFENSIVE BRAIN FIX ---
             if not isinstance(parsed_signal, dict):
                 logging.info(f"Message {msg_id} did not parse into a valid signal dictionary. Skipping.")
                 continue
@@ -139,6 +140,11 @@ class SignalProcessor:
                     continue
             
             await self._execute_trade_from_signal(parsed_signal, profile)
+        
+        # --- THE "END OF SHIFT" REPORT FIX ---
+        # After the loop, report the total number of stale messages found.
+        if stale_message_count > 0:
+            logging.info(f"Ignored {stale_message_count} stale message(s) from this poll cycle.")
 
     async def _execute_trade_from_signal(self, signal, profile):
         """Validates and executes a single trade, aware of its origin."""
@@ -147,7 +153,7 @@ class SignalProcessor:
                 signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
             )
             if not contract:
-                logging.error(f"Could not create or find unique contract for signal: {signal}")
+                # Error is already logged in ib_interface
                 return
 
             ticker = await self.ib_interface.get_live_ticker(contract)
@@ -302,8 +308,9 @@ class SignalProcessor:
         is_call = position['contract'].right == 'C'
         exit_reason = None
         
-        # ... The rest of the dynamic exit logic would be here ...
         # This is where the breakeven, ATR, pullback, RSI, and PSAR checks happen.
+        # This section is a placeholder for the fully implemented logic.
+        pass
 
         if exit_reason:
             logging.info(f"Dynamic exit triggered for {position['contract'].localSymbol}. Reason: {exit_reason}")
@@ -328,12 +335,12 @@ class SignalProcessor:
 
                 self.state_manager.save_state(self.open_positions, self.processed_message_ids)
 
-                # TODO: We need the fill price to calculate P/L for the notification
+                profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
                 trade_info = {
                     'ticker': contract.symbol,
                     'option': f"{contract.strike}{contract.right[0]}",
                     'expiry': contract.lastTradeDateOrContractMonth,
-                    'source': self._get_profile_by_channel_id(position_to_close['channel_id'])['channel_name'],
+                    'source': profile['channel_name'] if profile else 'N/A',
                     'pnl': "N/A - Fill price not yet available",
                     'exit_reason': reason
                 }
