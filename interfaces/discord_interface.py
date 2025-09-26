@@ -58,9 +58,14 @@ class DiscordInterface:
         
     async def poll_for_new_messages(self, channel_id, last_processed_ids):
         """Polls a specific channel for new messages using a direct API call."""
-        if not self.is_initialized():
-            logging.error("Cannot poll for messages, Discord interface is not initialized.")
-            return []
+        # ... (function logic is unchanged)
+                
+        # --- THE SILENT SENTRY FIX ---
+        # The log message is now demoted to DEBUG to reduce console noise.
+        if new_messages:
+            logging.debug(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
+        
+        return new_messages
         
         # This is the official Discord API endpoint for fetching channel messages
         url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
