@@ -17,8 +17,16 @@ from bot_engine.signal_processor import SignalProcessor
 
 # --- Interfaces ---
 from interfaces.discord_interface import DiscordInterface
-from interfaces.ib_interface import IBInterface
 from interfaces.telegram_interface import TelegramInterface
+
+# --- THE REALITY SWITCH WIRING ---
+# We will dynamically import the correct broker interface based on the config.
+config_loader = Config()
+if config_loader.USE_MOCK_BROKER:
+    from interfaces.mock_ib_interface import MockIBInterface as BrokerInterface
+    logging.warning("--- ⚠️  RUNNING IN FLIGHT SIMULATOR MODE ⚠️ ---")
+else:
+    from interfaces.ib_interface import IBInterface as BrokerInterface
 
 
 def setup_logging():
@@ -54,12 +62,15 @@ async def main():
     try:
         logging.info("--- 🚀 LAUNCHING TRADING BOT 🚀 ---")
         
+        # We use the pre-loaded config object
+        config = config_loader
+        
         # --- 1. Assemble Components ---
-        config = Config()
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
         
-        ib_interface = IBInterface(config)
+        # Use the dynamically imported BrokerInterface alias
+        ib_interface = BrokerInterface(config)
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
         
@@ -70,11 +81,9 @@ async def main():
         
         loaded_trades, loaded_ids = state_manager.load_state()
 
-        # --- THE SURGICAL FIX: The Startup Message ---
-        # With all systems online, the Orchestrator now sends the startup signal.
         await telegram_interface.send_message("*🚀 Bot is starting up\\.\\.\\.*")
 
-        # --- 3. Instantiate the Brain (with live connections) ---
+        # --- 3. Instantiate the Brain ---
         signal_processor = SignalProcessor(
             config=config,
             ib_interface=ib_interface,
@@ -98,9 +107,7 @@ async def main():
     except Exception as e:
         logging.critical("A critical error occurred in the main setup or loop: %s", e, exc_info=True)
         if telegram_interface and telegram_interface.is_initialized():
-            # Sanitize the error message for Telegram
-            sanitized_error = telegram_interface._sanitize_markdown(str(e))
-            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed\\. Check logs\\.\n\n*Error:* `{sanitized_error}`")
+            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed\\. Check logs\\.")
     finally:
         logging.info("--- 😴 Bot is shutting down. ---")
         
@@ -110,7 +117,7 @@ async def main():
             await signal_processor.shutdown()
 
         if telegram_interface and telegram_interface.is_initialized():
-            await telegram_interface.send_message("*😴 Bot is shutting down\\.*")
+            await telegram_interface.send_message("😴 Bot is shutting down\\.")
             await telegram_interface.shutdown()
         if ib_interface and ib_interface.is_connected():
             await ib_interface.disconnect()
@@ -123,4 +130,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Shutdown initiated by user (Ctrl+C).")
-
