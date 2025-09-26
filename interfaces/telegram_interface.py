@@ -6,7 +6,7 @@ import re
 class TelegramInterface:
     """
     Manages all communication with the Telegram Bot API.
-    Includes robust sanitization to prevent Markdown parsing errors.
+    This version includes the professional, multi-format notification system.
     """
     def __init__(self, config):
         self.bot_token = config.telegram_bot_token
@@ -34,18 +34,10 @@ class TelegramInterface:
         logging.info("Telegram session closed.")
 
     def _sanitize_markdown(self, text: str) -> str:
-        """
-        Escapes all special characters for Telegram MarkdownV2.
-        This is a comprehensive and robust implementation.
-        """
+        """Escapes all special characters for Telegram MarkdownV2."""
         if not isinstance(text, str):
             text = str(text)
-        
-        # Characters to escape for MarkdownV2.
-        # The backslash must be escaped first.
         escape_chars = r'\_*[]()~`>#+-=|{}.!'
-        
-        # This regex will find any of the characters in the string and prepend a backslash.
         return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
     async def send_message(self, text):
@@ -69,38 +61,57 @@ class TelegramInterface:
             logging.error(f"An error occurred while sending Telegram message: {e}", exc_info=True)
 
     async def send_trade_notification(self, trade_info, status):
-        """Sends a professionally formatted and sanitized trade notification."""
-        header_map = {
-            "OPENED": "✅ TRADE OPENED ✅",
-            "CLOSED": "❌ TRADE CLOSED ❌",
-            "VETOED": "🚫 TRADE VETOED 🚫"
-        }
-        # Sanitize the header just in case status is an unexpected value
-        header = self._sanitize_markdown(header_map.get(status, status.upper()))
+        """
+        THE VETERAN UPGRADE: Sends a professionally formatted notification
+        based on the new, multi-option format.
+        """
+        message = ""
+        # Sanitize all data first for safety
+        source_channel = self._sanitize_markdown(trade_info.get('source_channel', 'N/A'))
+        contract_details = self._sanitize_markdown(trade_info.get('contract_details', 'N/A'))
 
-        # Sanitize all dynamic parts of the message
-        ticker = self._sanitize_markdown(trade_info.get('ticker'))
-        option = self._sanitize_markdown(trade_info.get('option'))
-        expiry = self._sanitize_markdown(trade_info.get('expiry'))
-        source = self._sanitize_markdown(trade_info.get('source'))
+        if status == "OPENED":
+            quantity = self._sanitize_markdown(trade_info.get('quantity', 'N/A'))
+            entry_price = self._sanitize_markdown(f"${trade_info.get('entry_price'):.2f}" if trade_info.get('entry_price') is not None else 'N/A')
+            sentiment_score = self._sanitize_markdown(f"{trade_info.get('sentiment_score'):.4f}" if trade_info.get('sentiment_score') is not None else 'N/A')
+            trail_method = self._sanitize_markdown(trade_info.get('trail_method', 'N/A'))
+            momentum_exit = self._sanitize_markdown(trade_info.get('momentum_exit', 'None'))
+            
+            message = f"""
+*✅ Trade Entry Confirmed ✅*
 
-        # Use f-strings for a clean, multi-line message
-        message = (
-            f"*{header}*\n\n"
-            f"*Ticker:* `{ticker}`\n"
-            f"*Option:* `{option}`\n"
-            f"*Expiry:* `{expiry}`\n"
-            f"*Source:* `{source}`\n"
-        )
-        
-        if status == "VETOED":
-            reason = self._sanitize_markdown(trade_info.get('reason'))
-            message += f"*Reason:* `{reason}`\n"
-        if status == "CLOSED":
-            pnl = self._sanitize_markdown(trade_info.get('pnl', 'N/A'))
-            exit_reason = self._sanitize_markdown(trade_info.get('exit_reason', 'N/A'))
-            message += f"*P/L:* `{pnl}`\n"
-            message += f"*Exit Reason:* `{exit_reason}`\n"
+*Source Channel:* `{source_channel}`
+*Contract:* `{contract_details}`
+*Quantity:* `{quantity}`
+*Entry Price:* `{entry_price}`
+*Vader Sentiment:* `{sentiment_score}`
+*Trail Method:* `{trail_method}`
+*Momentum Exit:* `{momentum_exit}`
+"""
 
-        await self.send_message(message.strip())
+        elif status == "CLOSED":
+            exit_price = self._sanitize_markdown(f"${trade_info.get('exit_price'):.2f}" if trade_info.get('exit_price') is not None else 'N/A')
+            reason = self._sanitize_markdown(trade_info.get('reason', 'N/A'))
+            
+            message = f"""
+*🔴 SELL Order Executed*
+
+*Contract:* `{contract_details}`
+*Exit Price:* `{exit_price}`
+*Reason:* `{reason}`
+"""
+
+        elif status == "VETOED":
+            reason = self._sanitize_markdown(trade_info.get('reason', 'N/A'))
+
+            message = f"""
+*❌ Trade Vetoed ❌*
+
+*Source Channel:* `{source_channel}`
+*Contract:* `{contract_details}`
+*Reason:* `{reason}`
+"""
+
+        if message:
+            await self.send_message(message.strip())
 
