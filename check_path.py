@@ -28,8 +28,8 @@ print("If the result was SUCCESS but you still get an error, the project's __ini
 print("="*50)
 ```
 
-**Step 2: Run the Scanner**
-Save the file. Now, in your PyCharm terminal, run this new script exactly as you would run the main bot:
+Now, please run the scanner again:
 
 ```powershell
 C:\Users\Kevin\Desktop\Discord_To_IBKR_3\venv\Scripts\python.exe C:\Users\Kevin\Desktop\Discord_To_IBKR_3\check_path.py
+
