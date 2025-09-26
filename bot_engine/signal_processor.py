@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pandas_ta as ta
 import pytz
@@ -44,7 +44,6 @@ class SignalProcessor:
         """The main entry point. Sets up concurrent tasks for all bot operations."""
         logging.info("Starting Signal Processor...")
         
-        # Link the fill handler from the interface to our processor method
         self.ib_interface.set_order_filled_callback(self._on_order_filled)
         
         await self._resubscribe_to_open_positions()
@@ -97,6 +96,15 @@ class SignalProcessor:
             if msg_id in self.processed_message_ids:
                 continue
             
+            # --- THE STALE SIGNAL FIX ---
+            # Timestamps from Discord are timezone-aware (UTC).
+            now_utc = datetime.now(timezone.utc)
+            signal_age = now_utc - msg_timestamp
+            if signal_age.total_seconds() > self.config.signal_max_age_seconds:
+                logging.warning(f"Message {msg_id} is stale ({signal_age.total_seconds():.2f}s old). Ignoring.")
+                self.processed_message_ids.append(msg_id)
+                continue
+
             self.processed_message_ids.append(msg_id)
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
 
@@ -105,8 +113,10 @@ class SignalProcessor:
                 continue
 
             parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
-            if not parsed_signal:
-                logging.info(f"Message {msg_id} did not contain a valid trade signal. Skipping.")
+            
+            # --- THE DEFENSIVE BRAIN FIX ---
+            if not isinstance(parsed_signal, dict):
+                logging.info(f"Message {msg_id} did not parse into a valid signal dictionary. Skipping.")
                 continue
 
             if self.config.sentiment_filter['enabled']:
@@ -323,7 +333,7 @@ class SignalProcessor:
                     'ticker': contract.symbol,
                     'option': f"{contract.strike}{contract.right[0]}",
                     'expiry': contract.lastTradeDateOrContractMonth,
-                    'source': profile['channel_name'],
+                    'source': self._get_profile_by_channel_id(position_to_close['channel_id'])['channel_name'],
                     'pnl': "N/A - Fill price not yet available",
                     'exit_reason': reason
                 }
