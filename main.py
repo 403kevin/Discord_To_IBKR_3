@@ -4,20 +4,18 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 
-# --- This "GPS" is still 100% necessary ---
+# --- GPS for our fortress ---
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# --- Core Components (Corrected Paths) ---
+# --- Core Components ---
 from services.config import Config
 from services.state_manager import StateManager
 from services.sentiment_analyzer import SentimentAnalyzer
 from bot_engine.signal_processor import SignalProcessor
 
-# --- Interfaces (THE FINAL FIX: Corrected Import Paths) ---
-# We are now importing directly from the 'interfaces' and 'services' packages,
-# because they are top-level folders, not nested inside bot_engine.
+# --- Interfaces ---
 from interfaces.discord_interface import DiscordInterface
 from interfaces.ib_interface import IBInterface
 from interfaces.telegram_interface import TelegramInterface
@@ -31,7 +29,8 @@ def setup_logging():
     
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5)
+    # SURGICAL FIX: Force UTF-8 encoding to handle emojis and other special characters.
+    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')
     file_handler.setFormatter(log_formatter)
     
     console_handler = logging.StreamHandler()
@@ -48,7 +47,6 @@ def setup_logging():
 async def main():
     """
     The main asynchronous function that initializes and runs the bot.
-    This is the "Orchestrator" of the entire application.
     """
     telegram_interface = None
     ib_interface = None
@@ -69,7 +67,10 @@ async def main():
         
         await ib_interface.connect()
         await telegram_interface.initialize()
-        await discord_interface.initialize_and_login()
+        
+        # SURGICAL FIX: Call the correct method name.
+        await discord_interface.initialize() 
+        
         loaded_trades, loaded_ids = state_manager.load_state()
 
         signal_processor = SignalProcessor(
@@ -108,6 +109,8 @@ async def main():
             await telegram_interface.shutdown()
         if ib_interface and ib_interface.is_connected():
             await ib_interface.disconnect()
+            
+        # SURGICAL FIX: Call the correct method name for shutdown check.
         if discord_interface and discord_interface.is_initialized():
             await discord_interface.shutdown()
 
