@@ -59,21 +59,16 @@ class DiscordInterface:
             logging.error("Cannot poll for messages, Discord interface is not initialized.")
             return []
         
-        # --- THE SURGICAL FIX: The Ever-Present Report Folder ---
-        # Initialize the list at the top of the function. This guarantees it
-        # always exists, even if the API call in the try block fails.
         new_messages = []
-        
         url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50"
         
         try:
             async with self.session.get(url, timeout=10) as response:
                 if response.status != 200:
                     logging.error(f"Failed to fetch Discord messages. Status: {response.status}, Response: {await response.text()}")
-                    return [] # Return the empty list on failure
+                    return []
                 
                 messages = await response.json()
-                # API returns newest first, so we reverse to process oldest unread first
                 for msg in reversed(messages):
                     if msg['id'] not in last_processed_ids:
                         timestamp = datetime.fromisoformat(msg['timestamp'])
@@ -84,7 +79,8 @@ class DiscordInterface:
         except Exception as e:
             logging.error(f"An unexpected error occurred while polling Discord channel {channel_id}: {e}", exc_info=True)
 
-        # The final check now safely operates on the 'new_messages' list, which is guaranteed to exist.
+        # --- THE SILENT SENTRY FIX ---
+        # The log message is now demoted to DEBUG to reduce console noise.
         if new_messages:
             logging.debug(f"Found {len(new_messages)} new message(s) in channel {channel_id}.")
         
