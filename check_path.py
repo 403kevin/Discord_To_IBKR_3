@@ -26,10 +26,4 @@ print("------------------------------------")
 print("\n[CONCLUSION] If the result above was FAILURE, the environment is misconfigured.")
 print("If the result was SUCCESS but you still get an error, the project's __init__.py files may be missing or named incorrectly.")
 print("="*50)
-```
-
-Now, please run the scanner again:
-
-```powershell
-C:\Users\Kevin\Desktop\Discord_To_IBKR_3\venv\Scripts\python.exe C:\Users\Kevin\Desktop\Discord_To_IBKR_3\check_path.py
 
