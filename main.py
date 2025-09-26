@@ -24,12 +24,9 @@ from interfaces.telegram_interface import TelegramInterface
 def setup_logging():
     """Sets up a robust, rotating logger for the application."""
     log_formatter = logging.Formatter('%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
-    
     log_file = os.getenv("TRADE_BOT_LOG_FILE", "logs/trading_bot.log")
-    
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # SURGICAL FIX: Force UTF-8 encoding to handle emojis and other special characters.
     file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')
     file_handler.setFormatter(log_formatter)
     
@@ -57,6 +54,7 @@ async def main():
     try:
         logging.info("--- 🚀 LAUNCHING TRADING BOT 🚀 ---")
         
+        # --- 1. Assemble Components ---
         config = Config()
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
@@ -65,14 +63,16 @@ async def main():
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
         
+        # --- 2. Pre-flight Connections & State Load ---
+        # SURGICAL FIX: We now initialize all interfaces BEFORE creating the SignalProcessor.
+        # This guarantees all communication lines are open before the first command is given.
         await ib_interface.connect()
-        await telegram_interface.initialize()
-        
-        # SURGICAL FIX: Call the correct method name.
-        await discord_interface.initialize() 
+        await telegram_interface.initialize() # Messenger's horse is now saddled.
+        await discord_interface.initialize()
         
         loaded_trades, loaded_ids = state_manager.load_state()
 
+        # --- 3. Instantiate the Brain (with live connections) ---
         signal_processor = SignalProcessor(
             config=config,
             ib_interface=ib_interface,
@@ -84,6 +84,9 @@ async def main():
             initial_processed_ids=loaded_ids
         )
 
+        # --- 4. GO LIVE ---
+        # The SignalProcessor's start() method will now send the startup message
+        # with the confidence that the Telegram connection is already active.
         logging.info("Starting main event loop...")
         processor_task = asyncio.create_task(signal_processor.start())
         main_tasks.append(processor_task)
@@ -95,22 +98,22 @@ async def main():
     except Exception as e:
         logging.critical("A critical error occurred in the main setup or loop: %s", e, exc_info=True)
         if telegram_interface and telegram_interface.is_initialized():
-            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed. Check logs.\n\nError: {e}")
+            await telegram_interface.send_message(f"🚨 CRITICAL ERROR 🚨\nBot has crashed. Check logs.")
     finally:
         logging.info("--- 😴 Bot is shutting down. ---")
         
+        # Gracefully cancel all running tasks
         for task in main_tasks:
             task.cancel()
         if signal_processor:
             await signal_processor.shutdown()
 
+        # Gracefully close all connections
         if telegram_interface and telegram_interface.is_initialized():
             await telegram_interface.send_message("😴 Bot is shutting down.")
             await telegram_interface.shutdown()
         if ib_interface and ib_interface.is_connected():
             await ib_interface.disconnect()
-            
-        # SURGICAL FIX: Call the correct method name for shutdown check.
         if discord_interface and discord_interface.is_initialized():
             await discord_interface.shutdown()
 
