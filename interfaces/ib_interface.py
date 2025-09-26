@@ -6,7 +6,7 @@ import pandas as pd
 class IBInterface:
     """
     Manages the connection and all interactions with the IBKR API.
-    This version contains critical fixes for API compatibility and data validation.
+    This version contains critical fixes for the order fill callback system.
     """
     def __init__(self, config):
         self.config = config
@@ -33,7 +33,7 @@ class IBInterface:
             else:
                 logging.info("Already connected to IBKR.")
             
-            self.ib.reqMarketDataType(3) # Set to delayed-frozen data
+            self.ib.reqMarketDataType(3)
             logging.info("Successfully connected to IBKR.")
             return True
         except Exception as e:
@@ -47,17 +47,36 @@ class IBInterface:
             self.ib.disconnect()
 
     def set_order_filled_callback(self, callback):
-        """Allows the SignalProcessor to register its own fill handler."""
-        self._order_filled_callback = callback
+        """
+        Allows the SignalProcessor to register its own fill handler.
+        The callback provided MUST be an async function.
+        """
+        if asyncio.iscoroutinefunction(callback):
+            self._order_filled_callback = callback
+        else:
+            raise TypeError("The provided callback must be a coroutine (an async function).")
 
     def _on_order_status(self, trade: Trade):
         """
         Internal callback that listens for all order status updates. If an order
-        is filled, it triggers the callback in the SignalProcessor.
+        is filled, it triggers the async callback in the SignalProcessor.
         """
         if trade.orderStatus.status == 'Filled':
             if self._order_filled_callback:
                 asyncio.create_task(self._order_filled_callback(trade))
+
+    async def get_open_positions(self):
+        """Asks the broker for a list of all currently held positions."""
+        if not self.is_connected():
+            logging.error("Cannot get open positions, not connected to IBKR.")
+            return []
+        try:
+            positions = await self.ib.reqPositionsAsync()
+            logging.info(f"Reconciliation: Found {len(positions)} positions held at broker.")
+            return positions
+        except Exception as e:
+            logging.error(f"Error fetching open positions from IBKR: {e}", exc_info=True)
+            return []
 
     async def create_option_contract(self, symbol, expiry, strike, right):
         """Creates a qualified IBKR Option contract object."""
@@ -86,25 +105,17 @@ class IBInterface:
             
     async def attach_native_trail(self, order, trail_percent):
         """Attaches a broker-level trailing stop loss to a parent order."""
-        # This function is conceptually sound but not currently used by the live processor.
-        pass
+        pass # Placeholder
 
     async def get_live_ticker(self, contract):
-        """
-        Requests a single, live market data snapshot for a contract.
-        This is used for position sizing before a trade is placed.
-        """
+        """Requests a single, live market data snapshot for a contract."""
         if not self.is_connected(): return None
         
         ticker = None
         try:
-            # THE SURGICAL FIX: Use the correct method `reqMktData` and await population.
             ticker = self.ib.reqMktData(contract, '', False, False)
-            
-            # Wait a moment for the data to arrive. This is a common pattern for snapshots.
             await asyncio.sleep(2) 
             
-            # Validation Layer: Check for valid price and a non-zero timestamp
             if ticker and ticker.last is not None and not pd.isna(ticker.last) and ticker.time:
                 logging.debug(f"Received ticker for {contract.localSymbol}: {ticker}")
                 return ticker
@@ -115,7 +126,6 @@ class IBInterface:
             logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}", exc_info=True)
             return None
         finally:
-            # It's crucial to cancel the snapshot subscription to avoid data overloads.
             if ticker:
                 self.ib.cancelMktData(contract)
 
@@ -164,4 +174,3 @@ class IBInterface:
         except Exception as e:
             logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
             return None
-
