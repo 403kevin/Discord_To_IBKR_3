@@ -68,23 +68,23 @@ class SignalProcessor:
 
     async def _reconcile_state_with_broker(self):
         """
-        Compares the bot's internal state with the broker's actual portfolio
-        at startup to eliminate ghost positions and adopt untracked ones.
+        THE FINAL FIX: Compares the bot's internal state with the broker's
+        actual portfolio and correctly ADOPTS untracked positions.
         """
         logging.info("Performing initial state reconciliation with broker...")
         broker_positions = await self.ib_interface.get_open_positions()
         
-        # Filter for non-zero positions only
+        # We only care about positions with a non-zero quantity
         broker_positions = [p for p in broker_positions if p.position != 0]
 
         broker_conIds = {pos.contract.conId for pos in broker_positions}
         internal_conIds = set(self.open_positions.keys())
 
-        # 1. Remove ghost positions from internal state (positions bot has but broker doesn't)
+        # 1. Remove ghost positions from internal state
         ghost_positions = internal_conIds - broker_conIds
         if ghost_positions:
             logging.warning(f"Reconciliation: Found {len(ghost_positions)} ghost position(s) in state file. Removing.")
-            for conId in list(ghost_positions): # Use list to safely modify dict
+            for conId in list(ghost_positions):
                 self._cleanup_position_data(conId)
         
         # 2. Adopt untracked positions found at the broker
@@ -96,13 +96,13 @@ class SignalProcessor:
                     # Create a plausible position_details object for the adopted position
                     entry_price = pos.avgCost
                     if pos.contract.secType == 'OPT':
-                        entry_price /= 100 # avgCost for options is per-share, not per-contract
+                        entry_price /= 100
 
                     position_details = {
                         'contract': pos.contract,
                         'entry_price': entry_price,
                         'quantity': pos.position,
-                        'entry_time': datetime.now(), # Use current time as a placeholder
+                        'entry_time': datetime.now(), # Placeholder time
                         'channel_id': self._get_fallback_channel_id()
                     }
                     self.open_positions[pos.contract.conId] = position_details
