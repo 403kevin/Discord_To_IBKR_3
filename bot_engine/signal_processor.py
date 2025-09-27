@@ -188,7 +188,7 @@ async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
         except Exception as e:
             logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
 
-    async def _on_order_filled(self, trade):
+async def _on_order_filled(self, trade):
         """
         Callback executed by IBInterface when an order is filled.
         This is now an async function.
