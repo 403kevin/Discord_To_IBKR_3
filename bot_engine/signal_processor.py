@@ -304,7 +304,7 @@ async def _post_fill_actions(self, trade, position_details, sentiment_score):
     # --- CORE LOGIC: Real-time Position Management ---
     # =================================================================
     
-    async def _process_market_data_stream(self):
+async def _process_market_data_stream(self):
         """Task to continuously process real-time market data from the queue."""
         while not self._shutdown_event.is_set():
             try:
