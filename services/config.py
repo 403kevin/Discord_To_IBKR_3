@@ -16,11 +16,6 @@ class Config:
 
     def __init__(self):
         # =================================================================
-        # --- LEGEND: MASTER CONTROL & SIMULATION ---
-        # =================================================================
-        self.USE_MOCK_BROKER = os.getenv('USE_MOCK_BROKER', 'False').lower() in ('true', '1', 't')
-
-        # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
         # =================================================================
         self.polling_interval_seconds = 3
@@ -28,12 +23,7 @@ class Config:
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
         
-        # --- THE "PAUSE BUTTON" ---
-        # After a trade is successfully placed, the bot will enter a global cooldown
-        # and will not look for any new signals for this duration (in seconds).
-        self.cooldown_after_trade_seconds = 300 # 5 minutes
-
-        self.reconciliation_interval_seconds = 300 
+        self.MARKET_TIMEZONE = "US/Mountain" 
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
@@ -66,7 +56,13 @@ class Config:
             "hour": 14,
             "minute": 00
         }
-        self.MARKET_TIMEZONE = "US/Mountain" 
+        
+        # Obsolete setting removed as commanded.
+        # self.master_shutdown_enabled = False 
+
+        self.master_shutdown_channel_id = "1392531225348014180"
+        self.master_shutdown_command = "terminate"
+        self.oversold_monitor_enabled = True
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
@@ -100,9 +96,9 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True,
-                "assume_buy_on_ambiguous": False,
-                "ambiguous_expiry_enabled": True,
+                "enabled": True, # Ensure this is True for testing
+                "assume_buy_on_ambiguous": True, # Set to True to test this new logic
+                "ambiguous_expiry_enabled": True, # Set to True to test this new logic
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
                 "trading": {
