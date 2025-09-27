@@ -19,13 +19,13 @@ from services.signal_parser import SignalParser
 class DataHarvester:
     """
     A standalone tool to download historical options data from Interactive Brokers
-    based on a list of signals. This version is now "bilingual" and can parse
-    both simple and complex signal file formats.
+    based on a list of signals. This version has been hardened with a self-aware
+    pathing system to make it immune to execution environment issues.
     """
     def __init__(self, config_path, signals_path, output_dir):
         self.config = Config()
         self.ib_interface = IBInterface(self.config)
-        self.signal_parser = SignalParser(self.config) # Use our main parser
+        self.signal_parser = SignalParser(self.config)
         self.signals_path = signals_path
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
@@ -54,6 +54,11 @@ class DataHarvester:
         and complex formats.
         """
         signals = []
+        # This check is now robust, regardless of the working directory
+        if not os.path.exists(self.signals_path):
+             logging.error(f"FileNotFoundError: Cannot find signals file at '{self.signals_path}'")
+             return []
+
         with open(self.signals_path, 'r') as f:
             for i, line in enumerate(f):
                 line = line.strip()
@@ -61,14 +66,11 @@ class DataHarvester:
                     continue
 
                 parsed_signal = None
-                # Check for the complex format (contains '|')
                 if '|' in line:
                     parts = line.split('|')
                     if len(parts) == 3:
                         signal_text = parts[2].strip()
-                        # Use our main bot's parser for consistency
                         parsed_signal = self.signal_parser.parse_signal(signal_text, self.config.profiles[0])
-                # Otherwise, assume it's the new, simple format
                 else:
                     parsed_signal = self._parse_simple_format(line)
 
@@ -80,7 +82,6 @@ class DataHarvester:
 
     def _parse_simple_format(self, text):
         """Parses the 'TICKER MM/DD STRIKE_TYPE' format."""
-        # Example: NVDA 10/3 175P
         match = re.search(r'([A-Z]{1,5})\s+(\d{1,2}/\d{1,2})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])', text.upper())
         if not match:
             return None
@@ -90,7 +91,6 @@ class DataHarvester:
         try:
             month, day = map(int, date_str.split('/'))
             year = datetime.now().year
-            # Basic year rollover logic
             if month < datetime.now().month:
                 year += 1
             expiry_date = f"{year}{month:02d}{day:02d}"
@@ -114,11 +114,9 @@ class DataHarvester:
             if not contract:
                 continue
 
-            # Fetching 5-second bars for a full day to power the simulator
             data = await self.ib_interface.get_historical_data(contract, duration='1 D', bar_size='5 secs')
 
             if data is not None and not data.empty:
-                # Create a filename that the mock interface can easily parse
                 filename = f"{contract.symbol}_{contract.lastTradeDateOrContractMonth}_{int(contract.strike)}{contract.right}_5sec_data.csv"
                 filepath = os.path.join(self.output_dir, filename)
                 data.to_csv(filepath)
@@ -126,15 +124,25 @@ class DataHarvester:
             else:
                 logging.warning(f"No historical data returned for {contract.localSymbol}")
             
-            await asyncio.sleep(11) # IBKR pacing rule: max 50 requests every 2 minutes
+            await asyncio.sleep(11)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
-    # Assuming this script is run from the project's root directory
-    config_path = 'services/config.py' # Path is relative, might need adjustment
-    signals_path = 'backtester/signals_to_test.txt'
-    output_dir = 'backtester/historical_data'
+    # --- THE FINAL FIX: THE SELF-AWARE GPS ---
+    # This logic makes the script's pathing immune to the IDE's "Working Directory".
+    # It determines its own location and builds paths from there.
+    
+    # 1. Get the directory where THIS script lives.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 2. Define paths relative to THIS script's location.
+    signals_path = os.path.join(script_dir, 'signals_to_test.txt')
+    output_dir = os.path.join(script_dir, 'historical_data')
+
+    # 3. The config_path is relative to the project root, which we already added to sys.path
+    config_path = 'services/config.py'
 
     harvester = DataHarvester(config_path, signals_path, output_dir)
     asyncio.run(harvester.run())
+
