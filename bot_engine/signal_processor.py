@@ -408,7 +408,7 @@ async def _execute_close_trade(self, conId, reason):
                 }
                 await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
 
-    def _cleanup_position_data(self, conId):
+def _cleanup_position_data(self, conId):
         """Helper to remove all data associated with a closed/ghost position."""
         self.position_data_cache.pop(conId, None)
         self.tick_buffer.pop(conId, None)
@@ -421,7 +421,7 @@ async def _execute_close_trade(self, conId, reason):
     # --- UTILITY AND HELPER METHODS ---
     # =================================================================
 
-    async def flatten_all_positions(self):
+async def flatten_all_positions(self):
         """Closes all open positions. Triggered at EOD."""
         if not self.open_positions:
             logging.info("EOD reached. No open positions to flatten.")
@@ -470,7 +470,7 @@ async def _execute_close_trade(self, conId, reason):
                 return profile['channel_id']
         return self.config.profiles[0]['channel_id'] if self.config.profiles else "unknown"
 
-    async def _resubscribe_to_open_positions(self):
+async def _resubscribe_to_open_positions(self):
         """Resubscribes to market data for all positions loaded from state."""
         if not self.open_positions:
             return
