@@ -5,8 +5,8 @@ import logging
 class SignalParser:
     """
     Parses raw text from Discord messages into structured trade signals.
-    This version is a "Master Linguist" upgraded with DTE parsing capabilities
-    and a robust, multi-pass architecture.
+    This version is a "Master Linguist" upgraded with logic to handle
+    ambiguous actions and expiries.
     """
     def __init__(self, config):
         self.config = config
@@ -14,7 +14,7 @@ class SignalParser:
     def parse_signal(self, text, profile):
         """
         Main parsing function. Returns a dictionary on success, None on failure.
-        It now uses a multi-pass strategy to try different parsing patterns.
+        Uses a multi-pass strategy to try different parsing patterns.
         """
         if not text or not isinstance(text, str):
             return None
@@ -22,8 +22,8 @@ class SignalParser:
         cleaned_text = self._cleanup_text(text)
         
         parsers = [
-            self._parse_pattern_dte,
-            self._parse_pattern_standard
+            self._parse_pattern_standard,
+            self._parse_pattern_ambiguous_expiry # Try this if the first fails
         ]
 
         for parser_func in parsers:
@@ -43,13 +43,20 @@ class SignalParser:
         return text
 
     def _find_action(self, text, profile):
-        """Determines the trade action (BTO or STC)."""
+        """
+        THE "IMPLIED INTENT" PROTOCOL: Determines the trade action (BTO or STC),
+        or assumes BTO if the profile allows for it.
+        """
         if any(word in text for word in self.config.buzzwords_buy):
             return "BTO"
         if any(word in text for word in self.config.buzzwords_sell):
             return "STC"
+        
+        # Fallback for signals with no explicit action buzzword
         if profile.get('assume_buy_on_ambiguous', False):
+            logging.debug("No action buzzword found, assuming 'BTO' as per profile config.")
             return "BTO"
+            
         return None
 
     def _parse_pattern_standard(self, text, profile):
@@ -59,7 +66,6 @@ class SignalParser:
             return None
 
         match = re.search(r'([A-Z]{1,5})\s+(\d{1,2}/\d{1,2})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])', text)
-        
         if not match:
             return None
             
@@ -84,48 +90,42 @@ class SignalParser:
             logging.error(f"Date parsing failed for standard pattern. Date: '{date_str}'. Error: {e}")
             return None
 
-    def _parse_pattern_dte(self, text, profile):
+    def _parse_pattern_ambiguous_expiry(self, text, profile):
         """
-        Parses the DTE format: "ACTION TICKER STRIKE_TYPE XDTE"
+        THE "TIME MACHINE" PROTOCOL: Parses signals with no date, like "SPY 300P",
+        and calculates the next available Friday expiry.
         """
+        if not profile.get('ambiguous_expiry_enabled', False):
+            return None
+
         action = self._find_action(text, profile)
         if not action:
             return None
 
-        match = re.search(r'([A-Z]{1,5})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])\s+(\d+)DTE', text)
-
+        # Pattern for signals with a missing date
+        match = re.search(r'([A-Z]{1,5})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])', text)
         if not match:
             return None
 
-        ticker, strike_str, _, contract_type_char, dte_str = match.groups()
+        ticker, strike_str, _, contract_type_char = match.groups()
+        
+        # --- "Next Available Expiry" Calculator ---
+        # A = today, B = next Friday. We will implement B for robustness.
+        today = datetime.now()
+        # 4 is Friday. Calculate days until the next Friday.
+        days_ahead = 4 - today.weekday()
+        if days_ahead <= 0: # If it's already Friday, Saturday, or Sunday
+            days_ahead += 7
+        
+        target_date = today + timedelta(days=days_ahead)
+        expiry_date = target_date.strftime("%Y%m%d")
+        
+        logging.info(f"Ambiguous expiry: using next Friday '{expiry_date}' for signal '{text}'")
 
-        try:
-            days_to_expiry = int(dte_str)
-            
-            target_date = datetime.now()
-            days_added = 0
-            while days_added < days_to_expiry:
-                target_date += timedelta(days=1)
-                # Monday is 0, Sunday is 6. We only count weekdays.
-                if target_date.weekday() < 5:
-                    days_added += 1
-            
-            # Final check for 0DTE case, ensure it's not a weekend.
-            if days_to_expiry == 0:
-                today = datetime.now()
-                if today.weekday() >= 5: # If it's Saturday or Sunday
-                    # Roll forward to Monday
-                    target_date = today + timedelta(days=(7 - today.weekday()))
-                else:
-                    target_date = today
-
-            expiry_date = target_date.strftime("%Y%m%d")
-
-            return {
-                "action": action, "ticker": ticker, "expiry_date": expiry_date,
-                "strike": float(strike_str),
-                "contract_type": "CALL" if contract_type_char == 'C' else "PUT"
-            }
-        except (ValueError, IndexError) as e:
-            logging.error(f"DTE parsing failed. DTE string: '{dte_str}'. Error: {e}")
-            return None
+        return {
+            "action": action,
+            "ticker": ticker,
+            "expiry_date": expiry_date,
+            "strike": float(strike_str),
+            "contract_type": "CALL" if contract_type_char == 'C' else "PUT"
+        }
