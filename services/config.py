@@ -18,10 +18,8 @@ class Config:
         # =================================================================
         # --- LEGEND: MASTER CONTROL & SIMULATION ---
         # =================================================================
-        # THE REALITY SWITCH: Set to "True" in your .env file to run the bot
-        # in flight simulator mode, disconnected from the live broker.
         self.USE_MOCK_BROKER = os.getenv('USE_MOCK_BROKER', 'False').lower() in ('true', '1', 't')
-        
+
         # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
         # =================================================================
@@ -29,6 +27,13 @@ class Config:
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
         self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
+        
+        # --- THE "PAUSE BUTTON" ---
+        # After a trade is successfully placed, the bot will enter a global cooldown
+        # and will not look for any new signals for this duration (in seconds).
+        self.cooldown_after_trade_seconds = 300 # 5 minutes
+
+        self.reconciliation_interval_seconds = 300 
 
         # =================================================================
         # --- LEGEND: BACKTESTING ENGINE ---
@@ -57,11 +62,11 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": False,
-            "hour": 13,
+            "enabled": True,
+            "hour": 14,
             "minute": 00
         }
-        self.MARKET_TIMEZONE = "US/Mountain"
+        self.MARKET_TIMEZONE = "US/Mountain" 
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
