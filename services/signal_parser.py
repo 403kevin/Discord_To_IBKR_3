@@ -1,11 +1,12 @@
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 
 class SignalParser:
     """
     Parses raw text from Discord messages into structured trade signals.
-    This version is battle-hardened with more robust parsing and error handling.
+    This version is a battle-hardened "Master Linguist" with robust, multi-pass
+    parsing logic and intelligent error reporting.
     """
     def __init__(self, config):
         self.config = config
@@ -13,87 +14,90 @@ class SignalParser:
     def parse_signal(self, text, profile):
         """
         Main parsing function. Returns a dictionary on success, None on failure.
-        This function is now guaranteed to be safe.
+        This function is now guaranteed to be safe and verbose on failure.
         """
-        text = self._cleanup_text(text)
-        action = self._find_action(text)
-        if not action:
+        if not text or not isinstance(text, str):
             return None
 
-        # This now returns a dictionary or None
-        details = self._extract_signal_details(text, profile)
+        # Clean the text once at the beginning
+        cleaned_text = self._cleanup_text(text)
         
-        # If details could not be extracted, abort.
-        if not details:
-            return None
+        # Attempt to parse using a series of patterns, from most specific to most general
+        parsers = [
+            self._parse_pattern_standard,
+            # Add other parsing functions here as new formats are discovered
+        ]
 
-        # Combine the action with the extracted details
-        details['action'] = action
-        return details
+        for parser_func in parsers:
+            parsed_signal = parser_func(cleaned_text, profile)
+            if parsed_signal:
+                # The first parser that succeeds wins.
+                return parsed_signal
+        
+        # If no parsers succeed, log the failure and return None.
+        logging.debug(f"Failed to parse signal with any known pattern. Original text: '{text}'")
+        return None
 
     def _cleanup_text(self, text):
         """Standardizes text for easier parsing."""
         text = text.upper().replace('\n', ' ')
-        # Remove jargon words to reduce noise
         for word in self.config.jargon_words:
             text = text.replace(word.upper(), '')
+        # Replace common variations and extra spaces
+        text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def _find_action(self, text):
+    def _find_action(self, text, profile):
         """Determines the trade action (BTO or STC)."""
         if any(word in text for word in self.config.buzzwords_buy):
             return "BTO"
         if any(word in text for word in self.config.buzzwords_sell):
             return "STC"
+        if profile.get('assume_buy_on_ambiguous', False):
+            return "BTO"
         return None
 
-    def _extract_signal_details(self, text, profile):
+    def _parse_pattern_standard(self, text, profile):
         """
-        Extracts Ticker, Expiry, Strike, and Type from the text.
-        Returns a dictionary on success, None on failure.
+        Parses the most common format: "ACTION TICKER MM/DD STRIKE_TYPE"
+        Examples: "BTO SPY 9/26 500c", "SPY 10/3 500 C"
         """
-        # --- Pattern 1: Standard "SPY 500c 9/26" ---
-        match = re.search(r'([A-Z]{1,5})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])\s+(\d{1,2}/\d{1,2})', text)
-        if match:
-            ticker, strike_str, _, contract_type_char, date_str = match.groups()
-            try:
-                # Simple m/d to YYYYMMDD format
-                month, day = map(int, date_str.split('/'))
-                year = datetime.now().year
-                # Handle year rollover
-                if month < datetime.now().month:
-                    year += 1
-                expiry_date = f"{year}{month:02d}{day:02d}"
-                
-                return {
-                    "ticker": ticker,
-                    "expiry_date": expiry_date,
-                    "strike": float(strike_str),
-                    "contract_type": "CALL" if contract_type_char == 'C' else "PUT"
-                }
-            except ValueError:
-                logging.error(f"Could not parse date format from standard pattern: {date_str}")
-                return None
+        action = self._find_action(text, profile)
+        if not action:
+            return None
 
-        # --- Pattern 2: "AMZN Sep 18 2025 120 Call" (More robust) ---
-        match = re.search(r'([A-Z]{1,5})\s+([A-Z]{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{1,4}(\.\d{1,2})?)\s+(CALL|PUT)', text)
-        if match:
-            ticker, month_str, day_str, year_str, strike_str, _, contract_type = match.groups()
-            try:
-                date_str = f"{month_str} {day_str} {year_str}"
-                expiry_obj = datetime.strptime(date_str, "%b %d %Y")
-                expiry_date = expiry_obj.strftime("%Y%m%d")
-
-                return {
-                    "ticker": ticker,
-                    "expiry_date": expiry_date,
-                    "strike": float(strike_str),
-                    "contract_type": contract_type
-                }
-            except ValueError:
-                logging.error(f"Could not parse date format from verbose pattern: {date_str}")
-                return None
+        # This pattern is now more flexible. It looks for TICKER, then DATE, then STRIKE+TYPE
+        match = re.search(r'([A-Z]{1,5})\s+(\d{1,2}/\d{1,2})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])', text)
         
-        # If no patterns match, it's not a valid signal format we understand.
-        return None
+        if not match:
+            return None
+            
+        ticker, date_str, strike_str, _, contract_type_char = match.groups()
+
+        try:
+            # --- THE BILINGUAL FIX ---
+            # It now correctly handles both '10/3' and '10/03'
+            month, day = map(int, date_str.split('/'))
+            year = datetime.now().year
+            
+            # --- THE YEAR-ROLLOVER FIX ---
+            # Handles signals in Dec for a Jan expiry
+            current_month = datetime.now().month
+            if current_month == 12 and month == 1:
+                year += 1
+                
+            expiry_date = f"{year}{month:02d}{day:02d}"
+            
+            return {
+                "action": action,
+                "ticker": ticker,
+                "expiry_date": expiry_date,
+                "strike": float(strike_str),
+                "contract_type": "CALL" if contract_type_char == 'C' else "PUT"
+            }
+        except ValueError as e:
+            # --- THE "VOICE OF THE SENTRY" FIX ---
+            # It now screams when it's confused.
+            logging.error(f"Date parsing failed for pattern 1. Date string: '{date_str}'. Error: {e}")
+            return None
 
