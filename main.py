@@ -17,21 +17,14 @@ from bot_engine.signal_processor import SignalProcessor
 
 # --- Interfaces ---
 from interfaces.discord_interface import DiscordInterface
+from interfaces.ib_interface import IBInterface
 from interfaces.telegram_interface import TelegramInterface
-
-# --- THE REALITY SWITCH WIRING ---
-# We will dynamically import the correct broker interface based on the config.
-config_loader = Config()
-if config_loader.USE_MOCK_BROKER:
-    from interfaces.mock_ib_interface import MockIBInterface as BrokerInterface
-    logging.warning("--- ⚠️  RUNNING IN FLIGHT SIMULATOR MODE ⚠️ ---")
-else:
-    from interfaces.ib_interface import IBInterface as BrokerInterface
 
 
 def setup_logging():
     """Sets up a robust, rotating logger for the application."""
     log_formatter = logging.Formatter('%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
+    
     log_file = os.getenv("TRADE_BOT_LOG_FILE", "logs/trading_bot.log")
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
@@ -41,8 +34,16 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(log_formatter)
     
+    # --- THE "HEAD CHEF" PROTOCOL ---
+    # Seize control of the root logger to prevent duplicate messages.
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
+    
+    # Remove any handlers that may have been pre-configured by imported libraries.
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+        
+    # Now, add our own clean handlers.
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
     
@@ -62,19 +63,14 @@ async def main():
     try:
         logging.info("--- 🚀 LAUNCHING TRADING BOT 🚀 ---")
         
-        # We use the pre-loaded config object
-        config = config_loader
-        
-        # --- 1. Assemble Components ---
+        config = Config()
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
         
-        # Use the dynamically imported BrokerInterface alias
-        ib_interface = BrokerInterface(config)
+        ib_interface = IBInterface(config)
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
         
-        # --- 2. Pre-flight Connections & State Load ---
         await ib_interface.connect()
         await telegram_interface.initialize()
         await discord_interface.initialize()
@@ -83,7 +79,6 @@ async def main():
 
         await telegram_interface.send_message("*🚀 Bot is starting up\\.\\.\\.*")
 
-        # --- 3. Instantiate the Brain ---
         signal_processor = SignalProcessor(
             config=config,
             ib_interface=ib_interface,
@@ -95,7 +90,6 @@ async def main():
             initial_processed_ids=loaded_ids
         )
 
-        # --- 4. GO LIVE ---
         logging.info("Starting main event loop...")
         processor_task = asyncio.create_task(signal_processor.start())
         main_tasks.append(processor_task)
@@ -130,3 +124,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Shutdown initiated by user (Ctrl+C).")
+
