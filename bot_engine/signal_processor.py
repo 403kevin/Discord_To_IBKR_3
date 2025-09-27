@@ -152,7 +152,7 @@ async def _process_new_signals(self, messages, profile):
             self.state_manager.save_state(self.open_positions, self.processed_message_ids)
             logging.debug("Updated processed message ID cache to state file.")
 
-    async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
+async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
         """Validates and executes a single trade, now with sentiment score for reporting."""
         try:
             contract = await self.ib_interface.create_option_contract(
