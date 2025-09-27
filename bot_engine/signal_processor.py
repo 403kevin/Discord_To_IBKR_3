@@ -376,7 +376,7 @@ async def _evaluate_dynamic_exit(self, conId):
             await self._execute_close_trade(conId, exit_reason)
 
 
-    async def _execute_close_trade(self, conId, reason):
+async def _execute_close_trade(self, conId, reason):
         """Closes a position and updates the state."""
         if conId in self.open_positions:
             # Pop the position from the dict atomically to prevent race conditions
