@@ -354,7 +354,7 @@ async def _resample_ticks_to_bar(self, ticker):
             self.last_bar_timestamp[conId] = now.replace(second=0, microsecond=0)
 
 
-    async def _evaluate_dynamic_exit(self, conId):
+async def _evaluate_dynamic_exit(self, conId):
         """Evaluates all configured dynamic exit strategies for a position."""
         if conId not in self.open_positions: return
 
