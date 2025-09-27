@@ -258,7 +258,7 @@ async def _on_order_filled(self, trade):
 
         await self._post_fill_actions(trade, position_details, sentiment_score)
 
-    async def _post_fill_actions(self, trade, position_details, sentiment_score):
+async def _post_fill_actions(self, trade, position_details, sentiment_score):
         """Actions to take after an order is confirmed filled, with full reporting data."""
         contract = trade.contract
         profile = self._get_profile_by_channel_id(position_details['channel_id'])
