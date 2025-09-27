@@ -1,141 +1,140 @@
-import logging
 import asyncio
-import pandas as pd
-from ib_insync import IB, Option
-import sys
+import logging
 import os
+from datetime import datetime
+import pandas as pd
+import re
 
-# --- GPS ---
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
+# This is a standalone script. We need to add the project root to the path
+# to allow it to import from the services and interfaces directories.
+import sys
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
+from interfaces.ib_interface import IBInterface
 from services.config import Config
 from services.signal_parser import SignalParser
 
-# --- Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-
 class DataHarvester:
     """
-    This is the "Smart Harvester" that understands historical context.
+    A standalone tool to download historical options data from Interactive Brokers
+    based on a list of signals. This version is now "bilingual" and can parse
+    both simple and complex signal file formats.
     """
+    def __init__(self, config_path, signals_path, output_dir):
+        self.config = Config()
+        self.ib_interface = IBInterface(self.config)
+        self.signal_parser = SignalParser(self.config) # Use our main parser
+        self.signals_path = signals_path
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
 
-    def __init__(self, config):
-        self.config = config
-        self.ib = IB()
+    async def run(self):
+        """Main execution flow for the harvester."""
+        logging.info("--- 🚀 Starting Data Harvester ---")
+        if not await self.ib_interface.connect():
+            logging.error("Could not connect to IBKR. Aborting.")
+            return
 
-    async def connect(self):
-        try:
-            await self.ib.connectAsync(self.config.ibkr_host, self.config.ibkr_port,
-                                       clientId=self.config.ibkr_client_id + 1)
-            logger.info("Connection to IBKR for data harvesting successful.")
-        except Exception as e:
-            logger.critical(f"Failed to connect to IBKR: {e}")
-            raise
+        logging.info("Connection to IBKR for data harvesting successful.")
+        
+        signals_to_fetch = self._parse_signals_file()
+        if not signals_to_fetch:
+            logging.warning("No valid signals found to fetch data for.")
+        else:
+            await self._fetch_and_save_data(signals_to_fetch)
 
-    async def disconnect(self):
-        if self.ib.isConnected():
-            self.ib.disconnect()
-            logger.info("Disconnected from IBKR.")
+        await self.ib_interface.disconnect()
+        logging.info("--- ✅ Data Harvester Finished ---")
 
-    async def fetch_and_save_data(self, signal_file: str, output_dir: str):
-        os.makedirs(output_dir, exist_ok=True)
-        parser = SignalParser(self.config)
-        processed_contracts = set()
-
-        with open(signal_file, 'r') as f:
-            for line_num, line in enumerate(f, 1):
+    def _parse_signals_file(self):
+        """
+        Parses the signals_to_test.txt file, now handling both simple
+        and complex formats.
+        """
+        signals = []
+        with open(self.signals_path, 'r') as f:
+            for i, line in enumerate(f):
                 line = line.strip()
-                if not line or line.startswith('#'): continue
-
-                parts = line.split('|')
-                if len(parts) != 3:
-                    logger.warning(f"Skipping malformed line #{line_num}: '{line}'")
+                if not line:
                     continue
 
-                timestamp_str, channel_name, signal_text = [p.strip() for p in parts]
-                # --- SURGICAL UPGRADE: The Historical Context ---
-                historical_timestamp = pd.to_datetime(timestamp_str)
-                # ---
+                parsed_signal = None
+                # Check for the complex format (contains '|')
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) == 3:
+                        signal_text = parts[2].strip()
+                        # Use our main bot's parser for consistency
+                        parsed_signal = self.signal_parser.parse_signal(signal_text, self.config.profiles[0])
+                # Otherwise, assume it's the new, simple format
+                else:
+                    parsed_signal = self._parse_simple_format(line)
 
-                profile = {'channel_name': channel_name, 'ambiguous_expiry_enabled': True}
+                if parsed_signal:
+                    signals.append(parsed_signal)
+                else:
+                    logging.warning(f"Skipping malformed line #{i+1}: '{line}'")
+        return signals
 
-                # --- SURGICAL UPGRADE: Pass the context to the parser ---
-                parsed_signal = parser.parse_signal_message(signal_text, profile,
-                                                            historical_context_time=historical_timestamp)
-                # ---
+    def _parse_simple_format(self, text):
+        """Parses the 'TICKER MM/DD STRIKE_TYPE' format."""
+        # Example: NVDA 10/3 175P
+        match = re.search(r'([A-Z]{1,5})\s+(\d{1,2}/\d{1,2})\s+(\d{1,4}(\.\d{1,2})?)\s*([CP])', text.upper())
+        if not match:
+            return None
+        
+        ticker, date_str, strike_str, _, contract_type_char = match.groups()
+        
+        try:
+            month, day = map(int, date_str.split('/'))
+            year = datetime.now().year
+            # Basic year rollover logic
+            if month < datetime.now().month:
+                year += 1
+            expiry_date = f"{year}{month:02d}{day:02d}"
 
-                if not parsed_signal:
-                    logger.warning(f"Could not parse signal on line #{line_num}: '{signal_text}'")
-                    continue
+            return {
+                "ticker": ticker,
+                "expiry_date": expiry_date,
+                "strike": float(strike_str),
+                "contract_type": "CALL" if contract_type_char == 'C' else "PUT"
+            }
+        except ValueError:
+            return None
 
-                try:
-                    contract = Option(
-                        symbol=parsed_signal['ticker'], lastTradeDateOrContractMonth=parsed_signal['expiry'],
-                        strike=parsed_signal['strike'], right=parsed_signal['option_type'],
-                        exchange='SMART', currency='USD'
-                    )
-                    await self.ib.qualifyContractsAsync(contract)
+    async def _fetch_and_save_data(self, signals):
+        """Iterates through signals, creates contracts, and fetches data."""
+        for signal in signals:
+            logging.info(f"Fetching data for: {signal}")
+            contract = await self.ib_interface.create_option_contract(
+                signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
+            )
+            if not contract:
+                continue
 
-                    if contract.conId in processed_contracts:
-                        logger.info(f"Already processed {contract.localSymbol}. Skipping.")
-                        continue
+            # Fetching 5-second bars for a full day to power the simulator
+            data = await self.ib_interface.get_historical_data(contract, duration='1 D', bar_size='5 secs')
 
-                    logger.info(f"Fetching data for {contract.localSymbol}...")
-
-                    lookback_str = f"{self.config.backtesting['lookback_days']} D"
-                    bar_size_str = self.config.backtesting['bar_size']
-
-                    bars = await self.ib.reqHistoricalDataAsync(
-                        contract, endDateTime='', durationStr=lookback_str,
-                        barSizeSetting=bar_size_str, whatToShow='TRADES', useRTH=True
-                    )
-
-                    if not bars:
-                        logger.warning(f"No historical data returned for {contract.localSymbol}.")
-                        continue
-
-                    df = pd.DataFrame([vars(b) for b in bars])
-                    df['date'] = pd.to_datetime(df['date'])
-
-                    filename = f"{contract.localSymbol.replace(' ', '_')}.csv"
-                    filepath = os.path.join(output_dir, filename)
-
-                    df.to_csv(filepath, index=False)
-                    logger.info(f"Successfully saved {len(df)} bars to {filepath}")
-                    processed_contracts.add(contract.conId)
-
-                except Exception as e:
-                    logger.error(f"Failed to process signal '{signal_text}': {e}", exc_info=True)
-
-                await asyncio.sleep(10)
-
-
-async def main():
-    script_dir = os.path.dirname(__file__)
-    historical_data_dir = os.path.join(script_dir, 'historical_data')
-    os.makedirs(historical_data_dir, exist_ok=True)
-
-    signal_file_path = os.path.join(script_dir, 'signals_to_test.txt')
-    if not os.path.exists(signal_file_path):
-        with open(signal_file_path, 'w') as f:
-            f.write("# Format: YYYY-MM-DD HH:MM:SS | Channel Name | The exact signal text\n")
-            f.write("2025-07-07 08:37:00 | QIQO | BTO SPY 600C 09/25\n")
-        logger.info(f"Created a sample signal file at: {signal_file_path}")
-
-    harvester = DataHarvester(Config())
-    try:
-        await harvester.connect()
-        await harvester.fetch_and_save_data(
-            signal_file=signal_file_path,
-            output_dir=historical_data_dir
-        )
-    finally:
-        await harvester.disconnect()
-
+            if data is not None and not data.empty:
+                # Create a filename that the mock interface can easily parse
+                filename = f"{contract.symbol}_{contract.lastTradeDateOrContractMonth}_{int(contract.strike)}{contract.right}_5sec_data.csv"
+                filepath = os.path.join(self.output_dir, filename)
+                data.to_csv(filepath)
+                logging.info(f"Successfully saved {len(data)} data points to {filepath}")
+            else:
+                logging.warning(f"No historical data returned for {contract.localSymbol}")
+            
+            await asyncio.sleep(11) # IBKR pacing rule: max 50 requests every 2 minutes
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Assuming this script is run from the project's root directory
+    config_path = 'services/config.py' # Path is relative, might need adjustment
+    signals_path = 'backtester/signals_to_test.txt'
+    output_dir = 'backtester/historical_data'
 
+    harvester = DataHarvester(config_path, signals_path, output_dir)
+    asyncio.run(harvester.run())
