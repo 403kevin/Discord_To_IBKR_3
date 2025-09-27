@@ -66,7 +66,7 @@ class SignalProcessor:
             logging.info("Initiating graceful shutdown...")
             self._shutdown_event.set()
 
-    async def _reconcile_state_with_broker(self):
+ async def _reconcile_state_with_broker(self):
         """
         THE FINAL FIX: Compares the bot's internal state with the broker's
         actual portfolio and correctly ADOPTS untracked positions.
@@ -96,7 +96,7 @@ class SignalProcessor:
                     # Create a plausible position_details object for the adopted position
                     entry_price = pos.avgCost
                     if pos.contract.secType == 'OPT':
-                        entry_price /= 100
+                        entry_price /= 100 # avgCost for options is per-share, not per-contract
 
                     position_details = {
                         'contract': pos.contract,
@@ -113,6 +113,17 @@ class SignalProcessor:
         # 3. Save the newly reconciled state immediately
         self.state_manager.save_state(self.open_positions, self.processed_message_ids)
         logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
+
+    # ... (the rest of the file is unchanged, but I will add the new helper method at the end)
+
+    def _get_fallback_channel_id(self):
+        """Finds the first enabled profile to use as a fallback for adopted positions."""
+        for profile in self.config.profiles:
+            if profile['enabled']:
+                return profile['channel_id']
+        # If no profiles are enabled, this is a configuration error, but we provide a safeguard.
+        return self.config.profiles[0]['channel_id'] if self.config.profiles else "unknown"
+
 
     async def _poll_discord_for_signals(self):
         """Task to continuously poll Discord for new signals."""
