@@ -35,7 +35,7 @@ def setup_logging():
     console_handler.setFormatter(log_formatter)
     
     # --- THE "HEAD CHEF" PROTOCOL ---
-    # Seize control of the root logger to prevent duplicate messages.
+    # Seize control of the root logger to prevent duplicate messages from libraries.
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     
