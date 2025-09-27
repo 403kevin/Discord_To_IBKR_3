@@ -316,7 +316,7 @@ async def _process_market_data_stream(self):
             except Exception as e:
                 logging.error(f"Error processing market data stream: {e}", exc_info=True)
 
-    async def _resample_ticks_to_bar(self, ticker):
+async def _resample_ticks_to_bar(self, ticker):
         """Collects ticks and resamples them into time-based bars for analysis."""
         conId = ticker.contract.conId
         now = datetime.now()
