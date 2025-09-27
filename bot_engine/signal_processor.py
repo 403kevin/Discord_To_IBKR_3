@@ -91,16 +91,18 @@ class SignalProcessor:
 
             await asyncio.sleep(self.config.delay_after_full_cycle)
 
-    async def _process_new_signals(self, messages, profile):
+async def _process_new_signals(self, messages, profile):
         """Processes a batch of new messages for a given profile."""
         stale_message_count = 0
+        processed_something_new = False
 
         for msg_id, msg_content, msg_timestamp in messages:
             if msg_id in self.processed_message_ids:
                 continue
             
-            # --- THE "GROUNDHOG DAY" FIX ---
-            # Mark the message as processed IMMEDIATELY to prevent re-processing on failure.
+            # --- THE "AMNESIA VACCINE" & "PERMANENT MEMORY" FIX ---
+            # Mark as processed immediately and flag that we need to save state.
+            processed_something_new = True
             self.processed_message_ids.append(msg_id)
 
             # --- THE STALE SIGNAL CHECK ---
@@ -122,7 +124,7 @@ class SignalProcessor:
                 logging.debug(f"Message {msg_id} did not parse into a valid signal dictionary.")
                 continue
 
-            sentiment_score = None # Initialize for later reporting
+            sentiment_score = None
             if self.config.sentiment_filter['enabled']:
                 sentiment_score = self.sentiment_analyzer.get_sentiment_score(msg_content)
                 is_call = parsed_signal['contract_type'].upper() == 'CALL'
@@ -144,6 +146,11 @@ class SignalProcessor:
         
         if stale_message_count > 0:
             logging.debug(f"Ignored {stale_message_count} stale message(s) from this poll cycle.")
+
+        # If we processed any new messages in this cycle, save the updated ID list.
+        if processed_something_new:
+            self.state_manager.save_state(self.open_positions, self.processed_message_ids)
+            logging.debug("Updated processed message ID cache to state file.")
 
     async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
         """Validates and executes a single trade, now with sentiment score for reporting."""
@@ -200,6 +207,39 @@ class SignalProcessor:
         
         # --- THE API MISMATCH FIX ---
         # The correct fill info is in the orderStatus object for a filled trade.
+        fill_price = trade.orderStatus.avgFillPrice
+        quantity = trade.orderStatus.filled
+        
+        logging.info(f"Order filled: {quantity} of {contract.localSymbol} at ${fill_price}")
+
+        position_details = {
+            'contract': contract,
+            'entry_price': fill_price,
+            'quantity': quantity,
+            'entry_time': datetime.now(),
+            'channel_id': channel_id
+        }
+        self.open_positions[contract.conId] = position_details
+        self.trailing_highs[contract.conId] = fill_price 
+        self.breakeven_activated[contract.conId] = False
+
+        await self._post_fill_actions(trade, position_details, sentiment_score)
+
+async def _on_order_filled(self, trade):
+        """
+        Callback executed by IBInterface when an order is filled.
+        This is now a correctly defined async function.
+        """
+        contract = trade.contract
+        order = trade.order
+        channel_id = getattr(order, 'channel_id', None)
+        sentiment_score = getattr(order, 'sentiment_score', None)
+
+        if channel_id is None:
+            logging.warning(f"Could not determine originating channel for fill of {contract.localSymbol}. Using fallback.")
+            channel_id = self._get_fallback_channel_id()
+        
+        # --- THE API MISMATCH FIX ---
         fill_price = trade.orderStatus.avgFillPrice
         quantity = trade.orderStatus.filled
         
