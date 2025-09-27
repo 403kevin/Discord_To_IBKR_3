@@ -21,8 +21,6 @@ class SignalParser:
 
         cleaned_text = self._cleanup_text(text)
         
-        # Define the sequence of parsers to attempt.
-        # More specific patterns should come first.
         parsers = [
             self._parse_pattern_dte,
             self._parse_pattern_standard
@@ -31,7 +29,6 @@ class SignalParser:
         for parser_func in parsers:
             parsed_signal = parser_func(cleaned_text, profile)
             if parsed_signal:
-                # The first parser that succeeds wins.
                 return parsed_signal
         
         logging.debug(f"Failed to parse signal with any known pattern. Original text: '{text}'")
@@ -90,7 +87,6 @@ class SignalParser:
     def _parse_pattern_dte(self, text, profile):
         """
         Parses the DTE format: "ACTION TICKER STRIKE_TYPE XDTE"
-        Examples: "BTO SPY 500c 0DTE", "QQQ 450P 1DTE"
         """
         action = self._find_action(text, profile)
         if not action:
@@ -106,14 +102,22 @@ class SignalParser:
         try:
             days_to_expiry = int(dte_str)
             
-            # --- The "Business Day" Time Machine ---
-            target_date = datetime.now() + timedelta(days=days_to_expiry)
-            
-            # If the calculated date is a Saturday (5) or Sunday (6), roll forward to Monday.
-            # This is a simple but effective business day calculator.
-            # A professional version would also have a list of market holidays.
-            while target_date.weekday() >= 5:
+            target_date = datetime.now()
+            days_added = 0
+            while days_added < days_to_expiry:
                 target_date += timedelta(days=1)
+                # Monday is 0, Sunday is 6. We only count weekdays.
+                if target_date.weekday() < 5:
+                    days_added += 1
+            
+            # Final check for 0DTE case, ensure it's not a weekend.
+            if days_to_expiry == 0:
+                today = datetime.now()
+                if today.weekday() >= 5: # If it's Saturday or Sunday
+                    # Roll forward to Monday
+                    target_date = today + timedelta(days=(7 - today.weekday()))
+                else:
+                    target_date = today
 
             expiry_date = target_date.strftime("%Y%m%d")
 
@@ -125,4 +129,3 @@ class SignalParser:
         except (ValueError, IndexError) as e:
             logging.error(f"DTE parsing failed. DTE string: '{dte_str}'. Error: {e}")
             return None
-
