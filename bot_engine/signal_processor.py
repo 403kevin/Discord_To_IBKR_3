@@ -222,39 +222,54 @@ class SignalProcessor:
         """Callback executed by IBInterface when an order is filled."""
         contract = trade.contract
         order = trade.order
-        channel_id = getattr(order, 'channel_id', None)
+        channel_id = getattr(order, 'channel_id', self._get_fallback_channel_id())
         sentiment_score = getattr(order, 'sentiment_score', None)
-
-        if channel_id is None:
-            channel_id = self._get_fallback_channel_id()
         
         fill_price = trade.orderStatus.avgFillPrice
         quantity = trade.orderStatus.filled
         
         logging.info(f"Order filled: {quantity} of {contract.localSymbol} at ${fill_price}")
 
-        position_details = {
-            'contract': contract, 'entry_price': fill_price,
-            'quantity': quantity, 'entry_time': datetime.now(),
-            'channel_id': channel_id
-        }
-        self.open_positions[contract.conId] = position_details
-        self.trailing_highs_and_lows[contract.conId] = {'high': fill_price, 'low': fill_price}
-        self.breakeven_activated[contract.conId] = False
-
-        await self._post_fill_actions(trade, position_details, sentiment_score)
+        if order.action == "BUY":
+            position_details = {
+                'contract': contract, 'entry_price': fill_price,
+                'quantity': quantity, 'entry_time': datetime.now(),
+                'channel_id': channel_id
+            }
+            self.open_positions[contract.conId] = position_details
+            self.trailing_highs_and_lows[contract.conId] = {'high': fill_price, 'low': fill_price}
+            self.breakeven_activated[contract.conId] = False
+            await self._post_fill_actions(trade, position_details, sentiment_score)
+        
+        elif order.action == "SELL":
+            if contract.conId in self.open_positions:
+                position_to_close = self.open_positions.pop(contract.conId)
+                pnl = (fill_price - position_to_close['entry_price']) * quantity * 100
+                profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
+                
+                trade_info = {
+                    'contract_details': contract.localSymbol,
+                    'exit_price': fill_price,
+                    'pnl': f"${pnl:.2f}",
+                    'reason': getattr(order, 'exit_reason', 'Manual/Unknown')
+                }
+                await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
+                self._cleanup_position_data(contract.conId)
+                self.state_manager.save_state(self.open_positions, self.processed_message_ids)
+            else:
+                logging.warning(f"Received a SELL fill for an untracked position: {contract.localSymbol}")
 
     async def _post_fill_actions(self, trade, position_details, sentiment_score):
-        """Actions to take after an order is confirmed filled."""
+        """Actions to take after an ENTRY order is confirmed filled."""
         contract = trade.contract
         profile = self._get_profile_by_channel_id(position_details['channel_id'])
 
         if profile:
-            # ... (Telegram notification logic is unchanged)
+            # ... (Telegram notification logic)
             pass
 
         if profile and profile['safety_net']['enabled']:
-            # ... (Native trail logic is unchanged)
+            # ... (Native trail logic)
             pass
 
         subscription_successful = await self.ib_interface.subscribe_to_market_data(contract)
@@ -262,7 +277,6 @@ class SignalProcessor:
             historical_data = await self.ib_interface.get_historical_data(contract)
             if historical_data is not None and not historical_data.empty:
                 self.position_data_cache[contract.conId] = historical_data
-                logging.info(f"Initialized historical data cache for {contract.localSymbol}")
         
         self.state_manager.save_state(self.open_positions, self.processed_message_ids)
 
@@ -280,8 +294,7 @@ class SignalProcessor:
 
     async def _resample_ticks_to_bar(self, ticker):
         """Collects ticks and resamples them into time-based bars for analysis."""
-        # ... (unchanged)
-        pass
+        pass # Placeholder
 
     async def _evaluate_dynamic_exit(self, conId):
         """Evaluates all configured dynamic exit strategies for a position."""
@@ -295,10 +308,9 @@ class SignalProcessor:
         exit_reason = None
         current_price = data['close'].iloc[-1]
         
-        high_low = self.trailing_highs_and_lows.get(conId, {'high': current_price, 'low': current_price})
+        high_low = self.trailing_highs_and_lows[conId]
         high_low['high'] = max(high_low['high'], current_price)
         high_low['low'] = min(high_low['low'], current_price)
-        self.trailing_highs_and_lows[conId] = high_low
 
         for exit_type in profile['exit_strategy']['exit_priority']:
             if exit_reason: break
@@ -316,56 +328,57 @@ class SignalProcessor:
                     exit_reason = "Breakeven Stop Hit"
 
             if exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
-                # ... (unchanged)
-                pass
+                pass # Placeholder
 
             elif exit_type == "pullback_stop" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
-                # ... (unchanged)
-                pass
+                pass # Placeholder
 
             elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
-                # ... (unchanged)
-                pass
+                pass # Placeholder
 
             elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
-                # ... (unchanged)
-                pass
+                pass # Placeholder
 
         if exit_reason:
             logging.info(f"Dynamic exit for {position['contract'].localSymbol}. Reason: {exit_reason}")
             await self._execute_close_trade(conId, exit_reason)
 
     async def _execute_close_trade(self, conId, reason):
-        """Closes a position and updates the state."""
-        # ... (unchanged)
-        pass
+        """Places a SELL order for a position and attaches the exit reason."""
+        if conId in self.open_positions:
+            position = self.open_positions[conId]
+            contract = position['contract']
+            quantity = position['quantity']
+            
+            order = await self.ib_interface.place_order(contract, 'MKT', quantity, action='SELL')
+
+            if order:
+                order.exit_reason = reason
+                logging.info(f"Placed closing order for {quantity} of {contract.localSymbol}")
+            else:
+                logging.error(f"Failed to place closing order for {contract.localSymbol}")
 
     def _cleanup_position_data(self, conId):
         """Helper to remove all data associated with a closed/ghost position."""
-        # ... (unchanged)
-        pass
+        pass # Placeholder
 
     async def flatten_all_positions(self):
         """Closes all open positions. Triggered at EOD."""
-        # ... (unchanged)
-        pass
+        pass # Placeholder
 
     def _is_eod(self):
         """Checks if the current time is past the EOD close time."""
-        # ... (unchanged)
-        pass
+        pass # Placeholder
 
     def _get_profile_by_channel_id(self, channel_id):
         """Finds the correct profile for a given channel ID."""
-        # ... (unchanged)
         pass
     
     def _get_fallback_channel_id(self):
         """Finds the first enabled profile to use as a fallback for adopted positions."""
-        # ... (unchanged)
         pass
 
     async def _resubscribe_to_open_positions(self):
         """Resubscribes to market data for all positions loaded from state."""
-        # ... (unchanged)
         pass
+
