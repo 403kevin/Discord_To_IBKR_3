@@ -52,13 +52,13 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": True,
+            "enabled": False,
             "hour": 14,
             "minute": 00
         }
         
-        # Obsolete setting removed as commanded.
-        # self.master_shutdown_enabled = False 
+
+        # self.master_shutdown_enabled = False (future work)
 
         self.master_shutdown_channel_id = "1392531225348014180"
         self.master_shutdown_command = "terminate"
