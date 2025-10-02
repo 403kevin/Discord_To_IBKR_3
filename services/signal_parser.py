@@ -34,11 +34,24 @@ class SignalParser:
 
     def _cleanup_text(self, text):
         """Standardizes text for easier parsing."""
-        text = text.upper().replace('\n', ' ')
+        # Preserve newlines for splitting, but uppercase first
+        text = text.upper()
+        
+        # Remove dollar signs before strikes
+        text = text.replace('$', '')
+        
+        # Normalize "CALL"/"PUT" to "C"/"P" for consistent matching
+        text = text.replace(' CALL', 'C')
+        text = text.replace(' PUT', 'P')
+        text = text.replace(' CALLS', 'C')
+        text = text.replace(' PUTS', 'P')
+        
+        # Remove jargon words
         for word in self.config.jargon_words:
             text = text.replace(word.upper(), '')
-        # Replace common variations and extra spaces
-        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Keep newlines for multiline format support, but normalize other whitespace
+        text = re.sub(r'[ \t]+', ' ', text).strip()
         return text
 
     def _parse_multi_step(self, text, profile):
