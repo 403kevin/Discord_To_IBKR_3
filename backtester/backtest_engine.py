@@ -59,17 +59,54 @@ class BacktestEngine:
         logging.info("--- 🏁 Backtest Simulation Complete 🏁 ---")
 
     def _load_signals(self):
-        """Loads and parses signals from the signals_to_test.txt file."""
+        """
+        Loads and parses signals from the signals_to_test.txt file.
+        Supports both simple and timestamped formats.
+        """
         signals = []
+        default_profile = self.config.profiles[0] if self.config.profiles else {
+            'assume_buy_on_ambiguous': True,
+            'ambiguous_expiry_enabled': True
+        }
+        
         with open(self.signal_file_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split('|')
-                if len(parts) == 3:
-                    timestamp_str, channel_name, signal_text = parts
-                    parsed_signal = self.signal_parser.parse_signal(signal_text, self.config.profiles[0])
-                    if parsed_signal:
-                        parsed_signal['timestamp'] = datetime.strptime(timestamp_str.strip(), '%Y-%m-%d %H:%M:%S')
-                        signals.append(parsed_signal)
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                
+                timestamp = None
+                
+                # Check if line has timestamp (Format 2: YYYY-MM-DD HH:MM:SS | channel | signal)
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) == 3:
+                        timestamp_str = parts[0].strip()
+                        signal_text = parts[2].strip()
+                        try:
+                            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            logging.warning(f"Invalid timestamp on line #{line_num}: '{timestamp_str}'")
+                            continue
+                    else:
+                        logging.warning(f"Malformed timestamped line #{line_num}")
+                        continue
+                else:
+                    # Simple format - use a default timestamp (market open)
+                    signal_text = line
+                    timestamp = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
+                
+                # Parse using the multi-format parser
+                parsed_signal = self.signal_parser.parse_signal(signal_text, default_profile)
+                
+                if parsed_signal:
+                    parsed_signal['timestamp'] = timestamp
+                    signals.append(parsed_signal)
+                else:
+                    logging.warning(f"Could not parse line #{line_num}: '{signal_text}'")
+        
         logging.info(f"Loaded {len(signals)} valid signals.")
         return signals
 
@@ -156,7 +193,8 @@ class BacktestEngine:
 
     def _evaluate_simulated_exit(self, timestamp, position_key):
         """
-        THE AWAKENED PILOT: A near-perfect mirror of the live bot's dynamic exit logic.
+        THE AWAKENED PILOT: Complete mirror of the live bot's dynamic exit logic.
+        Now includes RSI hook and PSAR flip momentum exits.
         """
         position = self.portfolio['positions'][position_key]
         profile = self.config.profiles[0]
@@ -209,6 +247,31 @@ class BacktestEngine:
                 else:
                     stop_price = high_low['low'] * (1 + (pullback_pct / 100))
                     if current_price > stop_price: exit_reason = f"Pullback Stop ({pullback_pct}%)"
+            
+            elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
+                settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
+                data.ta.rsi(length=settings['period'], append=True)
+                last_rsi = data.get(f'RSI_{settings["period"]}', pd.Series([0])).iloc[-1]
+                if pd.isna(last_rsi) or len(data) < 2: continue
+
+                prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
+                if is_call and prev_rsi > settings['overbought_level'] and last_rsi <= settings['overbought_level']:
+                    exit_reason = f"RSI Hook from Overbought ({prev_rsi:.2f} -> {last_rsi:.2f})"
+                elif not is_call and prev_rsi < settings.get('oversold_level', 30) and last_rsi >= settings.get('oversold_level', 30):
+                    exit_reason = f"RSI Hook from Oversold ({prev_rsi:.2f} -> {last_rsi:.2f})"
+            
+            elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
+                settings = profile['exit_strategy']['momentum_exits']['psar_settings']
+                data.ta.psar(initial=settings['start'], increment=settings['increment'], maximum=settings['max'], append=True)
+                psar_long_col = f'PSARl_{settings["start"]}_{settings["max"]}'
+                psar_short_col = f'PSARs_{settings["start"]}_{settings["max"]}'
+                
+                if psar_long_col in data.columns and not pd.isna(data[psar_long_col].iloc[-1]):
+                    if is_call and current_price < data[psar_long_col].iloc[-1]:
+                        exit_reason = "PSAR Flip"
+                if psar_short_col in data.columns and not pd.isna(data[psar_short_col].iloc[-1]):
+                    if not is_call and current_price > data[psar_short_col].iloc[-1]:
+                        exit_reason = "PSAR Flip"
 
         if exit_reason:
             self._close_simulated_position(timestamp, position_key, current_price, exit_reason)
