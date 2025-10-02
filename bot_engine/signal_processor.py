@@ -183,6 +183,7 @@ class SignalProcessor:
         
         if processed_something_new:
             self.state_manager.save_state(self.open_positions, self.processed_message_ids)
+            logging.debug("Updated processed message ID cache to state file.")
 
     async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
         """Validates and executes a single trade."""
@@ -232,8 +233,9 @@ class SignalProcessor:
             logging.info(f"Entry fill: {quantity} of {contract.localSymbol} at ${fill_price}")
 
             position_details = {
-                'contract': contract, 'entry_price': fill_price, 'quantity': quantity,
-                'entry_time': datetime.now(), 'channel_id': channel_id
+                'contract': contract, 'entry_price': fill_price,
+                'quantity': quantity, 'entry_time': datetime.now(),
+                'channel_id': channel_id
             }
             self.open_positions[contract.conId] = position_details
             self.trailing_highs_and_lows[contract.conId] = {'high': fill_price, 'low': fill_price}
@@ -250,15 +252,12 @@ class SignalProcessor:
                 profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
                 
                 trade_info = {
-                    'source_channel': profile['channel_name'] if profile else 'N/A',
                     'contract_details': contract.localSymbol,
                     'exit_price': fill_price,
                     'pnl': f"${pnl:.2f}",
                     'reason': getattr(order, 'exit_reason', 'Manual/Unknown')
                 }
                 await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
-
-                await self.ib_interface.unsubscribe_from_market_data(contract)
                 self._cleanup_position_data(contract.conId)
                 self.state_manager.save_state(self.open_positions, self.processed_message_ids)
             else:
@@ -403,7 +402,6 @@ class SignalProcessor:
                 last_rsi = data.get(f'RSI_{settings["period"]}', pd.Series([0])).iloc[-1]
                 if pd.isna(last_rsi): continue
 
-                # A simple "hook" could be defined as crossing back from an extreme
                 prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
                 if is_call and prev_rsi > settings['overbought_level'] and last_rsi <= settings['overbought_level']:
                     exit_reason = f"RSI Hook from Overbought ({prev_rsi:.2f} -> {last_rsi:.2f})"
