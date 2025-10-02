@@ -258,4 +258,3 @@ if __name__ == '__main__':
 
     engine = BacktestEngine(signal_file, data_folder)
     engine.run_simulation()
-
