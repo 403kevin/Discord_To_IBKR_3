@@ -278,6 +278,10 @@ class SignalProcessor:
             self.breakeven_activated[contract.conId] = False
 
             await self._post_fill_actions(trade, position_details, sentiment_score)
+            
+            # FIX: Set global cooldown after trade
+            self.global_cooldown_until = datetime.now() + timedelta(seconds=self.config.cooldown_after_trade_seconds)
+            logging.info(f"Global cooldown activated for {self.config.cooldown_after_trade_seconds} seconds")
         
         elif order.action == "SELL":
             if contract.conId in self.open_positions:
