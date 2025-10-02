@@ -233,9 +233,8 @@ class SignalProcessor:
             logging.info(f"Entry fill: {quantity} of {contract.localSymbol} at ${fill_price}")
 
             position_details = {
-                'contract': contract, 'entry_price': fill_price,
-                'quantity': quantity, 'entry_time': datetime.now(),
-                'channel_id': channel_id
+                'contract': contract, 'entry_price': fill_price, 'quantity': quantity,
+                'entry_time': datetime.now(), 'channel_id': channel_id
             }
             self.open_positions[contract.conId] = position_details
             self.trailing_highs_and_lows[contract.conId] = {'high': fill_price, 'low': fill_price}
