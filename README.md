@@ -131,3 +131,169 @@ Finish the Simulator Pilot: The backtest_engine is a brilliant, high-fidelity si
 
 D. In Conclusion
 The war against the ghosts is over. The fortress is built. The pilot is a veteran. The shakedown test on the paper trading account is the final exam. It
+
+
+***********************************
+
+# Testing Workflows
+
+This bot includes two professional testing modes for validating strategies before risking real capital.
+
+---
+
+## Mode 1: "Flight Simulator" (Forward Testing with Mock Broker)
+
+Test the bot's full operational logic—Discord polling, signal parsing, dynamic exits, Telegram notifications, and state management—using real historical data without connecting to the live market.
+
+### When to Use:
+- Testing new signal channels before going live
+- Validating config changes in a safe environment
+- Training yourself on the bot's behavior
+- Forward testing with today's signals while markets are closed
+
+### Workflow:
+
+**Step 1: Set the Reality Switch**
+
+In your `.env` file, add:
+```
+USE_MOCK_BROKER=true
+```
+
+**Step 2: Create Your Flight Plan**
+
+Edit `backtester/signals_to_test.txt` with the contracts you want to test:
+```
+SPY 10/3 500C
+QQQ 10/3 450P
+NVDA 10/3 175P
+```
+
+**Step 3: Download Historical Data**
+
+⚠️ **Requires live IBKR TWS/Gateway connection**
+
+```bash
+python backtester/data_harvester.py
+```
+
+This downloads 5-second tick data for your flight plan into CSV files.
+
+**Step 4: Launch the Simulator**
+
+Disconnect from IBKR (remaining steps are 100% offline):
+```bash
+python main.py
+```
+
+**What Happens:**
+- Bot starts with warning: `⚠️ RUNNING IN FLIGHT SIMULATOR MODE ⚠️`
+- Polls Discord for real signals
+- When a signal matches your flight plan, mock broker "fills" the order
+- Historical CSV data plays back in simulated real-time
+- Full dynamic exit logic evaluates based on replayed data
+- Telegram notifications sent as if trading live
+- State management and reconciliation tested
+
+---
+
+## Mode 2: "Time Machine" (Pure Offline Backtesting)
+
+Simulate past trading scenarios with precise timestamps to analyze strategy performance. No Discord, no Telegram—just pure event-driven simulation.
+
+### When to Use:
+- Analyzing historical signal performance
+- Optimizing exit strategy parameters
+- Generating performance reports
+- Testing strategy changes against known outcomes
+
+### Workflow:
+
+**Step 1: Create Your Battle Plan**
+
+Edit `backtester/signals_to_test.txt`. You can use either format:
+
+**Simple format (recommended):**
+```
+SPY 9/26 500C
+QQQ 10/3 450P
+```
+
+**Timestamped format (for precise simulation):**
+```
+2025-09-26 09:35:00 | test_channel | SPY 9/26 500C
+2025-10-03 14:22:00 | trader_xyz | QQQ 10/3 450P
+```
+
+**Step 2: Download Historical Data**
+
+⚠️ **Requires live IBKR TWS/Gateway connection**
+
+```bash
+python backtester/data_harvester.py
+```
+
+**Step 3: Run the Time Machine**
+
+Disconnect from IBKR (remaining steps are 100% offline):
+```bash
+python backtester/backtest_engine.py
+```
+
+**What Happens:**
+- Loads all signals from your battle plan
+- Creates chronological event queue (signals + market ticks)
+- Processes events in order, simulating exact timing
+- Applies full dynamic exit logic (breakeven, ATR, pullback, RSI, PSAR)
+- Generates `backtest_results.csv` with detailed trade log
+- Prints summary: total trades, win rate, P&L, final portfolio value
+
+---
+
+## File Format Reference
+
+`backtester/signals_to_test.txt` supports:
+
+✅ **Simple format:** Just the signal text
+```
+SPY 10/3 500C
+BTO QQQ 0DTE 450P
+TSLA 300C
+```
+
+✅ **Timestamped format:** For precise event simulation
+```
+2025-10-03 09:35:00 | channel_name | SPY 10/3 500C
+```
+
+✅ **Comments:** Lines starting with `#` are ignored
+```
+# This is a comment
+SPY 10/3 500C  # This works too
+```
+
+✅ **All 17+ signal formats supported:** The multi-format parser handles any variation
+
+---
+
+## Key Differences Between Modes
+
+| Feature | Flight Simulator | Time Machine |
+|---------|------------------|--------------|
+| **Discord Polling** | ✅ Yes (matches live signals) | ❌ No |
+| **Telegram Notifications** | ✅ Yes | ❌ No |
+| **State Management** | ✅ Tested | ❌ Not tested |
+| **Requires .env flag** | ✅ Yes (`USE_MOCK_BROKER=true`) | ❌ No |
+| **Timestamp precision** | ⚠️ Approximate | ✅ Exact |
+| **Best for** | Integration testing | Strategy optimization |
+
+---
+
+## Tips
+
+- Both modes use the same `signals_to_test.txt` file
+- Both modes use the same CSV data from `data_harvester.py`
+- Run `data_harvester.py` once, then test in both modes
+- Flight Simulator is slower (polls Discord in real-time)
+- Time Machine is faster (processes all events at once)
+- Always test in Flight Simulator before going live to validate full bot integration
