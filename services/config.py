@@ -37,7 +37,9 @@ class Config:
         # --- LEGEND: PARSING & STATE MANAGEMENT ---
         # =================================================================
         self.signal_max_age_seconds = 60
-        self.processed_message_cache_size = 25
+        # FIX: Increased from 25 to 1000 to prevent message ID cache overflow
+        # causing duplicate signal processing during rapid testing
+        self.processed_message_cache_size = 1000
         
         self.STATE_FILE_PATH = os.getenv("STATE_FILE_PATH", "state/open_positions.json")
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "logs/trade_log.csv")
@@ -97,9 +99,9 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True, # Ensure this is True for testing
-                "assume_buy_on_ambiguous": True, # Set to True to test this new logic
-                "ambiguous_expiry_enabled": True, # Set to True to test this new logic
+                "enabled": True,
+                "assume_buy_on_ambiguous": True,
+                "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
                 "trading": {
