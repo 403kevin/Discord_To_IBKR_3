@@ -37,6 +37,7 @@ class Config:
         # --- LEGEND: PARSING & STATE MANAGEMENT ---
         # =================================================================
         self.signal_max_age_seconds = 60
+        self.cooldown_after_trade_seconds = 30  # Global pause after any fill
         # FIX: Increased from 25 to 1000 to prevent message ID cache overflow
         # causing duplicate signal processing during rapid testing
         self.processed_message_cache_size = 1000
