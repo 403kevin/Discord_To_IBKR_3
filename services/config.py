@@ -48,7 +48,7 @@ class Config:
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
         self.buzzwords_sell = ["STC", "SELL"]
-        self.buzzwords_ignore = ["IGNORE"]
+        self.buzzwords_ignore = ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE"]
         self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE", "SMALL","HIGH","RISK","RISKY","LOTTO"]
         self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + self.jargon_words
 
@@ -104,8 +104,7 @@ class Config:
                     "min_price_per_contract": 0.30,
                     "max_price_per_contract": 10.0,
                     "entry_order_type": "MKT",
-                    "time_in_force": "DAY",
-                    "fill_timeout_seconds": 20
+                    "time_in_force": "DAY"
                 },
 
                 "exit_strategy": {
