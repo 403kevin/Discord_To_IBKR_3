@@ -60,12 +60,6 @@ class Config:
         }
         
         self.reconciliation_interval_seconds = 300 # Default to 5 minutes
-        
-        # self.master_shutdown_enabled = False (future work)
-
-        self.master_shutdown_channel_id = "1392531225348014180"
-        self.master_shutdown_command = "terminate"
-        self.oversold_monitor_enabled = True
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
