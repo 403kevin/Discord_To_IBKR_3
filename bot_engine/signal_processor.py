@@ -183,7 +183,6 @@ class SignalProcessor:
         
         if processed_something_new:
             self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-            logging.debug("Updated processed message ID cache to state file.")
 
     async def _execute_trade_from_signal(self, signal, profile, sentiment_score):
         """Validates and executes a single trade."""
