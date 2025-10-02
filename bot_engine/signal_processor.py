@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pandas_ta as ta
 import pytz
@@ -27,8 +27,8 @@ class SignalProcessor:
         self.open_positions = initial_positions
         self.processed_message_ids = deque(initial_processed_ids, maxlen=config.processed_message_cache_size)
         self.channel_cooldowns = {}
-        self.global_cooldown_until = datetime.now()
-        
+        self.global_cooldown_until = datetime.now() 
+
         # Real-time data management
         self.position_data_cache = {}
         self.tick_buffer = {}
@@ -42,10 +42,16 @@ class SignalProcessor:
         self._shutdown_event = asyncio.Event()
 
     async def start(self):
-        """The main entry point for the SignalProcessor."""
+        """
+        The main entry point. Sets up and runs all concurrent tasks 
+        for the bot's operations correctly.
+        """
         logging.info("Starting Signal Processor...")
+        
         self.ib_interface.set_order_filled_callback(self._on_order_filled)
+        
         await self._reconcile_state_with_broker()
+
         await self._resubscribe_to_open_positions()
 
         tasks = [
@@ -53,6 +59,7 @@ class SignalProcessor:
             asyncio.create_task(self._process_market_data_stream()),
             asyncio.create_task(self._reconcile_positions_periodically())
         ]
+        
         await asyncio.gather(*tasks)
         await self.shutdown()
 
@@ -63,38 +70,48 @@ class SignalProcessor:
             self._shutdown_event.set()
 
     async def _reconcile_state_with_broker(self):
-        """Compares internal state with the broker's portfolio at startup."""
+        """
+        Compares the bot's internal state with the broker's actual portfolio
+        at startup to eliminate ghost positions and adopt untracked ones.
+        """
         logging.info("Performing initial state reconciliation with broker...")
         broker_positions = await self.ib_interface.get_open_positions()
+        
         broker_positions = [p for p in broker_positions if p.position != 0]
+
         broker_conIds = {pos.contract.conId for pos in broker_positions}
         internal_conIds = set(self.open_positions.keys())
 
-        ghosts = internal_conIds - broker_conIds
-        if ghosts:
-            logging.warning(f"Reconciliation: Found {len(ghosts)} ghost positions. Removing.")
-            for conId in list(ghosts): self._cleanup_position_data(conId)
+        ghost_positions = internal_conIds - broker_conIds
+        if ghost_positions:
+            logging.warning(f"Reconciliation: Found {len(ghost_positions)} ghost position(s) in state file. Removing.")
+            for conId in list(ghost_positions):
+                self._cleanup_position_data(conId)
         
-        untracked = broker_conIds - internal_conIds
-        if untracked:
-            logging.info(f"Reconciliation: Found {len(untracked)} untracked positions. Adopting.")
+        untracked_positions = broker_conIds - internal_conIds
+        if untracked_positions:
+            logging.info(f"Reconciliation: Found {len(untracked_positions)} untracked position(s) at broker. Adopting them.")
             for pos in broker_positions:
-                if pos.contract.conId in untracked:
+                if pos.contract.conId in untracked_positions:
                     entry_price = pos.avgCost / 100 if pos.contract.secType == 'OPT' else pos.avgCost
-                    self.open_positions[pos.contract.conId] = {
+                    position_details = {
                         'contract': pos.contract, 'entry_price': entry_price,
                         'quantity': pos.position, 'entry_time': datetime.now(),
                         'channel_id': self._get_fallback_channel_id()
                     }
+                    self.open_positions[pos.contract.conId] = position_details
                     self.trailing_highs_and_lows[pos.contract.conId] = {'high': entry_price, 'low': entry_price}
                     self.breakeven_activated[pos.contract.conId] = False
-                    logging.info(f"Adopted: {pos.position} of {pos.contract.localSymbol}")
+                    logging.info(f"Adopted position: {pos.position} of {pos.contract.localSymbol}")
 
         self.state_manager.save_state(self.open_positions, self.processed_message_ids)
         logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
 
     async def _reconcile_positions_periodically(self):
-        """Periodically syncs the bot's internal state with the broker's portfolio."""
+        """
+        Periodically syncs the bot's internal state with the broker's actual portfolio
+        to prevent state desynchronization (managing "ghost" trades).
+        """
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.sleep(self.config.reconciliation_interval_seconds)
@@ -202,10 +219,7 @@ class SignalProcessor:
             logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
 
     async def _on_order_filled(self, trade):
-        """
-        THE BLACK BOX RECORDER: Callback executed by IBInterface when ANY order is filled.
-        It now intelligently handles both BUY and SELL fills.
-        """
+        """Callback executed by IBInterface when an order is filled."""
         contract = trade.contract
         order = trade.order
         fill_price = trade.orderStatus.avgFillPrice
@@ -389,15 +403,16 @@ class SignalProcessor:
                 last_rsi = data.get(f'RSI_{settings["period"]}', pd.Series([0])).iloc[-1]
                 if pd.isna(last_rsi): continue
 
-                if is_call and last_rsi < settings['overbought_level']:
-                     pass # Condition for exit would be crossing back down
-                elif not is_call and last_rsi > settings['oversold_level']:
-                     pass # Condition for exit would be crossing back up
+                # A simple "hook" could be defined as crossing back from an extreme
+                prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
+                if is_call and prev_rsi > settings['overbought_level'] and last_rsi <= settings['overbought_level']:
+                    exit_reason = f"RSI Hook from Overbought ({prev_rsi:.2f} -> {last_rsi:.2f})"
+                elif not is_call and prev_rsi < settings['oversold_level'] and last_rsi >= settings['oversold_level']:
+                    exit_reason = f"RSI Hook from Oversold ({prev_rsi:.2f} -> {last_rsi:.2f})"
             
             elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
                 settings = profile['exit_strategy']['momentum_exits']['psar_settings']
                 data.ta.psar(initial=settings['start'], increment=settings['increment'], maximum=settings['max'], append=True)
-                # Check for psar long/short columns
                 psar_long_col = f'PSARl_{settings["start"]}_{settings["max"]}'
                 psar_short_col = f'PSARs_{settings["start"]}_{settings["max"]}'
                 if psar_long_col in data.columns and not pd.isna(data[psar_long_col].iloc[-1]):
@@ -406,7 +421,6 @@ class SignalProcessor:
                 if psar_short_col in data.columns and not pd.isna(data[psar_short_col].iloc[-1]):
                     if not is_call and current_price > data[psar_short_col].iloc[-1]:
                         exit_reason = "PSAR Flip"
-
 
         if exit_reason:
             logging.info(f"Dynamic exit for {position['contract'].localSymbol}. Reason: {exit_reason}")
