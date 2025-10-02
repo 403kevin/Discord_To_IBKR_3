@@ -27,7 +27,8 @@ class SignalProcessor:
         self.open_positions = initial_positions
         self.processed_message_ids = deque(initial_processed_ids, maxlen=config.processed_message_cache_size)
         self.channel_cooldowns = {}
-        self.global_cooldown_until = datetime.now() 
+        self.global_cooldown_until = datetime.now()
+        self.bot_start_time = datetime.now(timezone.utc)  # FIX: Timestamp filter 
 
         # Real-time data management
         self.position_data_cache = {}
