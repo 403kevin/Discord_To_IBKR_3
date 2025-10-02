@@ -57,7 +57,8 @@ class Config:
             "minute": 00
         }
         
-
+        self.reconciliation_interval_seconds = 300 # Default to 5 minutes
+        
         # self.master_shutdown_enabled = False (future work)
 
         self.master_shutdown_channel_id = "1392531225348014180"
