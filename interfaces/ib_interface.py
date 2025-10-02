@@ -6,7 +6,7 @@ import pandas as pd
 class IBInterface:
     """
     Manages the connection and all interactions with the IBKR API.
-    This version contains critical fixes for the order fill callback system.
+    This version contains the fixed native trail implementation and order fill callback system.
     """
     def __init__(self, config):
         self.config = config
@@ -98,14 +98,51 @@ class IBInterface:
             order = Order(action=action, orderType=order_type, totalQuantity=quantity)
             trade = self.ib.placeOrder(contract, order)
             logging.info(f"Placed {action} order for {quantity} of {contract.localSymbol}")
-            return trade
+            return order
         except Exception as e:
             logging.error(f"Error placing order for {contract.localSymbol}: {e}", exc_info=True)
             return None
             
-    async def attach_native_trail(self, order, trail_percent):
-        """Attaches a broker-level trailing stop loss to a parent order."""
-        pass # Placeholder
+    async def attach_native_trail(self, parent_order, trail_percent):
+        """
+        Attaches a broker-level trailing stop loss to a parent order.
+        FIX: Implemented the actual logic instead of placeholder.
+        """
+        if not self.is_connected():
+            logging.error("Cannot attach native trail, not connected to IBKR.")
+            return None
+        
+        try:
+            # Find the trade object for this parent order
+            parent_trade = None
+            for trade in self.ib.trades():
+                if trade.order.orderId == parent_order.orderId:
+                    parent_trade = trade
+                    break
+            
+            if not parent_trade:
+                logging.error(f"Could not find parent trade for order {parent_order.orderId}")
+                return None
+            
+            contract = parent_trade.contract
+            quantity = parent_order.totalQuantity
+            
+            # Create the trailing stop order
+            trail_order = Order(
+                action='SELL',
+                orderType='TRAIL',
+                totalQuantity=quantity,
+                trailingPercent=trail_percent,
+                tif='GTC'
+            )
+            
+            trail_trade = self.ib.placeOrder(contract, trail_order)
+            logging.info(f"Attached native trail stop ({trail_percent}%) for {quantity} of {contract.localSymbol}")
+            return trail_trade
+            
+        except Exception as e:
+            logging.error(f"Error attaching native trail: {e}", exc_info=True)
+            return None
 
     async def get_live_ticker(self, contract):
         """Requests a single, live market data snapshot for a contract."""
