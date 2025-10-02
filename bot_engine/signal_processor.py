@@ -174,12 +174,50 @@ class SignalProcessor:
                 continue
 
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
+            
+            # FIX: Check if message contains any ignore keywords
+            if any(word.upper() in msg_content.upper() for word in self.config.buzzwords_ignore):
+                logging.info(f"Message {msg_id} contains ignore keyword. Skipping.")
+                continue
+            
             parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
             if not isinstance(parsed_signal, dict):
                 logging.debug(f"Message {msg_id} did not parse into a valid signal.")
                 continue
             
-            await self._execute_trade_from_signal(parsed_signal, profile, None)
+            # FIX: Run sentiment analysis if enabled
+            sentiment_score = None
+            if self.config.sentiment_filter['enabled']:
+                sentiment_score = self.sentiment_analyzer.get_sentiment_score(msg_content)
+                threshold = self.config.sentiment_filter['sentiment_threshold']
+                put_threshold = self.config.sentiment_filter['put_sentiment_threshold']
+                
+                # Check sentiment vs thresholds based on call/put
+                if parsed_signal['contract_type'] == 'CALL' and sentiment_score < threshold:
+                    logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} below threshold {threshold} for CALL")
+                    
+                    # Send veto notification to Telegram
+                    veto_info = {
+                        'source_channel': profile['channel_name'],
+                        'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
+                        'reason': f"Sentiment score {sentiment_score:.4f} below threshold {threshold}"
+                    }
+                    await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
+                    continue
+                    
+                elif parsed_signal['contract_type'] == 'PUT' and sentiment_score > put_threshold:
+                    logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} above threshold {put_threshold} for PUT")
+                    
+                    # Send veto notification to Telegram
+                    veto_info = {
+                        'source_channel': profile['channel_name'],
+                        'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
+                        'reason': f"Sentiment score {sentiment_score:.4f} above threshold {put_threshold}"
+                    }
+                    await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
+                    continue
+            
+            await self._execute_trade_from_signal(parsed_signal, profile, sentiment_score)
         
         if processed_something_new:
             self.state_manager.save_state(self.open_positions, self.processed_message_ids)
@@ -278,7 +316,7 @@ class SignalProcessor:
                 'contract_details': contract.localSymbol,
                 'quantity': position_details['quantity'],
                 'entry_price': position_details['entry_price'],
-                'sentiment_score': sentiment_score,
+                'sentiment_score': sentiment_score if sentiment_score is not None else 'N/A',
                 'trail_method': profile['exit_strategy']['trail_method'].upper(),
                 'momentum_exit': ", ".join(momentum_exits) if momentum_exits else "None"
             }
@@ -503,4 +541,3 @@ class SignalProcessor:
             historical_data = await self.ib_interface.get_historical_data(position['contract'])
             if historical_data is not None and not historical_data.empty:
                 self.position_data_cache[conId] = historical_data
-
