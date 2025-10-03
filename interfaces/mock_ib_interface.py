@@ -13,7 +13,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
     
 # --- Import Our Custom Tools ---
-from utils import get_data_filename # The new "Single Source of Truth"
+from services.utils import get_data_filename  # The "Single Source of Truth"
 
 
 class MockIBInterface:
@@ -94,6 +94,11 @@ class MockIBInterface:
             
         return order
 
+    async def attach_native_trail(self, parent_order, trail_percent):
+        """Mock implementation - logs but doesn't actually attach anything."""
+        logging.info(f"MOCK BROKER: Would attach {trail_percent}% trail stop (simulated)")
+        return None
+
     async def subscribe_to_market_data(self, contract):
         """
         Finds the historical data CSV for the contract and starts the
@@ -115,6 +120,10 @@ class MockIBInterface:
         
         asyncio.create_task(self._playback_market_data(filepath, contract))
         return True
+
+    async def unsubscribe_from_market_data(self, contract):
+        """Mock implementation - logs unsubscribe."""
+        logging.info(f"MOCK BROKER: Unsubscribed from market data for {contract.localSymbol}")
         
     async def _playback_market_data(self, filepath, contract):
         """
@@ -142,6 +151,7 @@ class MockIBInterface:
         logging.info(f"MOCK BROKER: Market data playback finished for {contract.localSymbol}")
 
     async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
+        """Returns initial historical data for the contract."""
         logging.info(f"MOCK BROKER: Fetching initial historical data for {contract.localSymbol}")
         
         filename = get_data_filename(contract)
@@ -153,5 +163,6 @@ class MockIBInterface:
         return pd.DataFrame()
 
     async def get_open_positions(self):
+        """Mock implementation - returns empty list."""
         logging.info("MOCK BROKER: Getting open positions (returning empty list).")
         return []
