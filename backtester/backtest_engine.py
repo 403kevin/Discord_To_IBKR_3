@@ -12,7 +12,7 @@ if project_root not in sys.path:
 
 from services.config import Config
 from services.signal_parser import SignalParser
-from utils import get_data_filename
+from services.utils import get_data_filename
 
 class BacktestEngine:
     """
@@ -317,7 +317,7 @@ if __name__ == '__main__':
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     signal_file = os.path.join(script_dir, 'signals_to_test.txt')
-    data_folder = os.path.join(script_dir, 'data')
+    data_folder = os.path.join(script_dir, 'historical_data')
 
     engine = BacktestEngine(signal_file, data_folder)
     engine.run_simulation()
