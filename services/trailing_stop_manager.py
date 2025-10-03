@@ -1,3 +1,4 @@
+import asyncio  # FIX: Added missing import
 import time
 import logging
 from typing import Dict
@@ -8,6 +9,15 @@ from interfaces.telegram_interface import TelegramInterface
 
 
 class TrailingStopManager:
+    """
+    LEGACY MODULE - Currently not used in the active bot architecture.
+    
+    This was part of an earlier design that handled trailing stops separately.
+    The current architecture integrates all exit logic directly in SignalProcessor
+    using the dynamic exit evaluation system.
+    
+    Keeping this for historical reference and potential future use.
+    """
     def __init__(self, ib_interface: IBInterface, telegram_interface: TelegramInterface):
         self.ib = ib_interface
         self.telegram_interface = telegram_interface
