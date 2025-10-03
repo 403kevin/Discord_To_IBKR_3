@@ -6,7 +6,7 @@ import sys
 try:
     from services.config import Config
     from services.sentiment_analyzer import SentimentAnalyzer
-    from interfaces.telegram_notifier import TelegramNotifier
+    from interfaces.telegram_interface import TelegramInterface
     from interfaces.ib_interface import IBInterface
     from interfaces.discord_interface import DiscordInterface
     print("✅ [SUCCESS] All modules imported successfully.")
@@ -97,13 +97,12 @@ class TestRunner:
     def test_03_telegram_notifier(self):
         if not self.config: return False, "Skipped. Configuration failed to load."
         try:
-            notifier = TelegramNotifier(self.config)
-            test_message = f"✅ Test message from the bot at {time.strftime('%Y-%m-%d %H:%M:%S')}. If you see this, the Telegram notifier is working."
-            success = notifier.send_message(test_message)
-            if success:
-                return True, "Successfully sent a test message to your Telegram chat."
-            else:
-                return False, "Failed to send Telegram message. The API rejected the request. Please verify the tokens displayed in the diagnostic check above."
+            notifier = TelegramInterface(self.config)
+            await notifier.initialize()
+            test_message = "✅ Test message from the bot\\. If you see this, the Telegram notifier is working\\."
+            await notifier.send_message(test_message)
+            await notifier.shutdown()
+            return True, "Successfully sent a test message to your Telegram chat."
         except Exception as e:
             return False, f"An error occurred while testing Telegram. Error: {e}"
 
@@ -112,9 +111,10 @@ class TestRunner:
         print(f"Attempting to connect to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
         ib_interface = IBInterface(self.config)
         try:
-            ib_interface.connect()
-            if ib_interface.is_connected:
-                ib_interface.disconnect()
+            import asyncio
+            asyncio.run(ib_interface.connect())
+            if ib_interface.is_connected():
+                asyncio.run(ib_interface.disconnect())
                 return True, "Successfully connected to and disconnected from IBKR."
             else:
                 return False, "Failed to connect to IBKR. Ensure TWS or Gateway is running and the API settings are correct."
@@ -128,12 +128,14 @@ class TestRunner:
                 return False, "No profiles found in config. Cannot test Discord connection."
             channel_id_to_test = self.config.profiles[0]['channel_id']
             print(f"Testing Discord token by fetching info for channel {channel_id_to_test}...")
-            discord_interface = DiscordInterface(self.config, callback=None)
-            success = discord_interface.check_connection()
-            if success:
+            discord_interface = DiscordInterface(self.config)
+            import asyncio
+            asyncio.run(discord_interface.initialize())
+            if discord_interface.is_initialized():
+                asyncio.run(discord_interface.shutdown())
                 return True, "Discord token appears to be valid. Connection successful."
             else:
-                return False, "Failed to connect to Discord API. Check the DISCORD_AUTH_TOKEN displayed in the diagnostic check above."
+                return False, "Failed to connect to Discord API. Check the DISCORD_AUTH_TOKEN."
         except Exception as e:
             return False, f"An error occurred while testing Discord. Error: {e}"
 
@@ -157,4 +159,3 @@ class TestRunner:
 if __name__ == "__main__":
     runner = TestRunner()
     runner.run_all_tests()
-
