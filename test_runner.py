@@ -1,6 +1,6 @@
 # test_runner.py
 import logging
-import time
+import asyncio
 import sys
 
 try:
@@ -95,13 +95,18 @@ class TestRunner:
             return False, f"Failed to initialize VADER. Error: {e}. Check your internet connection for the initial NLTK download."
 
     def test_03_telegram_notifier(self):
+        """FIX: Properly wrapped async operations"""
         if not self.config: return False, "Skipped. Configuration failed to load."
         try:
             notifier = TelegramInterface(self.config)
-            await notifier.initialize()
-            test_message = "✅ Test message from the bot\\. If you see this, the Telegram notifier is working\\."
-            await notifier.send_message(test_message)
-            await notifier.shutdown()
+            
+            async def test_telegram():
+                await notifier.initialize()
+                test_message = "✅ Test message from the bot\\. If you see this, the Telegram notifier is working\\."
+                await notifier.send_message(test_message)
+                await notifier.shutdown()
+            
+            asyncio.run(test_telegram())
             return True, "Successfully sent a test message to your Telegram chat."
         except Exception as e:
             return False, f"An error occurred while testing Telegram. Error: {e}"
@@ -111,10 +116,15 @@ class TestRunner:
         print(f"Attempting to connect to IBKR at {self.config.ibkr_host}:{self.config.ibkr_port}...")
         ib_interface = IBInterface(self.config)
         try:
-            import asyncio
-            asyncio.run(ib_interface.connect())
-            if ib_interface.is_connected():
-                asyncio.run(ib_interface.disconnect())
+            async def test_ibkr():
+                await ib_interface.connect()
+                if ib_interface.is_connected():
+                    await ib_interface.disconnect()
+                    return True
+                return False
+            
+            result = asyncio.run(test_ibkr())
+            if result:
                 return True, "Successfully connected to and disconnected from IBKR."
             else:
                 return False, "Failed to connect to IBKR. Ensure TWS or Gateway is running and the API settings are correct."
@@ -129,10 +139,15 @@ class TestRunner:
             channel_id_to_test = self.config.profiles[0]['channel_id']
             print(f"Testing Discord token by fetching info for channel {channel_id_to_test}...")
             discord_interface = DiscordInterface(self.config)
-            import asyncio
-            asyncio.run(discord_interface.initialize())
-            if discord_interface.is_initialized():
-                asyncio.run(discord_interface.shutdown())
+            
+            async def test_discord():
+                await discord_interface.initialize()
+                result = discord_interface.is_initialized()
+                await discord_interface.shutdown()
+                return result
+            
+            result = asyncio.run(test_discord())
+            if result:
                 return True, "Discord token appears to be valid. Connection successful."
             else:
                 return False, "Failed to connect to Discord API. Check the DISCORD_AUTH_TOKEN."
