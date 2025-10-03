@@ -80,9 +80,10 @@ class Config:
         # =================================================================
         # --- LEGEND: SENTIMENT ANALYSIS (VADER) ---
         # =================================================================
+        # FIX: Removed unused "headlines_to_fetch" parameter
+        # VADER only analyzes Discord message text, not external headlines
         self.sentiment_filter = {
             "enabled": False,
-            "headlines_to_fetch": 10,
             "sentiment_threshold": 0.05,
             "put_sentiment_threshold": -0.05
         }
