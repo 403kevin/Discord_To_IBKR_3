@@ -17,7 +17,6 @@ from bot_engine.signal_processor import SignalProcessor
 
 # --- Interfaces ---
 from interfaces.discord_interface import DiscordInterface
-from interfaces.ib_interface import IBInterface
 from interfaces.telegram_interface import TelegramInterface
 
 
@@ -67,7 +66,16 @@ async def main():
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
         
-        ib_interface = IBInterface(config)
+        # --- MOCK BROKER SWITCH ---
+        use_mock = os.getenv("USE_MOCK_BROKER", "false").lower() == "true"
+        if use_mock:
+            logging.warning("⚠️ RUNNING IN FLIGHT SIMULATOR MODE ⚠️")
+            from interfaces.mock_ib_interface import MockIBInterface
+            ib_interface = MockIBInterface(config)
+        else:
+            from interfaces.ib_interface import IBInterface
+            ib_interface = IBInterface(config)
+        
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
         
@@ -124,4 +132,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Shutdown initiated by user (Ctrl+C).")
-
