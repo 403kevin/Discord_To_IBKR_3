@@ -229,7 +229,16 @@ class SignalProcessor:
             contract = await self.ib_interface.create_option_contract(
                 signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
             )
-            if not contract: return
+            
+            # FIX: Added Telegram notification for contract creation failure
+            if not contract:
+                veto_info = {
+                    'source_channel': profile['channel_name'],
+                    'contract_details': f"{signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type'][0]}",
+                    'reason': 'Contract creation failed - invalid/expired contract'
+                }
+                await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
+                return
 
             ticker = await self.ib_interface.get_live_ticker(contract)
             if not ticker or pd.isna(ticker.ask) or ticker.ask <= 0:
@@ -327,9 +336,18 @@ class SignalProcessor:
             }
             await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
 
+        # FIX: Added Telegram notification for native trail attachment failure
         if profile and profile['safety_net']['enabled']:
             trail_percent = profile['safety_net']['native_trail_percent']
-            await self.ib_interface.attach_native_trail(trade.order, trail_percent)
+            trail_result = await self.ib_interface.attach_native_trail(trade.order, trail_percent)
+            
+            if trail_result is None:
+                warning_msg = (
+                    f"⚠️ *Warning: Native trail failed to attach*\n\n"
+                    f"*Contract:* `{contract.localSymbol}`\n"
+                    f"*Position still active but without broker\\-level stop*"
+                )
+                await self.telegram_interface.send_message(warning_msg)
 
         subscription_successful = await self.ib_interface.subscribe_to_market_data(contract)
         if subscription_successful:
