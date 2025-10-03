@@ -3,15 +3,14 @@ import logging
 from typing import Dict
 
 from ib_insync import Order
-from ib_interface import IBInterface
-from trade_logger import log_trade
-from telegram_notifier import TelegramNotifier
+from interfaces.ib_interface import IBInterface
+from interfaces.telegram_interface import TelegramInterface
 
 
 class TrailingStopManager:
-    def __init__(self, ib_interface: IBInterface, telegram_notifier: TelegramNotifier):
+    def __init__(self, ib_interface: IBInterface, telegram_interface: TelegramInterface):
         self.ib = ib_interface
-        self.telegram_notifier = telegram_notifier
+        self.telegram_interface = telegram_interface
         self.active_trails: Dict[str, dict] = {}
 
     def add_position(self, symbol: str, contract, entry_price: float, qty: int, rules: dict, trader_name: str,
@@ -64,12 +63,12 @@ class TrailingStopManager:
                 self.execute_sell(symbol, trail, "timeout", current_price);
                 continue
 
-    def execute_sell(self, symbol: str, trail_info: dict, reason: str, exit_price: float):
+    async def execute_sell(self, symbol: str, trail_info: dict, reason: str, exit_price: float):
         logging.info(f"Executing sell for {symbol} for {trail_info['trader_name']} due to: {reason}")
 
         if trail_info['safety_net_order_id']:
             self.ib.cancel_order(trail_info['safety_net_order_id'])
-            self.ib.ib.sleep(1)
+            await asyncio.sleep(1)
 
         self.ib.unsubscribe_from_streaming_data(symbol)
         sell_order = Order(action="SELL", orderType="MKT", totalQuantity=trail_info['qty'])
@@ -82,11 +81,6 @@ class TrailingStopManager:
             f"*Reason:* `{reason.replace('_', ' ').title()}`\n"
             f"*Exit Price:* `${exit_price:.2f}`"
         )
-        self.telegram_notifier.send_message(notification_message)
-
-        log_trade(
-            symbol=symbol, qty=trail_info['qty'], price=exit_price, action="SELL", reason=reason,
-            trader_name=trail_info['trader_name'], strategy_details=trail_info['strategy_details']
-        )
+        await self.telegram_interface.send_message(notification_message)
 
         del self.active_trails[symbol]
