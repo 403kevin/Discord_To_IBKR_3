@@ -1,0 +1,54 @@
+```
+Discord_To_IBKR_3/
+├── main.py
+├── test_runner.py
+├── requirements.txt
+│
+├── /bot_engine/
+│   ├── __init__.py
+│   └── signal_processor.py
+│
+├── /interfaces/
+│   ├── __init__.py
+│   ├── discord_interface.py
+│   ├── ib_interface.py
+│   ├── mock_ib_interface.py
+│   └── telegram_interface.py
+│
+├── /services/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── signal_parser.py
+│   ├── sentiment_analyzer.py
+│   ├── state_manager.py
+│   └── utils.py
+│
+├── /backtester/
+│   ├── __init__.py
+│   ├── signals_to_test.txt
+│   ├── data_harvester.py
+│   ├── backtest_engine.py
+│   ├── parameter_optimizer.py        ← NEW
+│   ├── optimize_all_channels.py      ← NEW
+│   ├── param_grid_template.json      ← NEW
+│   │
+│   ├── /channel_signals/             ← NEW FOLDER
+│   │   ├── channel_01_signals.txt
+│   │   ├── channel_02_signals.txt
+│   │   └── ... (20 total)
+│   │
+│   ├── /historical_data/
+│   │   └── *.csv
+│   │
+│   └── /optimization_results/        ← NEW FOLDER
+│       ├── channel_01/
+│       │   ├── all_results.csv
+│       │   └── optimization_summary.txt
+│       └── channel_02/
+│
+├── /state/
+│   └── open_positions.json
+│
+└── /logs/
+    └── trading_bot.log
+```
