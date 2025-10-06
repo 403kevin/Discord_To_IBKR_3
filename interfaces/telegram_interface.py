@@ -64,6 +64,7 @@ class TelegramInterface:
         """
         THE VETERAN UPGRADE: Sends a professionally formatted notification
         based on the new, multi-option format.
+        FIX: Corrected sentiment_score formatting to handle both numeric and 'N/A' values.
         """
         message = ""
         # Sanitize all data first for safety
@@ -71,9 +72,18 @@ class TelegramInterface:
         contract_details = self._sanitize_markdown(trade_info.get('contract_details', 'N/A'))
 
         if status == "OPENED":
-            quantity = self._sanitize_markdown(trade_info.get('quantity', 'N/A'))
+            quantity = self._sanitize_markdown(str(trade_info.get('quantity', 'N/A')))
             entry_price = self._sanitize_markdown(f"${trade_info.get('entry_price'):.2f}" if trade_info.get('entry_price') is not None else 'N/A')
-            sentiment_score = self._sanitize_markdown(f"{trade_info.get('sentiment_score'):.4f}" if trade_info.get('sentiment_score') is not None else 'N/A')
+            
+            # FIX: Handle sentiment_score properly - check if it's numeric before formatting
+            sentiment_raw = trade_info.get('sentiment_score')
+            if sentiment_raw is None or sentiment_raw == 'N/A':
+                sentiment_score = self._sanitize_markdown('N/A')
+            elif isinstance(sentiment_raw, (int, float)):
+                sentiment_score = self._sanitize_markdown(f"{sentiment_raw:.4f}")
+            else:
+                sentiment_score = self._sanitize_markdown(str(sentiment_raw))
+            
             trail_method = self._sanitize_markdown(trade_info.get('trail_method', 'N/A'))
             momentum_exit = self._sanitize_markdown(trade_info.get('momentum_exit', 'None'))
             
@@ -114,4 +124,3 @@ class TelegramInterface:
 
         if message:
             await self.send_message(message.strip())
-
