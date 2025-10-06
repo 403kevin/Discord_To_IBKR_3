@@ -168,10 +168,15 @@ class SignalProcessor:
             processed_something_new = True
             self.processed_message_ids.append(msg_id)
             
+            # FIX: Check if message predates bot startup (prevents processing backlog on restart)
+            if msg_timestamp < self.bot_start_time:
+                logging.debug(f"Message {msg_id} predates bot startup ({msg_timestamp} < {self.bot_start_time}). Ignoring.")
+                continue
+            
             now_utc = datetime.now(timezone.utc)
             signal_age = now_utc - msg_timestamp
             if signal_age.total_seconds() > self.config.signal_max_age_seconds:
-                logging.debug(f"Message {msg_id} is stale. Ignoring.")
+                logging.debug(f"Message {msg_id} is stale ({signal_age.total_seconds():.1f}s old). Ignoring.")
                 continue
 
             logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
@@ -190,33 +195,38 @@ class SignalProcessor:
             sentiment_score = None
             if self.config.sentiment_filter['enabled']:
                 sentiment_score = self.sentiment_analyzer.get_sentiment_score(msg_content)
-                threshold = self.config.sentiment_filter['sentiment_threshold']
-                put_threshold = self.config.sentiment_filter['put_sentiment_threshold']
                 
-                # Check sentiment vs thresholds based on call/put
-                if parsed_signal['contract_type'] == 'CALL' and sentiment_score < threshold:
-                    logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} below threshold {threshold} for CALL")
+                # FIX: Check if sentiment analyzer failed
+                if sentiment_score is None or self.sentiment_analyzer.analyzer is None:
+                    logging.warning(f"Sentiment analyzer failed for message {msg_id}. Proceeding without sentiment filter.")
+                else:
+                    threshold = self.config.sentiment_filter['sentiment_threshold']
+                    put_threshold = self.config.sentiment_filter['put_sentiment_threshold']
                     
-                    # Send veto notification to Telegram
-                    veto_info = {
-                        'source_channel': profile['channel_name'],
-                        'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
-                        'reason': f"Sentiment score {sentiment_score:.4f} below threshold {threshold}"
-                    }
-                    await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
-                    continue
-                    
-                elif parsed_signal['contract_type'] == 'PUT' and sentiment_score > put_threshold:
-                    logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} above threshold {put_threshold} for PUT")
-                    
-                    # Send veto notification to Telegram
-                    veto_info = {
-                        'source_channel': profile['channel_name'],
-                        'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
-                        'reason': f"Sentiment score {sentiment_score:.4f} above threshold {put_threshold}"
-                    }
-                    await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
-                    continue
+                    # Check sentiment vs thresholds based on call/put
+                    if parsed_signal['contract_type'] == 'CALL' and sentiment_score < threshold:
+                        logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} below threshold {threshold} for CALL")
+                        
+                        # Send veto notification to Telegram
+                        veto_info = {
+                            'source_channel': profile['channel_name'],
+                            'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
+                            'reason': f"Sentiment score {sentiment_score:.4f} below threshold {threshold}"
+                        }
+                        await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
+                        continue
+                        
+                    elif parsed_signal['contract_type'] == 'PUT' and sentiment_score > put_threshold:
+                        logging.info(f"Signal vetoed: Sentiment {sentiment_score:.4f} above threshold {put_threshold} for PUT")
+                        
+                        # Send veto notification to Telegram
+                        veto_info = {
+                            'source_channel': profile['channel_name'],
+                            'contract_details': f"{parsed_signal['ticker']} {parsed_signal['expiry_date']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}",
+                            'reason': f"Sentiment score {sentiment_score:.4f} above threshold {put_threshold}"
+                        }
+                        await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
+                        continue
             
             await self._execute_trade_from_signal(parsed_signal, profile, sentiment_score)
         
