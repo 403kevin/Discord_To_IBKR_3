@@ -85,13 +85,13 @@ class Config:
         }
 
         # =================================================================
-        # --- LEGEND: CHANNEL PROFILES ---
+        # --- MASTER ---
         # =================================================================
         self.profiles = [
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True,
+                "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
@@ -126,9 +126,9 @@ class Config:
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
             
-            # ============================================================
-            # ADDITIONAL CHANNELS (Template - Disabled by default)
-            # ============================================================
+            # ==========
+            # Channel 01
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -165,6 +165,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 02
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -201,6 +205,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 03
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -237,6 +245,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 04
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -273,6 +285,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 05
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -309,6 +325,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 06
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -345,6 +365,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 07
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -381,6 +405,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 08
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -417,6 +445,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 09
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -453,6 +485,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 10
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -489,6 +525,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 11
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -525,6 +565,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 12
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -561,6 +605,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 13
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -597,6 +645,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 14
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
@@ -633,6 +685,10 @@ class Config:
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
             },
+
+            # ==========
+            # Channel 15
+            # ==========
             
             {
                 "channel_id": "REPLACE_WITH_CHANNEL_ID",
