@@ -131,10 +131,10 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_1",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
+                "channel_id": "916540757236678706",
+                "channel_name": "QIQO_1",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
@@ -171,11 +171,11 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_2",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
-                "ambiguous_expiry_enabled": True,
+                "channel_id": "1330376524498731028",
+                "channel_name": "Zeus_2",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": False,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
                 "trading": {
@@ -211,11 +211,11 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_3",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
-                "ambiguous_expiry_enabled": True,
+                "channel_id": "1196227916032376883",
+                "channel_name": "Arrow_3",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": False,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
                 "trading": {
@@ -251,10 +251,10 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_4",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
+                "channel_id": "852526152252784651",
+                "channel_name": "Goldman_4",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
@@ -291,9 +291,9 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_5",
-                "enabled": False,
+                "channel_id": "1322024595712118814",
+                "channel_name": "Mitro_5",
+                "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
@@ -331,10 +331,10 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_6",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
+                "channel_id": "1240051753861382249",
+                "channel_name": "Nitri_6",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
@@ -371,10 +371,10 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_7",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
+                "channel_id": "925217078569500723",
+                "channel_name": "Prophet_day_7",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
@@ -411,9 +411,9 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_8",
-                "enabled": False,
+                "channel_id": "1081319049771876372",
+                "channel_name": "Flint_8",
+                "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
@@ -451,10 +451,10 @@ class Config:
             # ==========
             
             {
-                "channel_id": "REPLACE_WITH_CHANNEL_ID",
-                "channel_name": "Channel_9",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
+                "channel_id": "1260988811832328263",
+                "channel_name": "DD_Alerts_9",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
                 
