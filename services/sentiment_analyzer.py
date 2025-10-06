@@ -15,12 +15,14 @@ class SentimentAnalyzer:
     def __init__(self):
         """
         Initializes the SentimentIntensityAnalyzer.
+        FIX: Enhanced error handling with startup warning.
         """
         try:
             self.analyzer = SentimentIntensityAnalyzer()
+            logging.info("VADER sentiment analyzer initialized successfully.")
         except Exception as e:
-            logging.error(f"Failed to initialize SentimentIntensityAnalyzer: {e}")
-            # Depending on criticality, you might want to raise the exception.
+            logging.critical(f"FAILED to initialize SentimentIntensityAnalyzer: {e}")
+            logging.critical("Sentiment filter will NOT work. Bot will proceed without sentiment veto.")
             self.analyzer = None
 
     def get_sentiment_score(self, text: str) -> float:
@@ -35,18 +37,22 @@ class SentimentAnalyzer:
             text (str): The raw text of the message to analyze.
 
         Returns:
-            float: The compound sentiment score. Returns 0.0 if analyzer fails.
+            float: The compound sentiment score. Returns None if analyzer failed to initialize.
         """
         if not self.analyzer:
-            logging.warning("Sentiment analyzer is not available.")
-            return 0.0
+            logging.warning("Sentiment analyzer is not available. Returning None.")
+            return None
             
-        # The polarity_scores() method returns a dict with 'neg', 'neu', 'pos', 'compound'
-        sentiment_scores = self.analyzer.polarity_scores(text)
-        
-        # The 'compound' score is the most useful for a single-metric threshold.
-        compound_score = sentiment_scores['compound']
-        
-        logging.info(f"Analyzed sentiment for text: '{text[:50]}...'. Compound Score: {compound_score}")
-        
-        return compound_score
+        try:
+            # The polarity_scores() method returns a dict with 'neg', 'neu', 'pos', 'compound'
+            sentiment_scores = self.analyzer.polarity_scores(text)
+            
+            # The 'compound' score is the most useful for a single-metric threshold.
+            compound_score = sentiment_scores['compound']
+            
+            logging.debug(f"Analyzed sentiment for text: '{text[:50]}...'. Compound Score: {compound_score}")
+            
+            return compound_score
+        except Exception as e:
+            logging.error(f"Error during sentiment analysis: {e}", exc_info=True)
+            return None
