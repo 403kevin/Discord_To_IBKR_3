@@ -303,25 +303,33 @@ class SignalProcessor:
             self.global_cooldown_until = datetime.now() + timedelta(seconds=self.config.cooldown_after_trade_seconds)
             logging.info(f"Global cooldown activated for {self.config.cooldown_after_trade_seconds} seconds")
         
-        elif order.action == "SELL":
-            if contract.conId in self.open_positions:
-                position_to_close = self.open_positions.pop(contract.conId)
-                logging.info(f"Exit fill: {quantity} of {contract.localSymbol} at ${fill_price}")
+elif order.action == "SELL":
+    if contract.conId in self.open_positions:
+        position_to_close = self.open_positions.pop(contract.conId)
+        logging.info(f"Exit fill: {quantity} of {contract.localSymbol} at ${fill_price}")
 
-                pnl = (fill_price - position_to_close['entry_price']) * quantity * 100
-                profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
-                
-                trade_info = {
-                    'contract_details': contract.localSymbol,
-                    'exit_price': fill_price,
-                    'pnl': f"${pnl:.2f}",
-                    'reason': getattr(order, 'exit_reason', 'Manual/Unknown')
-                }
-                await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
-                self._cleanup_position_data(contract.conId)
-                self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-            else:
-                logging.warning(f"Received a SELL fill for an untracked position: {contract.localSymbol}")
+        pnl = (fill_price - position_to_close['entry_price']) * quantity * 100
+        profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
+        
+        # Determine exit reason intelligently
+        if hasattr(order, 'exit_reason'):
+            exit_reason = order.exit_reason
+        elif order.orderType == 'TRAIL':
+            exit_reason = f"Native Trail Stop ({order.trailingPercent}%)"
+        else:
+            exit_reason = "Manual/Unknown"
+        
+        trade_info = {
+            'contract_details': contract.localSymbol,
+            'exit_price': fill_price,
+            'pnl': f"${pnl:.2f}",
+            'reason': exit_reason
+        }
+        await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
+        self._cleanup_position_data(contract.conId)
+        self.state_manager.save_state(self.open_positions, self.processed_message_ids)
+    else:
+        logging.warning(f"Received a SELL fill for an untracked position: {contract.localSymbol}")
 
     async def _post_fill_actions(self, trade, position_details, sentiment_score):
         """Actions to take after an ENTRY order is confirmed filled."""
