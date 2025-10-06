@@ -123,7 +123,7 @@ class Config:
                     "momentum_exits": {
                         "psar_enabled": True,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
-                        "rsi_hook_enabled": True,
+                        "rsi_hook_enabled": False,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
