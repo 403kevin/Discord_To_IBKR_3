@@ -1,0 +1,237 @@
+cat > /mnt/user-data/outputs/QUICK_COMMANDS.txt << 'EOF'
+╔══════════════════════════════════════════════════════════════════════════╗
+║                 🎯 PARAMETER OPTIMIZATION - QUICK REFERENCE               ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+📂 SETUP (One Time):
+─────────────────────────────────────────────────────────────────────────────
+mkdir -p backtester/channel_signals
+
+# Create one file per channel:
+# channel_01_signals.txt, channel_02_signals.txt, ... channel_20_signals.txt
+
+
+⚡ SINGLE CHANNEL OPTIMIZATION:
+─────────────────────────────────────────────────────────────────────────────
+# 1. Copy signals
+cp backtester/channel_signals/channel_01_signals.txt backtester/signals_to_test.txt
+
+# 2. Download data (requires IBKR connection)
+python backtester/data_harvester.py
+
+# 3. Run optimization (disconnect from IBKR after download)
+python parameter_optimizer.py --quick          # 16 tests (~6 min)
+python parameter_optimizer.py                  # 3,456 tests (~2 hours)
+
+# 4. Review results
+cat backtester/optimization_results/TIMESTAMP/optimization_summary.txt
+
+
+🚀 ALL 20 CHANNELS (AUTOMATED):
+─────────────────────────────────────────────────────────────────────────────
+# Quick mode (16 tests × 20 channels = ~2 hours)
+python optimize_all_channels.py --quick
+
+# Full mode (3,456 tests × 20 channels = ~40 hours)
+python optimize_all_channels.py
+
+# Results:
+cat backtester/master_summary_TIMESTAMP.txt
+
+
+🎨 CUSTOM PARAMETER GRID:
+─────────────────────────────────────────────────────────────────────────────
+# Edit param_grid_template.json with your values
+nano param_grid_template.json
+
+# Run with custom grid
+python parameter_optimizer.py --params param_grid_template.json
+
+
+📊 OUTPUTS:
+─────────────────────────────────────────────────────────────────────────────
+backtester/optimization_results/TIMESTAMP/
+├── all_results.csv                    # Every combination tested
+└── optimization_summary.txt           # Top 10 + recommended config
+
+backtester/
+├── master_optimization_TIMESTAMP.csv  # Best config per channel
+└── master_summary_TIMESTAMP.txt       # Rankings across all channels
+
+
+⏱️  TIME ESTIMATES:
+─────────────────────────────────────────────────────────────────────────────
+Quick mode (--quick):    6 min/channel  →  2 hours for 20 channels
+Full mode (default):     2 hours/channel → 40 hours for 20 channels
+
+
+💡 TYPICAL WORKFLOW:
+─────────────────────────────────────────────────────────────────────────────
+Phase 1: Run quick mode on all 20 channels (2 hours)
+         → Identify top 5 profitable channels
+
+Phase 2: Run full mode on top 5 channels (10 hours)
+         → Find optimal parameters for each
+
+Phase 3: Apply best configs to services/config.py
+         → Create one profile per channel
+
+
+📝 PARAMETER BEING TESTED:
+─────────────────────────────────────────────────────────────────────────────
+• breakeven_trigger_percent   [5, 10, 15, 20]
+• trail_method                 ["atr", "pullback_percent"]
+• pullback_percent             [8, 10, 12, 15]
+• atr_period                   [10, 14, 20]
+• atr_multiplier               [1.0, 1.5, 2.0, 2.5]
+• psar_enabled                 [true, false]
+• psar_start                   [0.01, 0.02, 0.03]
+• psar_increment               [0.01, 0.02, 0.03]
+• psar_max                     [0.1, 0.2, 0.3]
+• rsi_hook_enabled             [true, false]
+• rsi_period                   [10, 14, 20]
+• rsi_overbought               [65, 70, 75]
+• rsi_oversold                 [25, 30, 35]
+
+
+🔥 PRO TIPS:
+─────────────────────────────────────────────────────────────────────────────
+✅ Start with --quick to find profitable channels fast
+✅ Use full mode only on your top performers
+✅ Run overnight for full optimization
+✅ Profit factor > 1.5 is good for day trading
+✅ High win rate but low P&L = poor risk:reward
+✅ Watch max drawdown - big wins with huge drawdowns = risky
+
+═══════════════════════════════════════════════════════════════════════════════
+EOF
+cat /mnt/user-data/outputs/QUICK_COMMANDS.txt
+Output
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                 🎯 PARAMETER OPTIMIZATION - QUICK REFERENCE               ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+📂 SETUP (One Time):
+─────────────────────────────────────────────────────────────────────────────
+mkdir -p backtester/channel_signals
+
+# Create one file per channel:
+# channel_01_signals.txt, channel_02_signals.txt, ... channel_20_signals.txt
+
+
+⚡ SINGLE CHANNEL OPTIMIZATION:
+─────────────────────────────────────────────────────────────────────────────
+# 1. Copy signals
+cp backtester/channel_signals/channel_01_signals.txt backtester/signals_to_test.txt
+
+# 2. Download data (requires IBKR connection)
+python backtester/data_harvester.py
+
+# 3. Run optimization (disconnect from IBKR after download)
+python parameter_optimizer.py --quick          # 16 tests (~6 min)
+python parameter_optimizer.py                  # 3,456 tests (~2 hours)
+
+# 4. Review results
+cat backtester/optimization_results/TIMESTAMP/optimization_summary.txt
+
+
+🚀 ALL 20 CHANNELS (AUTOMATED):
+─────────────────────────────────────────────────────────────────────────────
+# Quick mode (16 tests × 20 channels = ~2 hours)
+python optimize_all_channels.py --quick
+
+# Full mode (3,456 tests × 20 channels = ~40 hours)
+python optimize_all_channels.py
+
+# Results:
+cat backtester/master_summary_TIMESTAMP.txt
+
+
+🎨 CUSTOM PARAMETER GRID:
+─────────────────────────────────────────────────────────────────────────────
+# Edit param_grid_template.json with your values
+nano param_grid_template.json
+
+# Run with custom grid
+python parameter_optimizer.py --params param_grid_template.json
+
+
+📊 OUTPUTS:
+─────────────────────────────────────────────────────────────────────────────
+backtester/optimization_results/TIMESTAMP/
+├── all_results.csv                    # Every combination tested
+└── optimization_summary.txt           # Top 10 + recommended config
+
+backtester/
+├── master_optimization_TIMESTAMP.csv  # Best config per channel
+└── master_summary_TIMESTAMP.txt       # Rankings across all channels
+
+
+⏱️  TIME ESTIMATES:
+─────────────────────────────────────────────────────────────────────────────
+Quick mode (--quick):    6 min/channel  →  2 hours for 20 channels
+Full mode (default):     2 hours/channel → 40 hours for 20 channels
+
+
+💡 TYPICAL WORKFLOW:
+─────────────────────────────────────────────────────────────────────────────
+Phase 1: Run quick mode on all 20 channels (2 hours)
+         → Identify top 5 profitable channels
+
+Phase 2: Run full mode on top 5 channels (10 hours)
+         → Find optimal parameters for each
+
+Phase 3: Apply best configs to services/config.py
+         → Create one profile per channel
+
+
+📝 PARAMETER BEING TESTED:
+─────────────────────────────────────────────────────────────────────────────
+• breakeven_trigger_percent   [5, 10, 15, 20]
+• trail_method                 ["atr", "pullback_percent"]
+• pullback_percent             [8, 10, 12, 15]
+• atr_period                   [10, 14, 20]
+• atr_multiplier               [1.0, 1.5, 2.0, 2.5]
+• psar_enabled                 [true, false]
+• psar_start                   [0.01, 0.02, 0.03]
+• psar_increment               [0.01, 0.02, 0.03]
+• psar_max                     [0.1, 0.2, 0.3]
+• rsi_hook_enabled             [true, false]
+• rsi_period                   [10, 14, 20]
+• rsi_overbought               [65, 70, 75]
+• rsi_oversold                 [25, 30, 35]
+
+
+🔥 PRO TIPS:
+─────────────────────────────────────────────────────────────────────────────
+✅ Start with --quick to find profitable channels fast
+✅ Use full mode only on your top performers
+✅ Run overnight for full optimization
+✅ Profit factor > 1.5 is good for day trading
+✅ High win rate but low P&L = poor risk:reward
+✅ Watch max drawdown - big wins with huge drawdowns = risky
+
+
+
+
+
+
+# 1. Download the 5 files
+
+# 2. Create channel folders
+mkdir -p backtester/channel_signals
+
+# 3. Add your channel signals
+# channel_01_signals.txt, channel_02_signals.txt, etc.
+
+# 4. Test ONE channel first
+cp backtester/channel_signals/channel_01_signals.txt backtester/signals_to_test.txt
+python backtester/data_harvester.py
+python parameter_optimizer.py --quick
+
+# 5. Review results
+cat backtester/optimization_results/*/optimization_summary.txt
+
+# 6. Run all 20 channels overnight
+python optimize_all_channels.py --quick  # or without --quick for full test
