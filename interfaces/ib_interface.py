@@ -7,6 +7,7 @@ class IBInterface:
     """
     Manages the connection and all interactions with the IBKR API.
     This version contains the fixed native trail implementation and order fill callback system.
+    FIX: Added explicit order cancellation to prevent ghost trailing stops.
     """
     def __init__(self, config):
         self.config = config
@@ -92,9 +93,43 @@ class IBInterface:
             logging.error(f"Error creating contract: {e}", exc_info=True)
             return None
 
-    async def place_order(self, contract, order_type, quantity, action='BUY'):
-        """Places a trade order."""
+    async def cancel_all_orders_for_contract(self, contract):
+        """
+        FIX: Cancels ALL open orders for a specific contract.
+        This prevents ghost trailing stops from remaining active after position is closed.
+        """
+        if not self.is_connected():
+            logging.warning("Cannot cancel orders, not connected to IBKR.")
+            return
+        
         try:
+            open_trades = self.ib.openTrades()
+            cancelled_count = 0
+            
+            for trade in open_trades:
+                if trade.contract.conId == contract.conId:
+                    logging.info(f"Cancelling order {trade.order.orderId} for {contract.localSymbol}")
+                    self.ib.cancelOrder(trade.order)
+                    cancelled_count += 1
+            
+            if cancelled_count > 0:
+                logging.info(f"Cancelled {cancelled_count} order(s) for {contract.localSymbol}")
+                # Give IB a moment to process cancellations
+                await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            logging.error(f"Error cancelling orders for {contract.localSymbol}: {e}", exc_info=True)
+
+    async def place_order(self, contract, order_type, quantity, action='BUY'):
+        """
+        Places a trade order.
+        FIX: If this is a SELL order, cancel all existing orders for the contract first.
+        """
+        try:
+            # FIX: Cancel all orders before closing position
+            if action == 'SELL':
+                await self.cancel_all_orders_for_contract(contract)
+            
             order = Order(action=action, orderType=order_type, totalQuantity=quantity)
             trade = self.ib.placeOrder(contract, order)
             logging.info(f"Placed {action} order for {quantity} of {contract.localSymbol}")
