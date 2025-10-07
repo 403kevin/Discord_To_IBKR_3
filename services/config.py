@@ -21,7 +21,6 @@ class Config:
         self.polling_interval_seconds = 3
         self.delay_between_channels = 2
         self.delay_after_full_cycle = 4
-        self.DISCORD_COOLDOWN_SECONDS = int(os.getenv("DISCORD_COOLDOWN_SECONDS", 30))
         
         self.MARKET_TIMEZONE = "US/Mountain" 
 
@@ -43,12 +42,20 @@ class Config:
         self.STATE_FILE_PATH = os.getenv("STATE_FILE_PATH", "state/open_positions.json")
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "logs/trade_log.csv")
 
+        # FIX: Consolidated buzzword logic
+        # BUY words trigger entries
         self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                               "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
-        self.buzzwords_sell = ["STC", "SELL"]
-        self.buzzwords_ignore = ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE"]
+        
+        # SELL words moved to IGNORE - we have smart exits, don't want false signals
+        # Any message with these words will be rejected
+        self.buzzwords_ignore = ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                 "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"]
+        
         self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE", "SMALL","HIGH","RISK","RISKY","LOTTO"]
-        self.buzzwords = self.buzzwords_buy + self.buzzwords_sell + self.jargon_words
+        
+        # Only BUY buzzwords are used for parsing now
+        self.buzzwords = self.buzzwords_buy + self.jargon_words
 
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
@@ -58,7 +65,8 @@ class Config:
             "minute": 00
         }
         
-        self.reconciliation_interval_seconds = 300 # Default to 5 minutes
+        # FIX: Reconciliation interval now actually used by signal_processor
+        self.reconciliation_interval_seconds = 60  # Check every 60 seconds for ghost positions
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
