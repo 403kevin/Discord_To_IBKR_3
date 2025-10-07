@@ -99,7 +99,7 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": False,
+                "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 "reject_if_contains": ["RISK", "earnings", "play"],
