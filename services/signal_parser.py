@@ -72,9 +72,10 @@ class SignalParser:
         # Step 1: Extract ACTION (BTO, STC, etc.)
         action = self._find_action(text, profile)
         if action:
-            # Remove action words from temp_parts to avoid confusion
+            # FIX: Remove only BUY action words from temp_parts
+            # We don't check buzzwords_sell anymore since it doesn't exist
             for part in list(temp_parts):
-                if part in self.config.buzzwords_buy or part in self.config.buzzwords_sell:
+                if part in self.config.buzzwords_buy:
                     temp_parts.remove(part)
 
         # Step 2: Extract DATE (MM/DD or XDTE format)
@@ -171,8 +172,8 @@ class SignalParser:
         """Determines the trade action (BTO or STC)."""
         if any(word in text for word in self.config.buzzwords_buy):
             return "BTO"
-        if any(word in text for word in self.config.buzzwords_sell):
-            return "STC"
+        # FIX: We no longer check buzzwords_sell since it was moved to buzzwords_ignore
+        # Any sell words in the message would have already been rejected at the signal_processor level
         if profile.get('assume_buy_on_ambiguous', False):
             return "BTO"
         return None
