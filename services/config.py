@@ -102,7 +102,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -144,7 +144,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -184,7 +184,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": False,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -224,7 +224,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": False,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -264,7 +264,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -304,7 +304,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -344,7 +344,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -384,7 +384,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -424,7 +424,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -464,7 +464,7 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -504,7 +504,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -544,7 +544,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -584,7 +584,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -624,7 +624,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -664,7 +664,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -704,7 +704,7 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-                "reject_if_contains": ["RISK", "earnings", "play"],
+
                 
                 "trading": {
                     "funds_allocation": 1000,
