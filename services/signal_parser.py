@@ -6,10 +6,37 @@ class SignalParser:
     """
     Parses raw text from Discord messages into structured trade signals.
     This is the battle-tested parser ported from the working Scraping_Old repo,
-    adapted to the new architecture. Supports all 8 format variations and XDTE logic.
+    adapted to the new architecture. Supports all 17+ format variations and XDTE logic.
+    FIXED: Added ticker validation to prevent parsing trading terms as tickers.
     """
     def __init__(self, config):
         self.config = config
+        # Define common trading terms that should NOT be treated as tickers
+        self.trading_terms = {
+            'SIZED', 'PLACE', 'BELOW', 'ABOVE', 'SWEEP', 'BLOCK', 'TRADE',
+            'ALERT', 'FLOW', 'LARGE', 'SMALL', 'HUGE', 'MEGA', 'SUPER',
+            'HEAVY', 'LIGHT', 'FAST', 'SLOW', 'QUICK', 'PRINT', 'ORDER',
+            'FILLED', 'PARTIAL', 'FULL', 'SCALE', 'LAYER', 'ADDED', 'MORE',
+            'LESS', 'SOLD', 'BOUGHT', 'CLOSED', 'OPENED', 'TRIMMED',
+            'UNUSUAL', 'OPTION', 'OPTIONS', 'ACTIVITY', 'BULLISH', 'BEARISH',
+            'NEUTRAL', 'MIXED', 'STRONG', 'WEAK', 'INSIDE', 'OUTSIDE'
+        }
+        # Common valid tickers (expand this list as needed)
+        self.known_tickers = {
+            'SPY', 'SPX', 'SPXW', 'QQQ', 'IWM', 'DIA', 'VXX', 'UVXY',
+            'TSLA', 'AAPL', 'NVDA', 'AMD', 'AMZN', 'META', 'GOOGL', 'MSFT',
+            'NFLX', 'BABA', 'SHOP', 'SQ', 'PYPL', 'COIN', 'ROKU', 'SNAP',
+            'UBER', 'LYFT', 'ABNB', 'HOOD', 'SOFI', 'PLTR', 'AI', 'PATH',
+            'BA', 'GS', 'JPM', 'BAC', 'WFC', 'C', 'MS', 'V', 'MA', 'AXP',
+            'PENN', 'DKNG', 'WYNN', 'MGM', 'CZR', 'LVS', 'CHPT', 'RIVN',
+            'F', 'GM', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR', 'RIDE',
+            'XOM', 'CVX', 'COP', 'OXY', 'SLB', 'HAL', 'MRO', 'DVN',
+            'PFE', 'MRNA', 'JNJ', 'LLY', 'ABBV', 'BMY', 'MRK', 'GILD',
+            'DIS', 'CMCSA', 'T', 'VZ', 'TMUS', 'CHTR', 'NTES', 'BILI',
+            'WMT', 'TGT', 'COST', 'HD', 'LOW', 'NKE', 'SBUX', 'MCD',
+            'AAL', 'DAL', 'UAL', 'LUV', 'JETS', 'CCL', 'RCL', 'NCLH',
+            'MARA', 'RIOT', 'BTBT', 'MSTR', 'CLSK', 'CAN', 'HUT', 'BITF'
+        }
 
     def parse_signal(self, text, profile):
         """
@@ -72,8 +99,7 @@ class SignalParser:
         # Step 1: Extract ACTION (BTO, STC, etc.)
         action = self._find_action(text, profile)
         if action:
-            # FIX: Remove only BUY action words from temp_parts
-            # We don't check buzzwords_sell anymore since it doesn't exist
+            # Remove only BUY action words from temp_parts
             for part in list(temp_parts):
                 if part in self.config.buzzwords_buy:
                     temp_parts.remove(part)
@@ -122,11 +148,39 @@ class SignalParser:
                     except (ValueError, IndexError):
                         continue
 
-        # Step 4: Extract TICKER (alphabetic-only parts, longest wins)
-        potential_tickers = [part for part in temp_parts if part.isalpha() and len(part) <= 5]
+        # Step 4: Extract TICKER with VALIDATION
+        # Filter out trading terms and find valid tickers
+        potential_tickers = [
+            part for part in temp_parts 
+            if part.isalpha() 
+            and len(part) <= 5 
+            and part not in self.trading_terms
+        ]
+        
         if potential_tickers:
-            potential_tickers.sort(key=len, reverse=True)
-            ticker = potential_tickers[0]
+            # First, check for known tickers (highest priority)
+            for part in potential_tickers:
+                if part in self.known_tickers:
+                    ticker = part
+                    logging.debug(f"Found known ticker: {ticker}")
+                    break
+            
+            # If no known ticker found, validate remaining candidates
+            if not ticker and potential_tickers:
+                # Filter out any remaining suspicious words
+                valid_candidates = []
+                for candidate in potential_tickers:
+                    # Additional checks for valid ticker patterns
+                    if (len(candidate) >= 1 and len(candidate) <= 5 and 
+                        not candidate.startswith('X') and  # Avoid "XDTE" remnants
+                        candidate not in ['A', 'I', 'U', 'Y']):  # Single letters that are rarely tickers alone
+                        valid_candidates.append(candidate)
+                
+                # Take the longest valid candidate (tickers like "NVDA" over "A")
+                if valid_candidates:
+                    valid_candidates.sort(key=len, reverse=True)
+                    ticker = valid_candidates[0]
+                    logging.debug(f"Selected ticker by length: {ticker}")
 
         # Step 5: Validate we have minimum required components
         if not all([action, ticker, strike, contract_type]):
