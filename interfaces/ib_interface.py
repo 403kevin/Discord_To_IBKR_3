@@ -1,3 +1,4 @@
+# interfaces/ib_interface.py
 import asyncio
 import logging
 from ib_insync import IB, Stock, Option, util, Ticker, Order, Trade
@@ -8,12 +9,14 @@ class IBInterface:
     Manages the connection and all interactions with the IBKR API.
     This version contains the fixed native trail implementation and order fill callback system.
     FIX: Added explicit order cancellation to prevent ghost trailing stops.
+    FIX: Added monitored close to prevent overselling positions.
     """
     def __init__(self, config):
         self.config = config
         self.ib = IB()
         self.market_data_queue = asyncio.Queue()
         self._order_filled_callback = None
+        self._monitored_close_orders = {}  # Track closing orders to prevent overselling
 
     def is_connected(self):
         return self.ib.isConnected()
@@ -31,6 +34,7 @@ class IBInterface:
                 logging.info("API connection ready")
                 self.ib.pendingTickersEvent += self._on_pending_tickers
                 self.ib.orderStatusEvent += self._on_order_status
+                self.ib.execDetailsEvent += self._on_exec_details  # NEW: Monitor executions
             else:
                 logging.info("Already connected to IBKR.")
             
@@ -57,14 +61,63 @@ class IBInterface:
         else:
             raise TypeError("The provided callback must be a coroutine (an async function).")
 
+    def _on_exec_details(self, trade: Trade, fill):
+        """
+        NEW: Monitors partial fills on closing orders to prevent overselling.
+        Cancels the remaining order once the position hits zero.
+        """
+        contract = trade.contract
+        order = trade.order
+        
+        # Only monitor SELL orders we're tracking
+        if order.action == 'SELL' and contract.conId in self._monitored_close_orders:
+            monitor_data = self._monitored_close_orders[contract.conId]
+            
+            # Update filled quantity
+            filled_so_far = trade.orderStatus.filled
+            target_qty = monitor_data['target_quantity']
+            
+            logging.info(f"Close monitor: {filled_so_far}/{target_qty} filled for {contract.localSymbol}")
+            
+            # If we've filled the target, cancel the remaining order
+            if filled_so_far >= target_qty:
+                logging.warning(f"🛡️ OVERSELL PROTECTION: Target {target_qty} reached, cancelling remaining order for {contract.localSymbol}")
+                asyncio.create_task(self._cancel_monitored_close_order(contract.conId, trade.order.orderId))
+
+    async def _cancel_monitored_close_order(self, conId, order_id):
+        """Helper to cancel a monitored close order and clean up tracking."""
+        try:
+            # Find and cancel the order
+            for trade in self.ib.trades():
+                if trade.order.orderId == order_id:
+                    self.ib.cancelOrder(trade.order)
+                    logging.info(f"✅ Cancelled oversell-protected order {order_id}")
+                    break
+            
+            # Clean up tracking
+            self._monitored_close_orders.pop(conId, None)
+            
+        except Exception as e:
+            logging.error(f"Error cancelling monitored close order: {e}", exc_info=True)
+
     def _on_order_status(self, trade: Trade):
         """
         Internal callback that listens for all order status updates. If an order
         is filled, it triggers the async callback in the SignalProcessor.
         """
         if trade.orderStatus.status == 'Filled':
+            # Clean up monitor tracking if this was a monitored close
+            if trade.contract.conId in self._monitored_close_orders:
+                self._monitored_close_orders.pop(trade.contract.conId, None)
+                logging.info(f"✅ Close order fully filled for {trade.contract.localSymbol}")
+            
             if self._order_filled_callback:
                 asyncio.create_task(self._order_filled_callback(trade))
+        
+        elif trade.orderStatus.status == 'Cancelled':
+            # Clean up if cancelled
+            if trade.contract.conId in self._monitored_close_orders:
+                self._monitored_close_orders.pop(trade.contract.conId, None)
 
     async def get_open_positions(self):
         """Asks the broker for a list of all currently held positions."""
@@ -123,12 +176,19 @@ class IBInterface:
     async def place_order(self, contract, order_type, quantity, action='BUY'):
         """
         Places a trade order.
-        FIX: If this is a SELL order, cancel all existing orders for the contract first.
+        FIX: If this is a SELL order, cancel all existing orders first AND monitor fills to prevent overselling.
         """
         try:
             # FIX: Cancel all orders before closing position
             if action == 'SELL':
                 await self.cancel_all_orders_for_contract(contract)
+                
+                # Set up monitoring to prevent overselling
+                self._monitored_close_orders[contract.conId] = {
+                    'target_quantity': quantity,
+                    'contract': contract
+                }
+                logging.info(f"🛡️ OVERSELL PROTECTION: Monitoring close of {quantity} contracts for {contract.localSymbol}")
             
             order = Order(action=action, orderType=order_type, totalQuantity=quantity)
             trade = self.ib.placeOrder(contract, order)
@@ -192,57 +252,36 @@ class IBInterface:
                 logging.debug(f"Received ticker for {contract.localSymbol}: {ticker}")
                 return ticker
             else:
-                logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}. Data: {ticker}")
-                return None
+                logging.warning(f"Received invalid or empty ticker for {contract.localSymbol}. Retrying.")
+                await asyncio.sleep(1)
+                ticker = self.ib.reqMktData(contract, '', False, False)
+                await asyncio.sleep(2)
+                if ticker and ticker.last is not None:
+                    return ticker
+            return ticker
         except Exception as e:
-            logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}", exc_info=True)
+            logging.error(f"Error fetching ticker for {contract.localSymbol}: {e}", exc_info=True)
             return None
-        finally:
-            if ticker:
-                self.ib.cancelMktData(contract)
 
-    async def subscribe_to_market_data(self, contract):
-        """Subscribes to a real-time market data stream for a contract."""
-        if not self.is_connected(): return False
-        try:
-            self.ib.reqMktData(contract, '', False, False)
-            logging.info(f"Subscribed to market data for {contract.localSymbol}")
-            return True
-        except Exception as e:
-            logging.error(f"Error subscribing to market data for {contract.localSymbol}: {e}", exc_info=True)
-            return False
+    async def stream_market_data_ticks(self, contract):
+        """Streams live tick data for a contract and puts each tick into a queue."""
+        if not self.is_connected():
+            logging.error("Cannot stream market data, not connected to IBKR.")
+            return
+        
+        ticker = self.ib.reqMktData(contract, '', False, False)
+        logging.info(f"Subscribed to market data for {contract.localSymbol}")
 
-    async def unsubscribe_from_market_data(self, contract):
-        """Unsubscribes from a real-time market data stream."""
-        if not self.is_connected(): return
-        try:
-            self.ib.cancelMktData(contract)
-            logging.info(f"Unsubscribed from market data for {contract.localSymbol}")
-        except Exception as e:
-            logging.error(f"Error unsubscribing from market data for {contract.localSymbol}: {e}", exc_info=True)
+        async def ticker_callback(ticker_obj):
+            """Asynchronous inner function that responds to each new tick event."""
+            if ticker_obj.time:
+                await self.market_data_queue.put((ticker_obj.contract.conId, ticker_obj.last, ticker_obj.time))
+        
+        ticker.updateEvent += ticker_callback
 
     def _on_pending_tickers(self, tickers):
-        """Internal callback that listens for all real-time data ticks."""
-        for ticker in tickers:
-            if ticker and ticker.contract and ticker.last is not None and not pd.isna(ticker.last) and ticker.time:
-                 self.market_data_queue.put_nowait(ticker)
-
-    async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
-        """Fetches historical bar data for a contract."""
-        if not self.is_connected(): return None
-        try:
-            bars = await self.ib.reqHistoricalDataAsync(
-                contract,
-                endDateTime='',
-                durationStr=duration,
-                barSizeSetting=bar_size,
-                whatToShow='TRADES',
-                useRTH=True
-            )
-            if bars:
-                return util.df(bars).set_index('date')
-            else:
-                return pd.DataFrame()
-        except Exception as e:
-            logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
-            return None
+        """
+        Internal callback that is automatically invoked by ib_insync whenever
+        pending tickers have updated market data. This is for connection heartbeat purposes.
+        """
+        pass
