@@ -442,7 +442,26 @@ class SignalProcessor:
         entry_price = position_details['entry_price']
         profile = self._get_profile_by_channel_id(position_details['channel_id'])
 
-        if profile['safety_net']['enabled']:
+        # FIX: Build exit strategy info for Telegram notification
+        if profile:
+            momentum_exits = []
+            if profile['exit_strategy']['momentum_exits'].get('psar_enabled'):
+                momentum_exits.append("PSAR")
+            if profile['exit_strategy']['momentum_exits'].get('rsi_hook_enabled'):
+                momentum_exits.append("RSI")
+            
+            trade_info = {
+                'source_channel': profile['channel_name'],
+                'contract_details': contract.localSymbol,
+                'quantity': quantity,
+                'entry_price': entry_price,
+                'sentiment_score': sentiment_score if sentiment_score is not None else 'N/A',
+                'trail_method': profile['exit_strategy']['trail_method'].upper(),
+                'momentum_exit': ", ".join(momentum_exits) if momentum_exits else "None"
+            }
+            await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
+
+        if profile and profile['safety_net']['enabled']:
             trail_percent = profile['safety_net']['native_trail_percent']
             trail_result = await self.ib_interface.attach_native_trail(trade.order, trail_percent)
             
@@ -455,15 +474,6 @@ class SignalProcessor:
                 await self.telegram_interface.send_message(warning_msg)
 
         await self.ib_interface.stream_market_data_ticks(contract)
-
-        trade_info = {
-            'source_channel': profile['channel_name'],
-            'contract_details': contract.localSymbol,
-            'quantity': quantity,
-            'entry_price': entry_price,
-            'sentiment_score': sentiment_score
-        }
-        await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
 
     async def _process_market_data_stream(self):
         """Central loop that processes market data ticks for all open positions."""
