@@ -13,6 +13,7 @@ if project_root not in sys.path:
 from services.config import Config
 from services.state_manager import StateManager
 from services.sentiment_analyzer import SentimentAnalyzer
+from services.signal_parser import SignalParser
 from bot_engine.signal_processor import SignalProcessor
 
 # --- Interfaces ---
@@ -65,6 +66,7 @@ async def main():
         config = Config()
         state_manager = StateManager(config)
         sentiment_analyzer = SentimentAnalyzer()
+        signal_parser = SignalParser(config)
         
         # --- MOCK BROKER SWITCH ---
         use_mock = os.getenv("USE_MOCK_BROKER", "false").lower() == "true"
@@ -87,15 +89,15 @@ async def main():
 
         await telegram_interface.send_message("*🚀 Bot is starting up\\.\\.\\.*")
 
+        # FIX: Corrected constructor call to match signal_processor.py signature
         signal_processor = SignalProcessor(
             config=config,
+            discord_interface=discord_interface,
             ib_interface=ib_interface,
             telegram_interface=telegram_interface,
-            discord_interface=discord_interface,
-            state_manager=state_manager,
+            signal_parser=signal_parser,
             sentiment_analyzer=sentiment_analyzer,
-            initial_positions=loaded_trades,
-            initial_processed_ids=loaded_ids
+            state_manager=state_manager
         )
 
         logging.info("Starting main event loop...")
