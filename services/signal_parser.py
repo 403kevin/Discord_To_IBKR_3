@@ -1,15 +1,24 @@
 import re
 from datetime import datetime, timedelta
 import logging
+from services.tickers import VALID_TICKERS
 
 class SignalParser:
     """
     Parses raw text from Discord messages into structured trade signals.
-    ENHANCED: Now uses per-channel buzzwords from profile configuration.
+    ENHANCED: Now uses per-channel buzzwords from profile configuration
+    AND strict ticker validation from tickers.py whitelist.
+    
+    FIX: Prevents action words (SIZED, PLACE, BELOW) from being parsed as tickers.
     """
     def __init__(self, config):
         self.config = config
+        
+        # Import the ticker whitelist
+        self.valid_tickers = VALID_TICKERS
+        
         # Define common trading terms that should NOT be treated as tickers
+        # These are now redundant since we have a whitelist, but kept for logging
         self.trading_terms = {
             'SIZED', 'PLACE', 'BELOW', 'ABOVE', 'SWEEP', 'BLOCK', 'TRADE',
             'ALERT', 'FLOW', 'LARGE', 'SMALL', 'HUGE', 'MEGA', 'SUPER',
@@ -18,25 +27,6 @@ class SignalParser:
             'LESS', 'SOLD', 'BOUGHT', 'CLOSED', 'OPENED', 'TRIMMED',
             'UNUSUAL', 'OPTION', 'OPTIONS', 'ACTIVITY', 'BULLISH', 'BEARISH',
             'NEUTRAL', 'MIXED', 'STRONG', 'WEAK', 'INSIDE', 'OUTSIDE'
-        }
-        # Common valid tickers (expand this list as needed)
-        self.known_tickers = {
-            'SPY', 'SPX', 'SPXW', 'QQQ', 'IWM', 'DIA', 'VXX', 'UVXY',
-            'TSLA', 'AAPL', 'NVDA', 'AMD', 'AMZN', 'META', 'GOOGL', 'MSFT',
-            'NFLX', 'BABA', 'SHOP', 'SQ', 'PYPL', 'COIN', 'ROKU', 'SNAP',
-            'UBER', 'LYFT', 'ABNB', 'HOOD', 'SOFI', 'PLTR', 'AI', 'PATH',
-            'BA', 'GS', 'JPM', 'BAC', 'WFC', 'C', 'MS', 'V', 'MA', 'AXP',
-            'PENN', 'DKNG', 'WYNN', 'MGM', 'CZR', 'LVS', 'CHPT', 'RIVN',
-            'F', 'GM', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR', 'RIDE',
-            'XOM', 'CVX', 'COP', 'OXY', 'SLB', 'HAL', 'MRO', 'DVN',
-            'PFE', 'MRNA', 'JNJ', 'LLY', 'ABBV', 'BMY', 'MRK', 'GILD',
-            'DIS', 'CMCSA', 'T', 'VZ', 'TMUS', 'CHTR', 'NTES', 'BILI',
-            'WMT', 'TGT', 'COST', 'HD', 'LOW', 'NKE', 'SBUX', 'MCD',
-            'AAL', 'DAL', 'UAL', 'LUV', 'JETS', 'CCL', 'RCL', 'NCLH',
-            'MARA', 'RIOT', 'BTBT', 'MSTR', 'CLSK', 'CAN', 'HUT', 'BITF',
-            'ORCL', 'CRM', 'ADBE', 'NOW', 'INTU', 'CSCO', 'IBM', 'INTC',
-            'AVGO', 'QCOM', 'TXN', 'MU', 'AMAT', 'LRCX', 'KLAC', 'ASML',
-            'CONS', 'DOWN'
         }
 
     def parse_signal(self, text, profile):
@@ -79,6 +69,7 @@ class SignalParser:
     def _parse_multi_step(self, text, profile):
         """
         Multi-step extraction method using per-channel buzzwords.
+        NOW WITH STRICT TICKER VALIDATION.
         """
         # Split text into parts for component extraction
         msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*]+|\*\*', text) if p.strip()]
@@ -142,7 +133,7 @@ class SignalParser:
                     except (ValueError, IndexError):
                         continue
 
-        # Step 4: Extract TICKER with validation
+        # Step 4: Extract TICKER with STRICT WHITELIST VALIDATION
         potential_tickers = [
             part for part in temp_parts 
             if part.isalpha() 
@@ -151,26 +142,20 @@ class SignalParser:
         ]
         
         if potential_tickers:
-            # First, check for known tickers
-            for part in potential_tickers:
-                if part in self.known_tickers:
-                    ticker = part
-                    logging.debug(f"Found known ticker: {ticker}")
-                    break
+            # Filter to only tickers in our whitelist
+            valid_candidates = [t for t in potential_tickers if t in self.valid_tickers]
             
-            # If no known ticker found, validate remaining candidates
-            if not ticker and potential_tickers:
-                valid_candidates = []
-                for candidate in potential_tickers:
-                    if (len(candidate) >= 1 and len(candidate) <= 5 and 
-                        not candidate.startswith('X') and
-                        candidate not in ['A', 'I', 'U', 'Y']):
-                        valid_candidates.append(candidate)
-                
-                if valid_candidates:
-                    valid_candidates.sort(key=len, reverse=True)
-                    ticker = valid_candidates[0]
-                    logging.debug(f"Selected ticker by length: {ticker}")
+            if valid_candidates:
+                # Prefer longer tickers (more specific)
+                valid_candidates.sort(key=len, reverse=True)
+                ticker = valid_candidates[0]
+                logging.debug(f"✅ Selected valid ticker: {ticker}")
+            else:
+                # Log rejected tickers for debugging
+                rejected = [t for t in potential_tickers if t not in self.valid_tickers]
+                if rejected:
+                    logging.info(f"❌ Rejected invalid tickers: {rejected} (not in whitelist)")
+                return None
 
         # Step 5: Validate we have minimum required components
         if not all([action, ticker, strike, contract_type]):
