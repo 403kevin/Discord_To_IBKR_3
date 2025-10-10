@@ -4,11 +4,14 @@ from datetime import datetime, timedelta
 from collections import deque
 import json
 import os
+import pandas as pd
+import numpy as np
 
 class SignalProcessor:
     """
     The orchestrator - manages the full lifecycle of signal processing.
     ENHANCED VERSION: Added comprehensive logging and per-channel buzzwords
+    while maintaining ALL original exit strategies and position management
     """
     def __init__(self, config, discord_interface, ib_interface, telegram_interface,
                  signal_parser, sentiment_analyzer, state_manager):
@@ -196,6 +199,18 @@ class SignalProcessor:
             
             contract, market_price = contract_details
             
+            # Check price limits
+            min_price = profile['trading']['min_price_per_contract']
+            max_price = profile['trading']['max_price_per_contract']
+            
+            if market_price < min_price:
+                logging.info(f"Price ${market_price} below minimum ${min_price} for {signal['ticker']}")
+                return
+            
+            if market_price > max_price:
+                logging.info(f"Price ${market_price} above maximum ${max_price} for {signal['ticker']}")
+                return
+            
             # Calculate position size
             allocation = profile['trading']['funds_allocation']
             quantity = self._calculate_position_size(allocation, market_price)
@@ -204,13 +219,20 @@ class SignalProcessor:
                 logging.info(f"Position size is 0 for {signal['ticker']} at ${market_price}")
                 return
             
-            # Place the order
-            trade = await self.ib_interface.place_order(
-                contract, quantity, profile['trading']['entry_order_type']
-            )
+            # Place the order with native trailing stop if configured
+            if profile['safety_net']['enabled']:
+                trail_percent = profile['safety_net']['native_trail_percent']
+                trade = await self.ib_interface.place_order_with_trail(
+                    contract, quantity, profile['trading']['entry_order_type'],
+                    trail_percent=trail_percent
+                )
+            else:
+                trade = await self.ib_interface.place_order(
+                    contract, quantity, profile['trading']['entry_order_type']
+                )
             
             if trade:
-                # Store position info
+                # Initialize position tracking
                 position_info = {
                     'contract': contract,
                     'quantity': quantity,
@@ -218,7 +240,14 @@ class SignalProcessor:
                     'entry_time': datetime.now(),
                     'profile': profile,
                     'signal': signal,
-                    'trade': trade
+                    'trade': trade,
+                    'highest_price': market_price,
+                    'breakeven_triggered': False,
+                    'last_bar': None,
+                    'bars_history': [],
+                    'atr_values': [],
+                    'psar_values': {'sar': market_price, 'ep': market_price, 'af': 0.02},
+                    'rsi_values': []
                 }
                 
                 self.open_positions[contract.conId] = position_info
@@ -240,45 +269,263 @@ class SignalProcessor:
         return int(allocation / contract_cost)
 
     async def _monitor_open_positions(self):
-        """Monitor positions and execute exit strategies."""
+        """Monitor positions and execute dynamic exit strategies."""
         while not self._shutdown_event.is_set():
             for conId, position in list(self.open_positions.items()):
                 try:
-                    # Get current price
+                    # Get current market data
                     current_data = await self.ib_interface.get_market_data(position['contract'])
                     
                     if current_data and current_data.last > 0:
-                        # Evaluate exit conditions
-                        exit_reason = await self._evaluate_exit_conditions(
-                            position, current_data.last
-                        )
+                        current_price = current_data.last
+                        
+                        # Update tracking data
+                        position['highest_price'] = max(position['highest_price'], current_price)
+                        
+                        # Update bars history for technical indicators
+                        await self._update_bar_data(position, current_price)
+                        
+                        # Evaluate exit conditions based on priority
+                        exit_reason = await self._evaluate_exit_conditions(position, current_price)
                         
                         if exit_reason:
-                            await self._execute_close_trade(conId, exit_reason)
+                            await self._execute_close_trade(conId, exit_reason, current_price)
                             
                 except Exception as e:
                     logging.error(f"Error monitoring position {conId}: {e}")
                     
             await asyncio.sleep(5)
 
+    async def _update_bar_data(self, position, current_price):
+        """Update bar data for technical indicators."""
+        profile = position['profile']
+        exit_config = profile['exit_strategy']
+        
+        # Check if we need to form a new bar
+        min_ticks = exit_config.get('min_ticks_per_bar', 5)
+        
+        if not position['last_bar']:
+            position['last_bar'] = {
+                'open': current_price,
+                'high': current_price,
+                'low': current_price,
+                'close': current_price,
+                'tick_count': 1
+            }
+        else:
+            bar = position['last_bar']
+            bar['high'] = max(bar['high'], current_price)
+            bar['low'] = min(bar['low'], current_price)
+            bar['close'] = current_price
+            bar['tick_count'] += 1
+            
+            # Complete the bar if we have enough ticks
+            if bar['tick_count'] >= min_ticks:
+                position['bars_history'].append(bar.copy())
+                position['last_bar'] = None
+                
+                # Keep only last 50 bars
+                if len(position['bars_history']) > 50:
+                    position['bars_history'] = position['bars_history'][-50:]
+                
+                # Update technical indicators
+                await self._update_technical_indicators(position)
+
+    async def _update_technical_indicators(self, position):
+        """Update ATR, RSI, and PSAR values."""
+        bars = position['bars_history']
+        if len(bars) < 2:
+            return
+        
+        profile = position['profile']
+        exit_config = profile['exit_strategy']
+        
+        # Calculate ATR
+        if exit_config.get('trail_method') == 'atr':
+            atr_period = exit_config['trail_settings'].get('atr_period', 14)
+            atr = self._calculate_atr(bars, atr_period)
+            if atr:
+                position['atr_values'].append(atr)
+        
+        # Calculate RSI
+        if exit_config.get('momentum_exits', {}).get('rsi_hook_enabled'):
+            rsi_period = exit_config['momentum_exits']['rsi_settings'].get('period', 14)
+            rsi = self._calculate_rsi(bars, rsi_period)
+            if rsi:
+                position['rsi_values'].append(rsi)
+        
+        # Update PSAR
+        if exit_config.get('momentum_exits', {}).get('psar_enabled'):
+            self._update_psar(position, bars[-1])
+
+    def _calculate_atr(self, bars, period):
+        """Calculate Average True Range."""
+        if len(bars) < period:
+            return None
+        
+        true_ranges = []
+        for i in range(1, len(bars)):
+            high = bars[i]['high']
+            low = bars[i]['low']
+            prev_close = bars[i-1]['close']
+            
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+        
+        if len(true_ranges) >= period:
+            return np.mean(true_ranges[-period:])
+        return None
+
+    def _calculate_rsi(self, bars, period):
+        """Calculate Relative Strength Index."""
+        if len(bars) < period + 1:
+            return None
+        
+        closes = [bar['close'] for bar in bars]
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        
+        avg_gain = np.mean(gains[-period:]) if gains else 0
+        avg_loss = np.mean(losses[-period:]) if losses else 0
+        
+        if avg_loss == 0:
+            return 100
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    def _update_psar(self, position, latest_bar):
+        """Update Parabolic SAR values."""
+        psar = position['psar_values']
+        profile = position['profile']
+        settings = profile['exit_strategy'].get('momentum_exits', {}).get('psar_settings', {})
+        
+        increment = settings.get('increment', 0.02)
+        max_af = settings.get('max', 0.2)
+        
+        # Update extreme point
+        if latest_bar['high'] > psar['ep']:
+            psar['ep'] = latest_bar['high']
+            psar['af'] = min(psar['af'] + increment, max_af)
+        
+        # Calculate new SAR
+        psar['sar'] = psar['sar'] + psar['af'] * (psar['ep'] - psar['sar'])
+
     async def _evaluate_exit_conditions(self, position, current_price):
-        """Evaluate all exit strategies for a position."""
+        """Evaluate all exit strategies based on configured priority."""
         profile = position['profile']
         exit_config = profile['exit_strategy']
         entry_price = position['entry_price']
         
-        # Check breakeven
-        if exit_config.get('breakeven_trigger_percent'):
-            trigger = exit_config['breakeven_trigger_percent'] / 100
-            if current_price >= entry_price * (1 + trigger):
-                if current_price <= entry_price:
-                    return "Breakeven Stop"
+        # Get exit priority
+        exit_priority = exit_config.get('exit_priority', 
+            ['breakeven', 'rsi_hook', 'psar_flip', 'atr_trail', 'pullback_stop'])
         
-        # Add other exit logic here (ATR, RSI, PSAR, etc.)
+        for exit_type in exit_priority:
+            exit_reason = None
+            
+            if exit_type == 'breakeven':
+                exit_reason = self._check_breakeven(position, current_price)
+            elif exit_type == 'rsi_hook' and exit_config.get('momentum_exits', {}).get('rsi_hook_enabled'):
+                exit_reason = self._check_rsi_hook(position, current_price)
+            elif exit_type == 'psar_flip' and exit_config.get('momentum_exits', {}).get('psar_enabled'):
+                exit_reason = self._check_psar_flip(position, current_price)
+            elif exit_type == 'atr_trail' and exit_config.get('trail_method') == 'atr':
+                exit_reason = self._check_atr_trail(position, current_price)
+            elif exit_type == 'pullback_stop' and exit_config.get('trail_method') == 'pullback':
+                exit_reason = self._check_pullback_stop(position, current_price)
+            
+            if exit_reason:
+                return exit_reason
         
         return None
 
-    async def _execute_close_trade(self, conId, reason):
+    def _check_breakeven(self, position, current_price):
+        """Check breakeven stop condition."""
+        profile = position['profile']
+        exit_config = profile['exit_strategy']
+        entry_price = position['entry_price']
+        
+        trigger_percent = exit_config.get('breakeven_trigger_percent', 0)
+        if trigger_percent <= 0:
+            return None
+        
+        trigger_price = entry_price * (1 + trigger_percent / 100)
+        
+        # Check if we should trigger breakeven
+        if not position['breakeven_triggered'] and current_price >= trigger_price:
+            position['breakeven_triggered'] = True
+            logging.info(f"Breakeven triggered for {position['signal']['ticker']} at ${current_price:.2f}")
+        
+        # Check if we should exit at breakeven
+        if position['breakeven_triggered'] and current_price <= entry_price:
+            return "Breakeven Stop"
+        
+        return None
+
+    def _check_rsi_hook(self, position, current_price):
+        """Check RSI hook exit condition."""
+        if len(position['rsi_values']) < 2:
+            return None
+        
+        profile = position['profile']
+        settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
+        overbought = settings.get('overbought_level', 70)
+        
+        # Check for RSI hook pattern
+        if (position['rsi_values'][-2] > overbought and 
+            position['rsi_values'][-1] < overbought):
+            return "RSI Hook"
+        
+        return None
+
+    def _check_psar_flip(self, position, current_price):
+        """Check PSAR flip exit condition."""
+        psar = position['psar_values']
+        
+        # Exit if price crosses below SAR
+        if current_price < psar['sar']:
+            return "PSAR Flip"
+        
+        return None
+
+    def _check_atr_trail(self, position, current_price):
+        """Check ATR-based trailing stop."""
+        if not position['atr_values']:
+            return None
+        
+        profile = position['profile']
+        settings = profile['exit_strategy']['trail_settings']
+        multiplier = settings.get('atr_multiplier', 1.5)
+        
+        # Calculate stop level
+        atr = position['atr_values'][-1]
+        stop_distance = atr * multiplier
+        stop_level = position['highest_price'] - stop_distance
+        
+        if current_price <= stop_level:
+            return f"ATR Trail ({multiplier}x)"
+        
+        return None
+
+    def _check_pullback_stop(self, position, current_price):
+        """Check pullback percentage trailing stop."""
+        profile = position['profile']
+        settings = profile['exit_strategy']['trail_settings']
+        pullback_percent = settings.get('pullback_percent', 10)
+        
+        # Calculate stop level
+        stop_level = position['highest_price'] * (1 - pullback_percent / 100)
+        
+        if current_price <= stop_level:
+            return f"Pullback Stop ({pullback_percent}%)"
+        
+        return None
+
+    async def _execute_close_trade(self, conId, reason, current_price=None):
         """Close a position."""
         try:
             position = self.open_positions[conId]
@@ -295,13 +542,27 @@ class SignalProcessor:
             )
             
             if trade:
+                # Calculate P&L
+                if current_price:
+                    exit_price = current_price
+                else:
+                    exit_price = trade.orderStatus.avgFillPrice if trade.orderStatus.avgFillPrice else 0
+                
+                entry_total = position['entry_price'] * position['quantity'] * 100
+                exit_total = exit_price * position['quantity'] * 100
+                pnl = exit_total - entry_total
+                pnl_percent = (pnl / entry_total) * 100 if entry_total > 0 else 0
+                
                 # Remove from tracking
                 del self.open_positions[conId]
                 
                 # Send notification
+                position['exit_price'] = exit_price
+                position['pnl'] = pnl
+                position['pnl_percent'] = pnl_percent
                 await self._send_trade_notification(position, 'EXIT', reason)
                 
-                logging.info(f"✅ TRADE CLOSED - {position['signal']['ticker']} | Reason: {reason}")
+                logging.info(f"✅ TRADE CLOSED - {position['signal']['ticker']} | Reason: {reason} | P&L: ${pnl:.2f} ({pnl_percent:.1f}%)")
                 
         except Exception as e:
             logging.error(f"Error closing position {conId}: {e}")
@@ -311,20 +572,46 @@ class SignalProcessor:
         try:
             signal = position_info['signal']
             profile = position_info['profile']
+            channel_name = profile.get('channel_name', 'Unknown')
             
             if status == 'ENTRY':
+                sentiment_text = "N/A"
+                if signal.get('sentiment'):
+                    score = signal['sentiment'].get('compound', 0)
+                    sentiment_text = f"{score:.2f}"
+                
+                # Get exit strategy info
+                trail_method = profile['exit_strategy'].get('trail_method', 'N/A')
+                momentum_exits = []
+                if profile['exit_strategy'].get('momentum_exits', {}).get('psar_enabled'):
+                    momentum_exits.append('PSAR')
+                if profile['exit_strategy'].get('momentum_exits', {}).get('rsi_hook_enabled'):
+                    momentum_exits.append('RSI')
+                momentum_text = ', '.join(momentum_exits) if momentum_exits else 'None'
+                
                 message = (
                     f"✅ *Trade Entry Confirmed* ✅\n\n"
-                    f"*Source Channel:* {profile.get('channel_name', 'Unknown')}\n"
-                    f"*Contract:* {signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type']}\n"
+                    f"*Source Channel:* {channel_name}\n"
+                    f"*Contract:* {signal['ticker']} {position_info['contract'].localSymbol}\n"
                     f"*Quantity:* {position_info['quantity']}\n"
                     f"*Entry Price:* ${position_info['entry_price']:.2f}\n"
+                    f"*Vader Sentiment:* {sentiment_text}\n"
+                    f"*Trail Method:* {trail_method.upper()}\n"
+                    f"*Momentum Exit:* {momentum_text}"
                 )
             else:  # EXIT
+                pnl = position_info.get('pnl', 0)
+                pnl_percent = position_info.get('pnl_percent', 0)
+                exit_price = position_info.get('exit_price', 0)
+                
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                
                 message = (
-                    f"🔴 *SELL Order Executed*\n\n"
-                    f"*Contract:* {signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type']}\n"
-                    f"*Exit Reason:* {exit_reason}\n"
+                    f"{emoji} *SELL Order Executed*\n\n"
+                    f"*Contract:* {signal['ticker']} {position_info['contract'].localSymbol}\n"
+                    f"*Exit Price:* ${exit_price:.2f}\n"
+                    f"*Reason:* {exit_reason}\n"
+                    f"*P&L:* ${pnl:.2f} ({pnl_percent:.1f}%)"
                 )
             
             await self.telegram_interface.send_message(message)
@@ -335,7 +622,7 @@ class SignalProcessor:
     async def _reconciliation_loop(self):
         """Periodic reconciliation with broker."""
         while not self._shutdown_event.is_set():
-            await asyncio.sleep(60)  # Run every 60 seconds
+            await asyncio.sleep(self.config.reconciliation_interval_seconds)
             
             try:
                 logging.info("--- Starting periodic position reconciliation ---")
@@ -343,17 +630,34 @@ class SignalProcessor:
                 # Get broker positions
                 ib_positions = await self.ib_interface.get_open_positions()
                 
-                # Skip zero positions
+                # Log all positions found
+                for pos in ib_positions:
+                    logging.info(f"position: {pos}")
+                
+                # Filter out zero positions
                 active_ib_positions = [p for p in ib_positions if p.position != 0]
                 
-                logging.info(f"Reconciliation: Found {len(active_ib_positions)} active positions at broker")
+                logging.info(f"Reconciliation: Found {len(active_ib_positions)} active positions at broker (skipped {len(ib_positions) - len(active_ib_positions)} zero positions)")
                 
                 # Check for untracked positions
+                untracked_count = 0
                 for ib_pos in active_ib_positions:
                     if ib_pos.contract.conId not in self.open_positions:
-                        logging.warning(f"Found untracked position: {ib_pos.contract.localSymbol}")
-                        # Optionally adopt or close it
+                        untracked_count += 1
+                        logging.warning(f"Found untracked position: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
                 
+                if untracked_count > 0:
+                    logging.warning(f"Reconciliation: Found {untracked_count} untracked position(s) at broker")
+                
+                # Check for positions we track but broker doesn't have
+                for conId, position in list(self.open_positions.items()):
+                    broker_has_it = any(p.contract.conId == conId for p in active_ib_positions)
+                    if not broker_has_it:
+                        logging.warning(f"Position {position['signal']['ticker']} not found at broker, removing from tracking")
+                        del self.open_positions[conId]
+                
+                # Save state
+                await self.state_manager.save_state(self.open_positions)
                 logging.info("--- Position reconciliation complete ---")
                 
             except Exception as e:
@@ -365,19 +669,46 @@ class SignalProcessor:
         
         try:
             ib_positions = await self.ib_interface.get_open_positions()
+            
+            # Filter out zero positions
             active_positions = [p for p in ib_positions if p.position != 0]
             
             logging.info(f"Reconciliation: Found {len(active_positions)} active positions at broker")
             
-            # Reconcile with saved state
+            # Check against saved state
             for ib_pos in active_positions:
-                if ib_pos.contract.conId not in self.open_positions:
-                    logging.warning(f"Untracked position found: {ib_pos.contract.localSymbol}")
+                if ib_pos.contract.conId in self.open_positions:
+                    logging.info(f"Position {ib_pos.contract.localSymbol} verified with broker")
+                else:
+                    logging.warning(f"Untracked position found: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
             
+            # Remove positions from state that broker doesn't have
+            for conId in list(self.open_positions.keys()):
+                if not any(p.contract.conId == conId for p in active_positions):
+                    logging.warning(f"Removing stale position {conId} from state")
+                    del self.open_positions[conId]
+            
+            await self.state_manager.save_state(self.open_positions)
             logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
             
         except Exception as e:
             logging.error(f"Error during initial reconciliation: {e}")
+
+    async def handle_fill_event(self, trade):
+        """Handle fill events from IB."""
+        try:
+            contract = trade.contract
+            
+            # Find the position this fill belongs to
+            for conId, position in self.open_positions.items():
+                if position['contract'].conId == contract.conId:
+                    # Update fill info
+                    position['trade'] = trade
+                    position['actual_fill_price'] = trade.orderStatus.avgFillPrice
+                    logging.info(f"Fill event: {contract.localSymbol} filled at ${trade.orderStatus.avgFillPrice:.2f}")
+                    break
+        except Exception as e:
+            logging.error(f"Error handling fill event: {e}")
 
     async def shutdown(self):
         """Graceful shutdown."""
