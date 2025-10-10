@@ -60,19 +60,18 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": True,
+            "enabled": False, #False while testing
             "hour": 14,
             "minute": 00
         }
         
-        # FIX: Reconciliation interval now actually used by signal_processor
         self.reconciliation_interval_seconds = 60  # Check every 60 seconds for ghost positions
 
         # =================================================================
         # --- LEGEND: API & CONNECTION SETTINGS ---
         # =================================================================
         self.ibkr_host = "127.0.0.1"
-        self.ibkr_port = 7497
+        self.ibkr_port = 7497 #4002 for gateway
         self.ibkr_client_id = 1
 
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
