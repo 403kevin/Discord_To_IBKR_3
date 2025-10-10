@@ -1,685 +1,386 @@
-# bot_engine/signal_processor.py
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from collections import deque
-from datetime import datetime, timedelta, timezone
-import pandas as pd
-import pandas_ta as ta
-import pytz
-
-from services.signal_parser import SignalParser
+import json
+import os
 
 class SignalProcessor:
     """
-    The central brain of the trading bot. This class orchestrates the entire
-    process from signal detection to trade execution and management.
-    FIX: Enhanced reconciliation now detects quantity mismatches, not just presence/absence.
+    The orchestrator - manages the full lifecycle of signal processing.
+    ENHANCED VERSION: Added comprehensive logging and per-channel buzzwords
     """
-    def __init__(self, config, ib_interface, telegram_interface, discord_interface, 
-                 state_manager, sentiment_analyzer, initial_positions, initial_processed_ids):
+    def __init__(self, config, discord_interface, ib_interface, telegram_interface,
+                 signal_parser, sentiment_analyzer, state_manager):
         self.config = config
+        self.discord_interface = discord_interface
         self.ib_interface = ib_interface
         self.telegram_interface = telegram_interface
-        self.discord_interface = discord_interface
-        self.state_manager = state_manager
+        self.signal_parser = signal_parser
         self.sentiment_analyzer = sentiment_analyzer
-        self.signal_parser = SignalParser(config)
-
-        # Live operational state
-        self.open_positions = initial_positions
-        self.processed_message_ids = deque(initial_processed_ids, maxlen=config.processed_message_cache_size)
-        self.channel_cooldowns = {}
-        self.global_cooldown_until = datetime.now()
-        self.bot_start_time = datetime.now(timezone.utc)
-
-        # Real-time data management
-        self.position_data_cache = {}
-        self.tick_buffer = {}
-        self.last_bar_timestamp = {}
-        
-        # Graceful exit state
-        self.trailing_highs_and_lows = {}
-        self.atr_stop_prices = {}
-        self.breakeven_activated = {}
-
+        self.state_manager = state_manager
+        self.open_positions = {}
         self._shutdown_event = asyncio.Event()
+        self._processed_messages = {}
+        self._last_trade_time = None
+        self._startup_time = datetime.now()
+        
+        # Initialize message tracking for each channel
+        for profile in self.config.channel_profiles:
+            if profile['enabled']:
+                channel_id = profile['channel_id']
+                self._processed_messages[channel_id] = deque(maxlen=1000)
+                
+        logging.info(f"SignalProcessor initialized with {len(self._processed_messages)} active channels")
 
     async def start(self):
-        """
-        The main entry point. Sets up and runs all concurrent tasks 
-        for the bot's operations correctly.
-        """
+        """Main entry point - starts all processing tasks."""
         logging.info("Starting Signal Processor...")
         
-        self.ib_interface.set_order_filled_callback(self._on_order_filled)
+        # Load existing state
+        self.open_positions = await self.state_manager.load_state()
+        logging.info(f"Loaded {len(self.open_positions)} open positions from state")
         
-        await self._reconcile_state_with_broker()
-
-        await self._resubscribe_to_open_positions()
-
+        # Perform initial reconciliation
+        await self._initial_reconciliation()
+        
+        # Start all async tasks
         tasks = [
-            asyncio.create_task(self._poll_discord_for_signals()),
-            asyncio.create_task(self._process_market_data_stream()),
-            asyncio.create_task(self._reconcile_positions_periodically())
+            self._poll_discord_for_signals(),
+            self._monitor_open_positions(),
+            self._reconciliation_loop()
         ]
         
         await asyncio.gather(*tasks)
-        await self.shutdown()
-
-    async def shutdown(self):
-        """Gracefully shuts down all bot components."""
-        if not self._shutdown_event.is_set():
-            logging.info("Initiating graceful shutdown...")
-            self._shutdown_event.set()
-
-    async def _reconcile_state_with_broker(self):
-        """
-        Compares the bot's internal state with the broker's actual portfolio
-        at startup to eliminate ghost positions and adopt untracked ones.
-        FIX: Now also detects and corrects quantity mismatches.
-        """
-        logging.info("Performing initial state reconciliation with broker...")
-        broker_positions = await self.ib_interface.get_open_positions()
-        
-        # FIX: Don't filter out zero positions yet - we need them to detect closures
-        broker_positions_dict = {pos.contract.conId: pos for pos in broker_positions}
-        internal_conIds = set(self.open_positions.keys())
-        broker_conIds = set(broker_positions_dict.keys())
-
-        # Check 1: Ghost positions (bot has it, broker doesn't OR broker shows 0)
-        ghost_positions = []
-        for conId in internal_conIds:
-            broker_pos = broker_positions_dict.get(conId)
-            if broker_pos is None or broker_pos.position == 0:
-                ghost_positions.append(conId)
-        
-        if ghost_positions:
-            logging.warning(f"Reconciliation: Found {len(ghost_positions)} ghost position(s) in state file. Removing.")
-            for conId in ghost_positions:
-                self._cleanup_position_data(conId)
-        
-        # Check 2: Untracked positions (broker has it, bot doesn't)
-        untracked_positions = broker_conIds - internal_conIds
-        if untracked_positions:
-            logging.info(f"Reconciliation: Found {len(untracked_positions)} untracked position(s) at broker. Adopting them.")
-            for conId in untracked_positions:
-                pos = broker_positions_dict[conId]
-                if pos.position != 0:  # Only adopt non-zero positions
-                    entry_price = pos.avgCost / 100 if pos.contract.secType == 'OPT' else pos.avgCost
-                    position_details = {
-                        'contract': pos.contract, 'entry_price': entry_price,
-                        'quantity': abs(pos.position), 'entry_time': datetime.now(),
-                        'channel_id': self._get_fallback_channel_id()
-                    }
-                    self.open_positions[conId] = position_details
-                    self.trailing_highs_and_lows[conId] = {'high': entry_price, 'low': entry_price}
-                    self.breakeven_activated[conId] = False
-                    logging.info(f"Adopted position: {pos.position} of {pos.contract.localSymbol}")
-        
-        # Check 3: Quantity mismatches (both have position, but different quantities)
-        # FIX: NEW CHECK - This is what was missing!
-        for conId in internal_conIds:
-            if conId in ghost_positions:
-                continue  # Already handled above
-            
-            broker_pos = broker_positions_dict.get(conId)
-            if broker_pos and broker_pos.position != 0:
-                internal_qty = self.open_positions[conId]['quantity']
-                broker_qty = abs(broker_pos.position)  # Use absolute value
-                
-                if internal_qty != broker_qty:
-                    logging.error(
-                        f"🚨 QUANTITY MISMATCH DETECTED: {broker_pos.contract.localSymbol}\n"
-                        f"   Bot internal state: {internal_qty} contracts\n"
-                        f"   Broker actual state: {broker_pos.position} contracts\n"
-                        f"   ADOPTING BROKER'S TRUTH AS REALITY"
-                    )
-                    
-                    # Adopt broker's quantity as the truth
-                    if broker_pos.position < 0:
-                        # Oversold position detected!
-                        logging.critical(
-                            f"⚠️ OVERSOLD POSITION: {broker_pos.contract.localSymbol} is SHORT {broker_pos.position} contracts!\n"
-                            f"   This should not happen. Manual intervention may be required."
-                        )
-                        
-                        # Send urgent Telegram alert
-                        alert_msg = (
-                            f"🚨 *CRITICAL: OVERSOLD POSITION DETECTED*\n\n"
-                            f"*Contract:* `{broker_pos.contract.localSymbol}`\n"
-                            f"*Bot thought:* {internal_qty} contracts\n"
-                            f"*Broker shows:* {broker_pos.position} contracts \\(SHORT\\)\n\n"
-                            f"*Action:* Bot will attempt to close\\. Manual review recommended\\."
-                        )
-                        await self.telegram_interface.send_message(alert_msg)
-                        
-                        # Try to close the oversold position
-                        try:
-                            await self._execute_close_trade(conId, "Emergency: Oversold Position Closure")
-                        except Exception as e:
-                            logging.error(f"Failed to close oversold position: {e}", exc_info=True)
-                    else:
-                        # Normal mismatch - update internal state to match broker
-                        self.open_positions[conId]['quantity'] = broker_qty
-                        logging.info(f"Updated internal quantity to match broker: {broker_qty}")
-
-        self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-        logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
-
-    async def _reconcile_positions_periodically(self):
-        """
-        Periodically syncs the bot's internal state with the broker's actual portfolio
-        to prevent state desynchronization (managing "ghost" trades).
-        FIX: Now also detects and corrects quantity mismatches during periodic checks.
-        """
-        while not self._shutdown_event.is_set():
-            try:
-                await asyncio.sleep(self.config.reconciliation_interval_seconds)
-                logging.info("--- Starting periodic position reconciliation ---")
-                
-                broker_positions = await self.ib_interface.get_open_positions()
-                broker_positions_dict = {pos.contract.conId: pos for pos in broker_positions}
-                internal_conIds = set(self.open_positions.keys())
-                broker_conIds = set(broker_positions_dict.keys())
-
-                # Check 1: Ghost positions
-                ghost_positions = []
-                for conId in internal_conIds:
-                    broker_pos = broker_positions_dict.get(conId)
-                    if broker_pos is None or broker_pos.position == 0:
-                        ghost_positions.append(conId)
-                
-                if ghost_positions:
-                    logging.warning(f"Reconciliation: Found {len(ghost_positions)} ghost position(s). Removing from internal state.")
-                    for conId in ghost_positions:
-                        await self.ib_interface.unsubscribe_from_market_data(self.open_positions[conId]['contract'])
-                        self._cleanup_position_data(conId)
-                    self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-                
-                # Check 2: Untracked positions
-                untracked_positions = broker_conIds - internal_conIds
-                if untracked_positions:
-                    logging.warning(f"Reconciliation: Found {len(untracked_positions)} untracked position(s) at broker. Adopting them.")
-                    for conId in untracked_positions:
-                        pos = broker_positions_dict[conId]
-                        if pos.position != 0:
-                            entry_price = pos.avgCost / 100 if pos.contract.secType == 'OPT' else pos.avgCost
-                            position_details = {
-                                'contract': pos.contract, 'entry_price': entry_price,
-                                'quantity': abs(pos.position), 'entry_time': datetime.now(),
-                                'channel_id': self._get_fallback_channel_id()
-                            }
-                            self.open_positions[conId] = position_details
-                            self.trailing_highs_and_lows[conId] = {'high': entry_price, 'low': entry_price}
-                            self.breakeven_activated[conId] = False
-                            logging.info(f"Adopted untracked position: {pos.position} of {pos.contract.localSymbol}")
-                    self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-                
-                # Check 3: Quantity mismatches (NEW - This is what was missing!)
-                mismatches_found = False
-                for conId in internal_conIds:
-                    if conId in ghost_positions:
-                        continue
-                    
-                    broker_pos = broker_positions_dict.get(conId)
-                    if broker_pos and broker_pos.position != 0:
-                        internal_qty = self.open_positions[conId]['quantity']
-                        broker_qty = abs(broker_pos.position)
-                        
-                        if internal_qty != broker_qty:
-                            logging.error(
-                                f"🚨 QUANTITY MISMATCH: {broker_pos.contract.localSymbol}\n"
-                                f"   Bot: {internal_qty}, Broker: {broker_pos.position}"
-                            )
-                            
-                            if broker_pos.position < 0:
-                                # Oversold detected!
-                                logging.critical(f"⚠️ OVERSOLD POSITION: {broker_pos.contract.localSymbol} is SHORT {broker_pos.position}!")
-                                
-                                alert_msg = (
-                                    f"🚨 *OVERSOLD POSITION DETECTED*\n\n"
-                                    f"*Contract:* `{broker_pos.contract.localSymbol}`\n"
-                                    f"*Bot:* {internal_qty} contracts\n"
-                                    f"*Broker:* {broker_pos.position} contracts \\(SHORT\\)\n\n"
-                                    f"*Attempting emergency closure\\.\\.\\.*"
-                                )
-                                await self.telegram_interface.send_message(alert_msg)
-                                
-                                # Emergency close
-                                try:
-                                    await self._execute_close_trade(conId, "Emergency: Oversold Position")
-                                except Exception as e:
-                                    logging.error(f"Failed to close oversold position: {e}", exc_info=True)
-                            else:
-                                # Normal mismatch - sync to broker
-                                self.open_positions[conId]['quantity'] = broker_qty
-                                logging.info(f"Synced quantity to broker: {broker_qty}")
-                                mismatches_found = True
-                
-                if mismatches_found:
-                    self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-                
-                logging.info("--- Position reconciliation complete ---")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logging.error(f"Error during position reconciliation: {e}", exc_info=True)
-
-    async def _resubscribe_to_open_positions(self):
-        """Re-subscribes to market data for positions that existed before the bot started."""
-        for conId, position in self.open_positions.items():
-            contract = position['contract']
-            await self.ib_interface.stream_market_data_ticks(contract)
 
     async def _poll_discord_for_signals(self):
-        """Task to continuously poll Discord for new signals."""
+        """Continuously polls Discord channels for new messages."""
         while not self._shutdown_event.is_set():
-            now = datetime.now()
-            if now < self.global_cooldown_until:
-                await asyncio.sleep(1)
-                continue
-
-            if self._is_eod():
-                await self.flatten_all_positions()
-                await self.shutdown()
-                break
-
-            for profile in self.config.profiles:
-                if not profile['enabled']: continue
-                channel_id = profile['channel_id']
-                if now < self.channel_cooldowns.get(channel_id, now): continue
-                raw_messages = await self.discord_interface.poll_for_new_messages(channel_id, self.processed_message_ids)
-                if raw_messages:
-                    await self._process_new_signals(raw_messages, profile)
-                self.channel_cooldowns[channel_id] = now + timedelta(seconds=self.config.delay_between_channels)
-
-            await asyncio.sleep(self.config.delay_after_full_cycle)
-
-    async def _process_new_signals(self, messages, profile):
-        """Processes a batch of new messages for a given profile."""
-        for msg_id, msg_content, msg_timestamp in messages:
-            # FIX: Timestamp filter - ignore messages from before bot started
-            if msg_timestamp < self.bot_start_time:
-                logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
-                self.processed_message_ids.append(msg_id)
-                continue
-            
-            logging.info(f"Processing new message {msg_id} from '{profile['channel_name']}'")
-            
-            # FIX: Check for ignore keywords FIRST
-            if any(word.lower() in msg_content.lower() for word in self.config.buzzwords_ignore):
-                logging.info(f"Message {msg_id} contains ignore keyword. Skipping.")
-                self.processed_message_ids.append(msg_id)
-                continue
-            
-            parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
-            
-            if parsed_signal:
-                await self._execute_trade(parsed_signal, profile)
-            
-            self.processed_message_ids.append(msg_id)
-            self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-
-    async def _execute_trade(self, signal, profile):
-        """Executes a trade based on a parsed signal and the profile's configuration."""
-        sentiment_score = None
-        
-        if self.config.sentiment_filter['enabled']:
-            sentiment_score = self.sentiment_analyzer.analyze_sentiment(signal.get('raw_message', ''))
-            threshold = self.config.sentiment_filter['sentiment_threshold']
-            put_threshold = self.config.sentiment_filter.get('put_sentiment_threshold', threshold)
-            
-            is_call = signal['contract_type'] == 'CALL'
-            passes_filter = (is_call and sentiment_score >= threshold) or \
-                          (not is_call and sentiment_score <= put_threshold)
-            
-            if not passes_filter:
-                veto_info = {
-                    'source_channel': profile['channel_name'],
-                    'contract_details': f"{signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type'][0]}",
-                    'reason': f"Sentiment filter (score: {sentiment_score:.3f})"
-                }
-                await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
-                return
-
-        try:
-            contract = await self.ib_interface.create_option_contract(
-                signal['ticker'], signal['expiry_date'], signal['strike'], signal['contract_type']
-            )
-            
-            if not contract:
-                veto_info = {
-                    'source_channel': profile['channel_name'],
-                    'contract_details': f"{signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type'][0]}",
-                    'reason': 'Contract creation failed - invalid/expired contract'
-                }
-                await self.telegram_interface.send_trade_notification(veto_info, "VETOED")
-                return
-
-            ticker = await self.ib_interface.get_live_ticker(contract)
-            if not ticker or pd.isna(ticker.ask) or ticker.ask <= 0:
-                logging.error(f"Could not get a valid ask price for {contract.localSymbol}. Cannot size position.")
-                return
-            
-            ask_price = ticker.ask
-            if not (profile['trading']['min_price_per_contract'] <= ask_price <= profile['trading']['max_price_per_contract']):
-                logging.warning(f"Trade for {contract.localSymbol} vetoed. Ask price ${ask_price} is outside limits.")
-                return
-            
-            quantity = int(profile['trading']['funds_allocation'] / (ask_price * 100))
-            if quantity == 0:
-                logging.warning(f"Trade for {contract.localSymbol} vetoed. Not enough funds to purchase a single contract at ${ask_price}.")
-                return
-
-            logging.info(f"Calculated quantity: {quantity} for {contract.localSymbol} at ask price ${ask_price}")
-            
-            order = await self.ib_interface.place_order(contract, 'MKT', quantity)
-            if order:
-                order.channel_id = profile['channel_id']
-                order.sentiment_score = sentiment_score
-                logging.info(f"Successfully placed order for {quantity} of {contract.localSymbol}")
-
-        except Exception as e:
-            logging.error(f"An error occurred during trade execution: {e}", exc_info=True)
-
-    async def _on_order_filled(self, trade):
-        """Callback executed by IBInterface when an order is filled."""
-        contract = trade.contract
-        order = trade.order
-        fill_price = trade.orderStatus.avgFillPrice
-        quantity = trade.orderStatus.filled
-
-        if order.action == "BUY":
-            channel_id = getattr(order, 'channel_id', self._get_fallback_channel_id())
-            sentiment_score = getattr(order, 'sentiment_score', None)
-            
-            logging.info(f"Entry fill: {quantity} of {contract.localSymbol} at ${fill_price}")
-
-            position_details = {
-                'contract': contract, 'entry_price': fill_price, 'quantity': quantity,
-                'entry_time': datetime.now(), 'channel_id': channel_id
-            }
-            self.open_positions[contract.conId] = position_details
-            self.trailing_highs_and_lows[contract.conId] = {'high': fill_price, 'low': fill_price}
-            self.breakeven_activated[contract.conId] = False
-
-            await self._post_fill_actions(trade, position_details, sentiment_score)
-            
-            self.global_cooldown_until = datetime.now() + timedelta(seconds=self.config.cooldown_after_trade_seconds)
-            logging.info(f"Global cooldown activated for {self.config.cooldown_after_trade_seconds} seconds")
-        
-        elif order.action == "SELL":
-            if contract.conId in self.open_positions:
-                position_to_close = self.open_positions.pop(contract.conId)
-                logging.info(f"Exit fill: {quantity} of {contract.localSymbol} at ${fill_price}")
-        
-                pnl = (fill_price - position_to_close['entry_price']) * quantity * 100
-                profile = self._get_profile_by_channel_id(position_to_close['channel_id'])
-                
-                if hasattr(order, 'exit_reason'):
-                    exit_reason = order.exit_reason
-                elif order.orderType == 'TRAIL':
-                    exit_reason = f"Native Trail Stop ({order.trailingPercent}%)"
-                else:
-                    exit_reason = "Manual/Unknown"
-                
-                trade_info = {
-                    'contract_details': contract.localSymbol,
-                    'exit_price': fill_price,
-                    'pnl': f"${pnl:.2f}",
-                    'reason': exit_reason
-                }
-                await self.telegram_interface.send_trade_notification(trade_info, "CLOSED")
-                self._cleanup_position_data(contract.conId)
-                self.state_manager.save_state(self.open_positions, self.processed_message_ids)
-            else:
-                logging.warning(f"Received a SELL fill for an untracked position: {contract.localSymbol}")
-
-    async def _post_fill_actions(self, trade, position_details, sentiment_score):
-        """Actions to take after an ENTRY order is confirmed filled."""
-        contract = position_details['contract']
-        quantity = position_details['quantity']
-        entry_price = position_details['entry_price']
-        profile = self._get_profile_by_channel_id(position_details['channel_id'])
-
-        # FIX: Build exit strategy info for Telegram notification
-        if profile:
-            momentum_exits = []
-            if profile['exit_strategy']['momentum_exits'].get('psar_enabled'):
-                momentum_exits.append("PSAR")
-            if profile['exit_strategy']['momentum_exits'].get('rsi_hook_enabled'):
-                momentum_exits.append("RSI")
-            
-            trade_info = {
-                'source_channel': profile['channel_name'],
-                'contract_details': contract.localSymbol,
-                'quantity': quantity,
-                'entry_price': entry_price,
-                'sentiment_score': sentiment_score if sentiment_score is not None else 'N/A',
-                'trail_method': profile['exit_strategy']['trail_method'].upper(),
-                'momentum_exit': ", ".join(momentum_exits) if momentum_exits else "None"
-            }
-            await self.telegram_interface.send_trade_notification(trade_info, "OPENED")
-
-        if profile and profile['safety_net']['enabled']:
-            trail_percent = profile['safety_net']['native_trail_percent']
-            trail_result = await self.ib_interface.attach_native_trail(trade.order, trail_percent)
-            
-            if trail_result is None:
-                warning_msg = (
-                    f"⚠️ *Warning: Native trail failed to attach*\n\n"
-                    f"*Contract:* `{contract.localSymbol}`\n"
-                    f"*Position still active but without broker\\-level stop*"
-                )
-                await self.telegram_interface.send_message(warning_msg)
-
-        await self.ib_interface.stream_market_data_ticks(contract)
-
-    async def _process_market_data_stream(self):
-        """Central loop that processes market data ticks for all open positions."""
-        while not self._shutdown_event.is_set():
-            try:
-                conId, price, timestamp = await asyncio.wait_for(
-                    self.ib_interface.market_data_queue.get(), timeout=1.0
-                )
-                
-                if conId not in self.open_positions: continue
-                
-                if conId not in self.tick_buffer:
-                    self.tick_buffer[conId] = []
-                
-                self.tick_buffer[conId].append((timestamp, price))
-                
-                profile = self._get_profile_by_channel_id(self.open_positions[conId]['channel_id'])
-                bar_period = profile['exit_strategy']['trail_settings'].get('atr_period', 14)
-                min_ticks = profile['exit_strategy']['min_ticks_per_bar']
-                
-                if len(self.tick_buffer[conId]) >= min_ticks:
-                    last_bar_time = self.last_bar_timestamp.get(conId, timestamp)
-                    time_since_last_bar = (timestamp - last_bar_time).total_seconds()
+            for profile in self.config.channel_profiles:
+                if not profile['enabled']:
+                    continue
                     
-                    if time_since_last_bar >= bar_period:
-                        self._aggregate_bar(conId)
-                        self.last_bar_timestamp[conId] = timestamp
-                        await self._evaluate_exit_conditions(conId)
-            
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                logging.error(f"Error in market data stream: {e}", exc_info=True)
-
-    def _aggregate_bar(self, conId):
-        """Aggregates tick data into OHLC bars and stores them in the position's data cache."""
-        ticks = self.tick_buffer.pop(conId, [])
-        if len(ticks) < 2: return
-        
-        timestamps, prices = zip(*ticks)
-        bar_data = {
-            'timestamp': timestamps[-1],
-            'open': prices[0],
-            'high': max(prices),
-            'low': min(prices),
-            'close': prices[-1]
-        }
-        
-        if conId not in self.position_data_cache:
-            self.position_data_cache[conId] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close'])
-        
-        self.position_data_cache[conId] = pd.concat([
-            self.position_data_cache[conId],
-            pd.DataFrame([bar_data])
-        ], ignore_index=True)
-
-    async def _evaluate_exit_conditions(self, conId):
-        """Checks all configured exit conditions and closes the trade if any are met."""
-        if conId not in self.open_positions: return
-        position = self.open_positions[conId]
-        profile = self._get_profile_by_channel_id(position['channel_id'])
-        data = self.position_data_cache.get(conId)
-        if not all([profile, data is not None, not data.empty, len(data) >= 2]): return
-
-        is_call = position['contract'].right == 'C'
-        exit_reason = None
-        current_price = data['close'].iloc[-1]
-        
-        high_low = self.trailing_highs_and_lows[conId]
-        high_low['high'] = max(high_low['high'], current_price)
-        high_low['low'] = min(high_low['low'], current_price)
-
-        for exit_type in profile['exit_strategy']['exit_priority']:
-            if exit_reason: break
-            
-            if exit_type == "breakeven" and not self.breakeven_activated.get(conId):
-                pnl_percent = ((current_price - position['entry_price']) / position['entry_price']) * 100
-                trigger_pct = profile['exit_strategy']['breakeven_trigger_percent']
-                if (is_call and pnl_percent >= trigger_pct) or (not is_call and pnl_percent <= -trigger_pct):
-                    logging.info(f"Breakeven triggered for {position['contract'].localSymbol}.")
-                    self.breakeven_activated[conId] = True
-            
-            if self.breakeven_activated.get(conId):
-                if (is_call and current_price <= position['entry_price']) or \
-                   (not is_call and current_price >= position['entry_price']):
-                    exit_reason = "Breakeven Stop Hit"
-
-            if exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
-                settings = profile['exit_strategy']['trail_settings']
-                data.ta.atr(length=settings['atr_period'], append=True)
-                last_atr = data.get(f'ATRr_{settings["atr_period"]}', pd.Series([0])).iloc[-1]
-                if pd.isna(last_atr): continue
+                channel_id = profile['channel_id']
+                channel_name = profile.get('channel_name', channel_id)
                 
-                if is_call:
-                    stop_price = current_price - (last_atr * settings['atr_multiplier'])
-                    self.atr_stop_prices[conId] = max(self.atr_stop_prices.get(conId, 0), stop_price)
-                    if current_price < self.atr_stop_prices[conId]:
-                        exit_reason = f"ATR Trail ({current_price:.2f} < {self.atr_stop_prices[conId]:.2f})"
+                try:
+                    raw_messages = await self.discord_interface.poll_for_new_messages(
+                        channel_id, self._processed_messages[channel_id]
+                    )
+                    
+                    if raw_messages:
+                        await self._process_new_signals(raw_messages, profile)
+                        
+                except Exception as e:
+                    logging.error(f"Error polling channel {channel_name}: {e}")
+                    
+            await asyncio.sleep(self.config.discord_poll_interval_seconds)
+
+    async def _process_new_signals(self, raw_messages, profile):
+        """Processes raw Discord messages into trade signals with enhanced logging."""
+        channel_name = profile.get('channel_name', profile['channel_id'])
+        
+        for msg in raw_messages:
+            try:
+                msg_id = msg.get('id')
+                msg_content = msg.get('content', '')
+                msg_author = msg.get('author', {}).get('username', 'Unknown')
+                msg_timestamp = msg.get('timestamp')
+                
+                # Check if message is too old
+                if msg_timestamp:
+                    msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
+                    if msg_time < self._startup_time:
+                        logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
+                        self._processed_messages[profile['channel_id']].append(msg_id)
+                        continue
+                
+                logging.info(f"Processing message {msg_id} from '{msg_author}'")
+                logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
+                
+                # Skip if already processed
+                if msg_id in self._processed_messages[profile['channel_id']]:
+                    logging.debug(f"Message {msg_id} already processed, skipping")
+                    continue
+                
+                # Mark as processed immediately
+                self._processed_messages[profile['channel_id']].append(msg_id)
+                
+                # Check for channel-specific ignore keywords
+                channel_ignore = profile.get('buzzwords_ignore', [])
+                global_ignore = self.config.buzzwords_ignore
+                all_ignore_words = set(channel_ignore + global_ignore)
+                
+                if self._contains_keywords(msg_content, all_ignore_words):
+                    ignored_word = self._get_matched_keyword(msg_content, all_ignore_words)
+                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{ignored_word}' | Message: '{msg_content[:100]}'")
+                    continue
+                
+                # Parse the signal with channel-specific buzzwords
+                parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
+                
+                if not parsed_signal:
+                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:100]}'")
+                    continue
+                
+                logging.info(f"✓ PARSED - Ticker: {parsed_signal['ticker']} | Strike: {parsed_signal['strike']} | Type: {parsed_signal['contract_type']} | Expiry: {parsed_signal['expiry_date']}")
+                
+                # Check sentiment if enabled
+                if self.config.sentiment_filter_enabled:
+                    sentiment = self.sentiment_analyzer.analyze_sentiment(msg_content)
+                    sentiment_score = sentiment['compound']
+                    
+                    if sentiment_score < profile.get('sentiment_threshold', 0.0):
+                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment_score:.2f}) | Signal: {parsed_signal['ticker']}")
+                        
+                        # Send Telegram notification for sentiment veto
+                        veto_msg = (
+                            f"🚫 *Trade Vetoed by Sentiment*\n\n"
+                            f"Channel: {channel_name}\n"
+                            f"Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}\n"
+                            f"Sentiment Score: {sentiment_score:.2f}\n"
+                            f"Threshold: {profile.get('sentiment_threshold', 0.0):.2f}\n"
+                            f"Message: _{msg_content[:100]}_"
+                        )
+                        await self.telegram_interface.send_message(veto_msg)
+                        continue
+                    
+                    parsed_signal['sentiment'] = sentiment
                 else:
-                    stop_price = current_price + (last_atr * settings['atr_multiplier'])
-                    self.atr_stop_prices[conId] = min(self.atr_stop_prices.get(conId, float('inf')), stop_price)
-                    if current_price > self.atr_stop_prices[conId]:
-                        exit_reason = f"ATR Trail ({current_price:.2f} > {self.atr_stop_prices[conId]:.2f})"
+                    parsed_signal['sentiment'] = None
+                
+                # Check global cooldown
+                if self._last_trade_time:
+                    time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
+                    if time_since_last < self.config.cooldown_after_trade_seconds:
+                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {self.config.cooldown_after_trade_seconds}s) | Signal: {parsed_signal['ticker']}")
+                        continue
+                
+                # Execute the trade
+                logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
+                await self._execute_trade(parsed_signal, profile)
+                
+                # Save state
+                await self.state_manager.save_state(self.open_positions)
+                
+            except Exception as e:
+                logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
 
-            elif exit_type == "pullback_stop" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
-                pullback_pct = profile['exit_strategy']['trail_settings']['pullback_percent']
-                if is_call:
-                    stop_price = high_low['high'] * (1 - (pullback_pct / 100))
-                    if current_price < stop_price: exit_reason = f"Pullback Stop ({pullback_pct}%)"
-                else:
-                    stop_price = high_low['low'] * (1 + (pullback_pct / 100))
-                    if current_price > stop_price: exit_reason = f"Pullback Stop ({pullback_pct}%)"
-
-            elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
-                settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
-                data.ta.rsi(length=settings['period'], append=True)
-                last_rsi = data.get(f'RSI_{settings["period"]}', pd.Series([0])).iloc[-1]
-                if pd.isna(last_rsi): continue
-
-                prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
-                if is_call and prev_rsi > settings['overbought_level'] and last_rsi <= settings['overbought_level']:
-                    exit_reason = f"RSI Hook from Overbought ({prev_rsi:.2f} -> {last_rsi:.2f})"
-                elif not is_call and prev_rsi < settings['oversold_level'] and last_rsi >= settings['oversold_level']:
-                    exit_reason = f"RSI Hook from Oversold ({prev_rsi:.2f} -> {last_rsi:.2f})"
-            
-            elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
-                settings = profile['exit_strategy']['momentum_exits']['psar_settings']
-                data.ta.psar(initial=settings['start'], increment=settings['increment'], maximum=settings['max'], append=True)
-                psar_long_col = f'PSARl_{settings["start"]}_{settings["max"]}'
-                psar_short_col = f'PSARs_{settings["start"]}_{settings["max"]}'
-                if psar_long_col in data.columns and not pd.isna(data[psar_long_col].iloc[-1]):
-                    if is_call and current_price < data[psar_long_col].iloc[-1]:
-                        exit_reason = "PSAR Flip"
-                if psar_short_col in data.columns and not pd.isna(data[psar_short_col].iloc[-1]):
-                    if not is_call and current_price > data[psar_short_col].iloc[-1]:
-                        exit_reason = "PSAR Flip"
-
-        if exit_reason:
-            logging.info(f"Dynamic exit for {position['contract'].localSymbol}. Reason: {exit_reason}")
-            await self._execute_close_trade(conId, exit_reason)
-
-    async def _execute_close_trade(self, conId, reason):
-        """Places a SELL order for a position and attaches the exit reason."""
-        if conId in self.open_positions:
-            position = self.open_positions[conId]
-            contract = position['contract']
-            quantity = position['quantity']
-            
-            order = await self.ib_interface.place_order(contract, 'MKT', quantity, action='SELL')
-
-            if order:
-                order.exit_reason = reason
-                logging.info(f"Placed closing order for {quantity} of {contract.localSymbol}")
-            else:
-                logging.error(f"Failed to place closing order for {contract.localSymbol}")
-
-    def _cleanup_position_data(self, conId):
-        """Helper to remove all data associated with a closed/ghost position."""
-        self.open_positions.pop(conId, None)
-        self.position_data_cache.pop(conId, None)
-        self.tick_buffer.pop(conId, None)
-        self.last_bar_timestamp.pop(conId, None)
-        self.trailing_highs_and_lows.pop(conId, None)
-        self.atr_stop_prices.pop(conId, None)
-        self.breakeven_activated.pop(conId, None)
-
-    async def flatten_all_positions(self):
-        """Closes all open positions. Triggered at EOD."""
-        logging.warning("EOD reached. Flattening all open positions.")
-        await self.telegram_interface.send_message("🚨 EOD reached. Flattening all positions. 🚨")
-        
-        position_ids_to_close = list(self.open_positions.keys())
-        
-        for conId in position_ids_to_close:
-            await self._execute_close_trade(conId, "EOD Flatten")
-
-    def _is_eod(self):
-        """Checks if the current time is past the EOD close time."""
-        eod_config = self.config.eod_close
-        if not eod_config['enabled']:
-            return False
-        
-        try:
-            market_tz = pytz.timezone(self.config.MARKET_TIMEZONE)
-            now_in_market_tz = datetime.now(market_tz)
-            eod_in_market_tz = now_in_market_tz.replace(
-                hour=eod_config['hour'], minute=eod_config['minute'], second=0, microsecond=0
-            )
-            return now_in_market_tz >= eod_in_market_tz
-        except pytz.UnknownTimeZoneError:
-            logging.error(f"FATAL: Unknown timezone in config: '{self.config.MARKET_TIMEZONE}'.")
-            return False
-        except Exception as e:
-            logging.error(f"A critical error occurred in the EOD check: {e}", exc_info=True)
-            return False
-
-    def _get_profile_by_channel_id(self, channel_id):
-        """Finds the correct profile for a given channel ID."""
-        for profile in self.config.profiles:
-            if profile['channel_id'] == channel_id:
-                return profile
+    def _contains_keywords(self, text, keywords):
+        """Check if text contains any of the keywords."""
+        text_upper = text.upper()
+        return any(keyword.upper() in text_upper for keyword in keywords)
+    
+    def _get_matched_keyword(self, text, keywords):
+        """Get the first matched keyword."""
+        text_upper = text.upper()
+        for keyword in keywords:
+            if keyword.upper() in text_upper:
+                return keyword
         return None
 
-    def _get_fallback_channel_id(self):
-        """Returns the first enabled profile's channel ID as a fallback."""
-        for profile in self.config.profiles:
-            if profile['enabled']:
-                return profile['channel_id']
-        return "UNKNOWN"
+    async def _execute_trade(self, signal, profile):
+        """Executes a parsed trade signal."""
+        try:
+            # Create contract
+            contract_details = await self.ib_interface.create_option_contract(
+                signal['ticker'],
+                signal['expiry_date'],
+                signal['strike'],
+                signal['contract_type']
+            )
+            
+            if not contract_details:
+                logging.error(f"Failed to create contract for {signal}")
+                return
+            
+            contract, market_price = contract_details
+            
+            # Calculate position size
+            allocation = profile['trading']['funds_allocation']
+            quantity = self._calculate_position_size(allocation, market_price)
+            
+            if quantity <= 0:
+                logging.info(f"Position size is 0 for {signal['ticker']} at ${market_price}")
+                return
+            
+            # Place the order
+            trade = await self.ib_interface.place_order(
+                contract, quantity, profile['trading']['entry_order_type']
+            )
+            
+            if trade:
+                # Store position info
+                position_info = {
+                    'contract': contract,
+                    'quantity': quantity,
+                    'entry_price': market_price,
+                    'entry_time': datetime.now(),
+                    'profile': profile,
+                    'signal': signal,
+                    'trade': trade
+                }
+                
+                self.open_positions[contract.conId] = position_info
+                self._last_trade_time = datetime.now()
+                
+                # Send notifications
+                await self._send_trade_notification(position_info, 'ENTRY')
+                
+                logging.info(f"✅ TRADE OPENED - {signal['ticker']} {quantity}x @ ${market_price}")
+                
+        except Exception as e:
+            logging.error(f"Error executing trade: {e}", exc_info=True)
+
+    def _calculate_position_size(self, allocation, price):
+        """Calculate the number of contracts based on allocation and price."""
+        if price <= 0:
+            return 0
+        contract_cost = price * 100
+        return int(allocation / contract_cost)
+
+    async def _monitor_open_positions(self):
+        """Monitor positions and execute exit strategies."""
+        while not self._shutdown_event.is_set():
+            for conId, position in list(self.open_positions.items()):
+                try:
+                    # Get current price
+                    current_data = await self.ib_interface.get_market_data(position['contract'])
+                    
+                    if current_data and current_data.last > 0:
+                        # Evaluate exit conditions
+                        exit_reason = await self._evaluate_exit_conditions(
+                            position, current_data.last
+                        )
+                        
+                        if exit_reason:
+                            await self._execute_close_trade(conId, exit_reason)
+                            
+                except Exception as e:
+                    logging.error(f"Error monitoring position {conId}: {e}")
+                    
+            await asyncio.sleep(5)
+
+    async def _evaluate_exit_conditions(self, position, current_price):
+        """Evaluate all exit strategies for a position."""
+        profile = position['profile']
+        exit_config = profile['exit_strategy']
+        entry_price = position['entry_price']
+        
+        # Check breakeven
+        if exit_config.get('breakeven_trigger_percent'):
+            trigger = exit_config['breakeven_trigger_percent'] / 100
+            if current_price >= entry_price * (1 + trigger):
+                if current_price <= entry_price:
+                    return "Breakeven Stop"
+        
+        # Add other exit logic here (ATR, RSI, PSAR, etc.)
+        
+        return None
+
+    async def _execute_close_trade(self, conId, reason):
+        """Close a position."""
+        try:
+            position = self.open_positions[conId]
+            
+            # Cancel any open orders first
+            await self.ib_interface.cancel_all_orders_for_contract(conId)
+            
+            # Place sell order
+            trade = await self.ib_interface.place_order(
+                position['contract'],
+                position['quantity'],
+                'MKT',
+                action='SELL'
+            )
+            
+            if trade:
+                # Remove from tracking
+                del self.open_positions[conId]
+                
+                # Send notification
+                await self._send_trade_notification(position, 'EXIT', reason)
+                
+                logging.info(f"✅ TRADE CLOSED - {position['signal']['ticker']} | Reason: {reason}")
+                
+        except Exception as e:
+            logging.error(f"Error closing position {conId}: {e}")
+
+    async def _send_trade_notification(self, position_info, status, exit_reason=None):
+        """Send formatted Telegram notification."""
+        try:
+            signal = position_info['signal']
+            profile = position_info['profile']
+            
+            if status == 'ENTRY':
+                message = (
+                    f"✅ *Trade Entry Confirmed* ✅\n\n"
+                    f"*Source Channel:* {profile.get('channel_name', 'Unknown')}\n"
+                    f"*Contract:* {signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type']}\n"
+                    f"*Quantity:* {position_info['quantity']}\n"
+                    f"*Entry Price:* ${position_info['entry_price']:.2f}\n"
+                )
+            else:  # EXIT
+                message = (
+                    f"🔴 *SELL Order Executed*\n\n"
+                    f"*Contract:* {signal['ticker']} {signal['expiry_date']} {signal['strike']}{signal['contract_type']}\n"
+                    f"*Exit Reason:* {exit_reason}\n"
+                )
+            
+            await self.telegram_interface.send_message(message)
+            
+        except Exception as e:
+            logging.error(f"Error sending Telegram notification: {e}")
+
+    async def _reconciliation_loop(self):
+        """Periodic reconciliation with broker."""
+        while not self._shutdown_event.is_set():
+            await asyncio.sleep(60)  # Run every 60 seconds
+            
+            try:
+                logging.info("--- Starting periodic position reconciliation ---")
+                
+                # Get broker positions
+                ib_positions = await self.ib_interface.get_open_positions()
+                
+                # Skip zero positions
+                active_ib_positions = [p for p in ib_positions if p.position != 0]
+                
+                logging.info(f"Reconciliation: Found {len(active_ib_positions)} active positions at broker")
+                
+                # Check for untracked positions
+                for ib_pos in active_ib_positions:
+                    if ib_pos.contract.conId not in self.open_positions:
+                        logging.warning(f"Found untracked position: {ib_pos.contract.localSymbol}")
+                        # Optionally adopt or close it
+                
+                logging.info("--- Position reconciliation complete ---")
+                
+            except Exception as e:
+                logging.error(f"Error during reconciliation: {e}")
+
+    async def _initial_reconciliation(self):
+        """Initial reconciliation on startup."""
+        logging.info("Performing initial state reconciliation with broker...")
+        
+        try:
+            ib_positions = await self.ib_interface.get_open_positions()
+            active_positions = [p for p in ib_positions if p.position != 0]
+            
+            logging.info(f"Reconciliation: Found {len(active_positions)} active positions at broker")
+            
+            # Reconcile with saved state
+            for ib_pos in active_positions:
+                if ib_pos.contract.conId not in self.open_positions:
+                    logging.warning(f"Untracked position found: {ib_pos.contract.localSymbol}")
+            
+            logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
+            
+        except Exception as e:
+            logging.error(f"Error during initial reconciliation: {e}")
+
+    async def shutdown(self):
+        """Graceful shutdown."""
+        logging.info("Shutting down SignalProcessor...")
+        self._shutdown_event.set()
+        await self.state_manager.save_state(self.open_positions)
