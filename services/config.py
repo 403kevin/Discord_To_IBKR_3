@@ -42,20 +42,9 @@ class Config:
         self.STATE_FILE_PATH = os.getenv("STATE_FILE_PATH", "state/open_positions.json")
         self.TRADE_LOG_FILE_PATH = os.getenv("TRADE_LOG_FILE_PATH", "logs/trade_log.csv")
 
-        # FIX: Consolidated buzzword logic
-        # BUY words trigger entries
-        self.buzzwords_buy = ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
-                              "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"]
-        
-        # SELL words moved to IGNORE - we have smart exits, don't want false signals
-        # Any message with these words will be rejected
-        self.buzzwords_ignore = ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
-                                 "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"]
-        
+        # Kept for backward compatibility with jargon_words only
         self.jargon_words = ["SWING", "LONG", "SHORT", "LEAPS", "DAY", "TRADE", "SMALL","HIGH","RISK","RISKY","LOTTO"]
-        
-        # Only BUY buzzwords are used for parsing now
-        self.buzzwords = self.buzzwords_buy + self.jargon_words
+        self.buzzwords = self.jargon_words  # Only jargon now - buy/ignore moved to profiles
 
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
@@ -101,7 +90,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -143,7 +137,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -183,7 +182,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": False,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -223,7 +227,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": False,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -263,7 +272,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -303,7 +317,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -343,7 +362,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -383,7 +407,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -423,7 +452,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -463,7 +497,12 @@ class Config:
                 "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -503,7 +542,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -543,7 +587,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -583,7 +632,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -623,7 +677,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -663,7 +722,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
@@ -703,7 +767,12 @@ class Config:
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
-
+                
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
                 
                 "trading": {
                     "funds_allocation": 1000,
