@@ -84,15 +84,6 @@ class SignalProcessor:
                     
             await asyncio.sleep(self.config.polling_interval_seconds)
 
-The code looks correct syntactically. The issue must be **above** this section. 
-
-The `except` at line 196 belongs to the `try` block that starts earlier in the loop. Check if there's a **missing indent** or **incomplete statement** in the lines BEFORE what you pasted.
-
-**Most likely culprit:** The tuple/dict handling code you added has a syntax error.
-
-**Solution: Replace the entire `_process_new_signals` method with this corrected version:**
-
-```python
 async def _process_new_signals(self, raw_messages, profile):
     """Processes raw Discord messages into trade signals with enhanced logging."""
     channel_name = profile.get('channel_name', profile['channel_id'])
@@ -206,10 +197,6 @@ async def _process_new_signals(self, raw_messages, profile):
             # msg_id is now guaranteed to be in scope (initialized at top of loop)
             error_msg_id = msg_id if msg_id else 'UNKNOWN'
             logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
-
-
-This is the complete, properly indented method that handles both tuple and dict message formats.=True)
-
     def _contains_keywords(self, text, keywords):
         """Check if text contains any of the keywords."""
         text_upper = text.upper()
