@@ -10,7 +10,7 @@ import numpy as np
 class SignalProcessor:
     """
     The orchestrator - manages the full lifecycle of signal processing.
-    FIXED VERSION: Constructor matches main.py, dynamic exits properly wired
+    FIXED VERSION: State management corrected - no await on load_state(), proper args on save_state()
     """
     def __init__(self, config, discord_interface, ib_interface, telegram_interface,
                  signal_parser, sentiment_analyzer, state_manager):
@@ -39,10 +39,14 @@ class SignalProcessor:
         """Main entry point - starts all processing tasks."""
         logging.info("Starting Signal Processor...")
         
-        # Load existing state
-        loaded_state = await self.state_manager.load_state()
-        if loaded_state:
-            self.open_positions = loaded_state
+        # FIX 1: load_state() returns a tuple, NOT a coroutine - don't await it
+        self.open_positions, loaded_message_ids = self.state_manager.load_state()
+        
+        # Update processed messages with loaded IDs
+        for channel_id in self._processed_messages.keys():
+            for msg_id in loaded_message_ids:
+                self._processed_messages[channel_id].append(msg_id)
+        
         logging.info(f"Loaded {len(self.open_positions)} open positions from state")
         
         # Perform initial reconciliation
@@ -169,8 +173,13 @@ class SignalProcessor:
                 logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
                 await self._execute_trade(parsed_signal, profile)
                 
-                # Save state
-                await self.state_manager.save_state(self.open_positions)
+                # FIX 2: save_state() requires TWO arguments
+                # Get all processed message IDs from all channels
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
                 
             except Exception as e:
                 logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
@@ -294,7 +303,7 @@ class SignalProcessor:
                         # Update tracking data
                         position['highest_price'] = max(position['highest_price'], current_price)
                         
-                        # FIX: Wire up the bar data update (THIS WAS MISSING)
+                        # Wire up the bar data update
                         await self._update_bar_data(position, current_price)
                         
                         # Evaluate exit conditions based on priority
@@ -659,8 +668,12 @@ class SignalProcessor:
                         logging.warning(f"Position {position['signal']['ticker']} not found at broker, removing from tracking")
                         del self.open_positions[conId]
                 
-                # Save state
-                await self.state_manager.save_state(self.open_positions)
+                # FIX 2: save_state() requires TWO arguments
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
                 logging.info("--- Position reconciliation complete ---")
                 
             except Exception as e:
@@ -691,7 +704,12 @@ class SignalProcessor:
                     logging.warning(f"Removing stale position {conId} from state")
                     del self.open_positions[conId]
             
-            await self.state_manager.save_state(self.open_positions)
+            # FIX 2: save_state() requires TWO arguments
+            all_processed_ids = []
+            for channel_deque in self._processed_messages.values():
+                all_processed_ids.extend(list(channel_deque))
+            
+            self.state_manager.save_state(self.open_positions, all_processed_ids)
             logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
             
         except Exception as e:
@@ -701,4 +719,10 @@ class SignalProcessor:
         """Graceful shutdown."""
         logging.info("Shutting down SignalProcessor...")
         self._shutdown_event.set()
-        await self.state_manager.save_state(self.open_positions)
+        
+        # FIX 2: save_state() requires TWO arguments
+        all_processed_ids = []
+        for channel_deque in self._processed_messages.values():
+            all_processed_ids.extend(list(channel_deque))
+        
+        self.state_manager.save_state(self.open_positions, all_processed_ids)
