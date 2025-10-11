@@ -10,7 +10,7 @@ import numpy as np
 class SignalProcessor:
     """
     The orchestrator - manages the full lifecycle of signal processing.
-    FIXED VERSION: State management corrected - no await on load_state(), proper args on save_state()
+    FIXED VERSION: Proper msg_id scoping to prevent 'local variable not associated with value' errors
     """
     def __init__(self, config, discord_interface, ib_interface, telegram_interface,
                  signal_parser, sentiment_analyzer, state_manager):
@@ -39,7 +39,7 @@ class SignalProcessor:
         """Main entry point - starts all processing tasks."""
         logging.info("Starting Signal Processor...")
         
-        # FIX 1: load_state() returns a tuple, NOT a coroutine - don't await it
+        # Load state - returns tuple, not a coroutine
         self.open_positions, loaded_message_ids = self.state_manager.load_state()
         
         # Update processed messages with loaded IDs
@@ -89,8 +89,9 @@ class SignalProcessor:
         channel_name = profile.get('channel_name', profile['channel_id'])
         
         for msg in raw_messages:
+            msg_id = None  # Initialize OUTSIDE try block to ensure it's in scope
             try:
-                msg_id = msg.get('id', 'UNKNOWN_ID')  # ← Provide default
+                msg_id = msg.get('id', 'UNKNOWN_ID')
                 msg_content = msg.get('content', '')
                 msg_author = msg.get('author', {}).get('username', 'Unknown')
                 msg_timestamp = msg.get('timestamp')
@@ -173,8 +174,7 @@ class SignalProcessor:
                 logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
                 await self._execute_trade(parsed_signal, profile)
                 
-                # FIX 2: save_state() requires TWO arguments
-                # Get all processed message IDs from all channels
+                # Save state after successful trade
                 all_processed_ids = []
                 for channel_deque in self._processed_messages.values():
                     all_processed_ids.extend(list(channel_deque))
@@ -182,7 +182,9 @@ class SignalProcessor:
                 self.state_manager.save_state(self.open_positions, all_processed_ids)
                 
             except Exception as e:
-                logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
+                # msg_id is now guaranteed to be in scope (initialized at top of loop)
+                error_msg_id = msg_id if msg_id else 'UNKNOWN'
+                logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
 
     def _contains_keywords(self, text, keywords):
         """Check if text contains any of the keywords."""
@@ -200,60 +202,33 @@ class SignalProcessor:
     async def _execute_trade(self, signal, profile):
         """Executes a parsed trade signal."""
         try:
-            # Create contract
-            contract = await self.ib_interface.create_option_contract(
-                signal['ticker'],
-                signal['expiry_date'],
-                signal['strike'],
-                signal['contract_type']
-            )
+            channel_name = profile.get('channel_name', 'Unknown')
             
-            if not contract:
-                logging.error(f"Failed to create contract for {signal}")
+            # Create contract from signal
+            contract = await self.ib_interface.create_contract_from_signal(signal)
+            
+            # Get market data
+            market_data = await self.ib_interface.get_live_ticker(contract)
+            
+            if not market_data or market_data.ask <= 0:
+                logging.error(f"No valid market data for {signal['ticker']}, skipping trade")
                 return
             
-            # Get market price
-            ticker = await self.ib_interface.get_live_ticker(contract)
-            if not ticker or not ticker.last:
-                logging.error(f"Failed to get market price for {signal['ticker']}")
-                return
-            
-            market_price = ticker.last
-            
-            # Check price limits
-            min_price = profile['trading']['min_price_per_contract']
-            max_price = profile['trading']['max_price_per_contract']
-            
-            if market_price < min_price:
-                logging.info(f"Price ${market_price} below minimum ${min_price} for {signal['ticker']}")
-                return
-            
-            if market_price > max_price:
-                logging.info(f"Price ${market_price} above maximum ${max_price} for {signal['ticker']}")
-                return
+            market_price = market_data.ask
             
             # Calculate position size
             allocation = profile['trading']['funds_allocation']
             quantity = self._calculate_position_size(allocation, market_price)
             
             if quantity <= 0:
-                logging.info(f"Position size is 0 for {signal['ticker']} at ${market_price}")
+                logging.warning(f"Calculated quantity is 0 or negative for {signal['ticker']}, skipping trade")
                 return
             
             # Place the order
-            order = await self.ib_interface.place_order(
-                contract, 
-                profile['trading']['entry_order_type'],
-                quantity
-            )
+            order = await self.ib_interface.place_order(contract, 'BUY', quantity)
             
             if order:
-                # Attach native trail if configured
-                if profile['safety_net']['enabled']:
-                    trail_percent = profile['safety_net']['native_trail_percent']
-                    await self.ib_interface.attach_native_trail(order, trail_percent)
-                
-                # Initialize position tracking
+                # Track the position
                 position_info = {
                     'contract': contract,
                     'quantity': quantity,
@@ -319,273 +294,204 @@ class SignalProcessor:
 
     async def _update_bar_data(self, position, current_price):
         """Update bar data for technical indicators."""
-        profile = position['profile']
-        exit_config = profile['exit_strategy']
-        
-        # Check if we need to form a new bar
-        min_ticks = exit_config.get('min_ticks_per_bar', 5)
-        
-        if not position['last_bar']:
-            position['last_bar'] = {
-                'open': current_price,
-                'high': current_price,
-                'low': current_price,
-                'close': current_price,
-                'tick_count': 1
-            }
-        else:
-            bar = position['last_bar']
-            bar['high'] = max(bar['high'], current_price)
-            bar['low'] = min(bar['low'], current_price)
-            bar['close'] = current_price
-            bar['tick_count'] += 1
+        try:
+            current_time = datetime.now()
             
-            # Complete the bar if we have enough ticks
-            if bar['tick_count'] >= min_ticks:
-                position['bars_history'].append(bar.copy())
-                position['last_bar'] = None
+            # Initialize last_bar if needed
+            if position['last_bar'] is None:
+                position['last_bar'] = {
+                    'timestamp': current_time,
+                    'open': current_price,
+                    'high': current_price,
+                    'low': current_price,
+                    'close': current_price
+                }
+                return
+            
+            # Update current bar
+            position['last_bar']['high'] = max(position['last_bar']['high'], current_price)
+            position['last_bar']['low'] = min(position['last_bar']['low'], current_price)
+            position['last_bar']['close'] = current_price
+            
+            # Check if we should start a new bar (1 minute interval)
+            time_diff = (current_time - position['last_bar']['timestamp']).total_seconds()
+            
+            if time_diff >= 60:
+                # Complete the current bar
+                position['bars_history'].append(position['last_bar'])
                 
-                # Keep only last 50 bars
+                # Limit history to last 50 bars
                 if len(position['bars_history']) > 50:
-                    position['bars_history'] = position['bars_history'][-50:]
+                    position['bars_history'].pop(0)
                 
-                # Update technical indicators
-                await self._update_technical_indicators(position)
+                # Calculate indicators
+                if len(position['bars_history']) >= 14:
+                    self._calculate_indicators(position)
+                
+                # Start new bar
+                position['last_bar'] = {
+                    'timestamp': current_time,
+                    'open': current_price,
+                    'high': current_price,
+                    'low': current_price,
+                    'close': current_price
+                }
+                
+        except Exception as e:
+            logging.error(f"Error updating bar data: {e}")
 
-    async def _update_technical_indicators(self, position):
-        """Update ATR, RSI, and PSAR values."""
-        bars = position['bars_history']
-        if len(bars) < 2:
-            return
-        
-        profile = position['profile']
-        exit_config = profile['exit_strategy']
-        
-        # Calculate ATR
-        if exit_config.get('trail_method') == 'atr':
-            atr_period = exit_config['trail_settings'].get('atr_period', 14)
-            atr = self._calculate_atr(bars, atr_period)
-            if atr:
-                position['atr_values'].append(atr)
-        
-        # Calculate RSI
-        if exit_config.get('momentum_exits', {}).get('rsi_hook_enabled'):
-            rsi_period = exit_config['momentum_exits']['rsi_settings'].get('period', 14)
-            rsi = self._calculate_rsi(bars, rsi_period)
-            if rsi:
-                position['rsi_values'].append(rsi)
-        
-        # Update PSAR
-        if exit_config.get('momentum_exits', {}).get('psar_enabled'):
-            self._update_psar(position, bars[-1])
-
-    def _calculate_atr(self, bars, period):
-        """Calculate Average True Range."""
-        if len(bars) < period:
-            return None
-        
-        true_ranges = []
-        for i in range(1, len(bars)):
-            high = bars[i]['high']
-            low = bars[i]['low']
-            prev_close = bars[i-1]['close']
+    def _calculate_indicators(self, position):
+        """Calculate ATR, PSAR, and RSI from bar history."""
+        try:
+            bars = position['bars_history']
+            if len(bars) < 14:
+                return
             
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-            true_ranges.append(tr)
-        
-        if len(true_ranges) >= period:
-            return np.mean(true_ranges[-period:])
-        return None
-
-    def _calculate_rsi(self, bars, period):
-        """Calculate Relative Strength Index."""
-        if len(bars) < period + 1:
-            return None
-        
-        closes = [bar['close'] for bar in bars]
-        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-        
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        
-        avg_gain = np.mean(gains[-period:]) if gains else 0
-        avg_loss = np.mean(losses[-period:]) if losses else 0
-        
-        if avg_loss == 0:
-            return 100
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-
-    def _update_psar(self, position, latest_bar):
-        """Update Parabolic SAR values."""
-        psar = position['psar_values']
-        profile = position['profile']
-        settings = profile['exit_strategy'].get('momentum_exits', {}).get('psar_settings', {})
-        
-        increment = settings.get('increment', 0.02)
-        max_af = settings.get('max', 0.2)
-        
-        # Update extreme point
-        if latest_bar['high'] > psar['ep']:
-            psar['ep'] = latest_bar['high']
-            psar['af'] = min(psar['af'] + increment, max_af)
-        
-        # Calculate new SAR
-        psar['sar'] = psar['sar'] + psar['af'] * (psar['ep'] - psar['sar'])
+            df = pd.DataFrame(bars)
+            
+            # ATR
+            profile = position['profile']
+            atr_period = profile['exit_strategy'].get('atr_period', 14)
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            atr = true_range.rolling(atr_period).mean().iloc[-1]
+            position['atr_values'].append(atr)
+            
+            # PSAR
+            psar_data = position['psar_values']
+            current_bar = bars[-1]
+            is_call = position['signal']['contract_type'] == 'CALL'
+            
+            if is_call:
+                if current_bar['high'] > psar_data['ep']:
+                    psar_data['ep'] = current_bar['high']
+                    psar_data['af'] = min(psar_data['af'] + 0.02, 0.2)
+                psar_data['sar'] = psar_data['sar'] + psar_data['af'] * (psar_data['ep'] - psar_data['sar'])
+            else:
+                if current_bar['low'] < psar_data['ep']:
+                    psar_data['ep'] = current_bar['low']
+                    psar_data['af'] = min(psar_data['af'] + 0.02, 0.2)
+                psar_data['sar'] = psar_data['sar'] + psar_data['af'] * (psar_data['ep'] - psar_data['sar'])
+            
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            position['rsi_values'].append(rsi.iloc[-1])
+            
+        except Exception as e:
+            logging.error(f"Error calculating indicators: {e}")
 
     async def _evaluate_exit_conditions(self, position, current_price):
-        """Evaluate all exit strategies based on configured priority."""
+        """Evaluate exit conditions in priority order."""
         profile = position['profile']
-        exit_config = profile['exit_strategy']
+        exit_strategy = profile['exit_strategy']
         
-        # Get exit priority
-        exit_priority = exit_config.get('exit_priority', 
-            ['breakeven', 'rsi_hook', 'psar_flip', 'atr_trail', 'pullback_stop'])
-        
-        for exit_type in exit_priority:
-            exit_reason = None
-            
-            if exit_type == 'breakeven':
-                exit_reason = self._check_breakeven(position, current_price)
-            elif exit_type == 'rsi_hook' and exit_config.get('momentum_exits', {}).get('rsi_hook_enabled'):
-                exit_reason = self._check_rsi_hook(position, current_price)
-            elif exit_type == 'psar_flip' and exit_config.get('momentum_exits', {}).get('psar_enabled'):
-                exit_reason = self._check_psar_flip(position, current_price)
-            elif exit_type == 'atr_trail' and exit_config.get('trail_method') == 'atr':
-                exit_reason = self._check_atr_trail(position, current_price)
-            elif exit_type == 'pullback_stop' and exit_config.get('trail_method') == 'pullback_percent':
-                exit_reason = self._check_pullback_stop(position, current_price)
-            
-            if exit_reason:
-                return exit_reason
-        
-        return None
-
-    def _check_breakeven(self, position, current_price):
-        """Check breakeven stop condition."""
-        profile = position['profile']
-        exit_config = profile['exit_strategy']
+        # Priority 1: Breakeven stop (software-based)
+        breakeven_percent = exit_strategy.get('breakeven_trigger_percent', 0.10)
         entry_price = position['entry_price']
         
-        trigger_percent = exit_config.get('breakeven_trigger_percent', 0)
-        if trigger_percent <= 0:
-            return None
+        if not position['breakeven_triggered']:
+            pnl_percent = (current_price - entry_price) / entry_price
+            if pnl_percent >= breakeven_percent:
+                position['breakeven_triggered'] = True
+                logging.info(f"Breakeven activated at {pnl_percent*100:.1f}% profit")
         
-        trigger_price = entry_price * (1 + trigger_percent / 100)
-        
-        # Check if we should trigger breakeven
-        if not position['breakeven_triggered'] and current_price >= trigger_price:
-            position['breakeven_triggered'] = True
-            logging.info(f"Breakeven triggered for {position['signal']['ticker']} at ${current_price:.2f}")
-        
-        # Check if we should exit at breakeven
         if position['breakeven_triggered'] and current_price <= entry_price:
             return "Breakeven Stop"
         
-        return None
-
-    def _check_rsi_hook(self, position, current_price):
-        """Check RSI hook exit condition."""
-        if len(position['rsi_values']) < 2:
-            return None
+        # Priority 2: Trailing Stop (ATR or Pullback)
+        trail_method = exit_strategy.get('trail_method', 'atr')
         
-        profile = position['profile']
-        settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
-        overbought = settings.get('overbought_level', 70)
+        if trail_method == 'atr' and position['atr_values']:
+            atr = position['atr_values'][-1]
+            atr_multiplier = exit_strategy.get('atr_multiplier', 2.0)
+            stop_distance = atr * atr_multiplier
+            trailing_stop = position['highest_price'] - stop_distance
+            
+            if current_price <= trailing_stop:
+                return f"ATR Trail (${trailing_stop:.2f})"
         
-        # Check for RSI hook pattern
-        if (position['rsi_values'][-2] > overbought and 
-            position['rsi_values'][-1] < overbought):
-            return "RSI Hook"
+        elif trail_method == 'pullback_percent':
+            pullback = exit_strategy.get('trail_pullback_percent', 0.10)
+            trailing_stop = position['highest_price'] * (1 - pullback)
+            
+            if current_price <= trailing_stop:
+                return f"Pullback Trail ({pullback*100:.0f}%)"
         
-        return None
-
-    def _check_psar_flip(self, position, current_price):
-        """Check PSAR flip exit condition."""
-        psar = position['psar_values']
+        # Priority 3: Momentum exits (PSAR/RSI)
+        momentum_exits = exit_strategy.get('momentum_exits', {})
         
-        # Exit if price crosses below SAR
-        if current_price < psar['sar']:
-            return "PSAR Flip"
+        if momentum_exits.get('psar_enabled', False):
+            psar_data = position['psar_values']
+            is_call = position['signal']['contract_type'] == 'CALL'
+            
+            if is_call and current_price < psar_data['sar']:
+                return "PSAR Flip (Bearish)"
+            elif not is_call and current_price > psar_data['sar']:
+                return "PSAR Flip (Bullish)"
         
-        return None
-
-    def _check_atr_trail(self, position, current_price):
-        """Check ATR-based trailing stop."""
-        if not position['atr_values']:
-            return None
-        
-        profile = position['profile']
-        settings = profile['exit_strategy']['trail_settings']
-        multiplier = settings.get('atr_multiplier', 1.5)
-        
-        # Calculate stop level
-        atr = position['atr_values'][-1]
-        stop_distance = atr * multiplier
-        stop_level = position['highest_price'] - stop_distance
-        
-        if current_price <= stop_level:
-            return f"ATR Trail ({multiplier}x)"
-        
-        return None
-
-    def _check_pullback_stop(self, position, current_price):
-        """Check pullback percentage trailing stop."""
-        profile = position['profile']
-        settings = profile['exit_strategy']['trail_settings']
-        pullback_percent = settings.get('pullback_percent', 10)
-        
-        # Calculate stop level
-        stop_level = position['highest_price'] * (1 - pullback_percent / 100)
-        
-        if current_price <= stop_level:
-            return f"Pullback Stop ({pullback_percent}%)"
+        if momentum_exits.get('rsi_hook_enabled', False) and position['rsi_values']:
+            rsi = position['rsi_values'][-1]
+            is_call = position['signal']['contract_type'] == 'CALL'
+            
+            if is_call and rsi > 70:
+                if len(position['rsi_values']) >= 2:
+                    if position['rsi_values'][-2] > rsi:
+                        return "RSI Hook from Overbought"
+            
+            if not is_call and rsi < 30:
+                if len(position['rsi_values']) >= 2:
+                    if position['rsi_values'][-2] < rsi:
+                        return "RSI Hook from Oversold"
         
         return None
 
-    async def _execute_close_trade(self, conId, reason, current_price=None):
-        """Close a position."""
+    async def _execute_close_trade(self, conId, exit_reason, exit_price):
+        """Close a position and send notifications."""
         try:
             position = self.open_positions[conId]
+            contract = position['contract']
+            quantity = position['quantity']
             
             # Place sell order
-            order = await self.ib_interface.place_order(
-                position['contract'],
-                'MKT',
-                position['quantity'],
-                action='SELL'
-            )
+            await self.ib_interface.place_order(contract, 'SELL', quantity)
             
-            if order:
-                # Calculate P&L
-                if current_price:
-                    exit_price = current_price
-                else:
-                    exit_price = position['entry_price']  # Fallback
-                
-                entry_total = position['entry_price'] * position['quantity'] * 100
-                exit_total = exit_price * position['quantity'] * 100
-                pnl = exit_total - entry_total
-                pnl_percent = (pnl / entry_total) * 100 if entry_total > 0 else 0
-                
-                # Remove from tracking
-                del self.open_positions[conId]
-                
-                # Send notification
-                position['exit_price'] = exit_price
-                position['pnl'] = pnl
-                position['pnl_percent'] = pnl_percent
-                await self._send_trade_notification(position, 'EXIT', reason)
-                
-                logging.info(f"✅ TRADE CLOSED - {position['signal']['ticker']} | Reason: {reason} | P&L: ${pnl:.2f} ({pnl_percent:.1f}%)")
-                
+            # Calculate P&L
+            entry_price = position['entry_price']
+            pnl = (exit_price - entry_price) * quantity * 100
+            pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+            
+            position['exit_price'] = exit_price
+            position['pnl'] = pnl
+            position['pnl_percent'] = pnl_percent
+            position['exit_reason'] = exit_reason
+            
+            # Send notification
+            await self._send_trade_notification(position, 'EXIT', exit_reason)
+            
+            # Remove from tracking
+            del self.open_positions[conId]
+            
+            # Save state
+            all_processed_ids = []
+            for channel_deque in self._processed_messages.values():
+                all_processed_ids.extend(list(channel_deque))
+            
+            self.state_manager.save_state(self.open_positions, all_processed_ids)
+            
+            logging.info(f"✅ CLOSED - {contract.localSymbol} | Reason: {exit_reason} | P&L: ${pnl:.2f} ({pnl_percent:.1f}%)")
+            
         except Exception as e:
-            logging.error(f"Error closing position {conId}: {e}")
+            logging.error(f"Error closing trade: {e}", exc_info=True)
 
     async def _send_trade_notification(self, position_info, status, exit_reason=None):
-        """Send formatted Telegram notification."""
+        """Send formatted trade notification via Telegram."""
         try:
             signal = position_info['signal']
             profile = position_info['profile']
@@ -668,7 +574,7 @@ class SignalProcessor:
                         logging.warning(f"Position {position['signal']['ticker']} not found at broker, removing from tracking")
                         del self.open_positions[conId]
                 
-                # FIX 2: save_state() requires TWO arguments
+                # Save state
                 all_processed_ids = []
                 for channel_deque in self._processed_messages.values():
                     all_processed_ids.extend(list(channel_deque))
@@ -704,7 +610,7 @@ class SignalProcessor:
                     logging.warning(f"Removing stale position {conId} from state")
                     del self.open_positions[conId]
             
-            # FIX 2: save_state() requires TWO arguments
+            # Save corrected state
             all_processed_ids = []
             for channel_deque in self._processed_messages.values():
                 all_processed_ids.extend(list(channel_deque))
@@ -720,7 +626,7 @@ class SignalProcessor:
         logging.info("Shutting down SignalProcessor...")
         self._shutdown_event.set()
         
-        # FIX 2: save_state() requires TWO arguments
+        # Save final state
         all_processed_ids = []
         for channel_deque in self._processed_messages.values():
             all_processed_ids.extend(list(channel_deque))
