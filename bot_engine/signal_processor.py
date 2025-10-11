@@ -10,7 +10,7 @@ import numpy as np
 class SignalProcessor:
     """
     The orchestrator - manages the full lifecycle of signal processing.
-    FIXED VERSION: Proper msg_id scoping to prevent 'local variable not associated with value' errors
+    FIXED VERSION: Includes all missing methods (_initial_reconciliation, shutdown, _reconciliation_loop)
     """
     def __init__(self, config, discord_interface, ib_interface, telegram_interface,
                  signal_parser, sentiment_analyzer, state_manager):
@@ -61,6 +61,98 @@ class SignalProcessor:
         
         await asyncio.gather(*tasks)
 
+    async def _initial_reconciliation(self):
+        """Initial reconciliation on startup - verifies positions with broker."""
+        logging.info("Performing initial state reconciliation with broker...")
+        
+        try:
+            ib_positions = await self.ib_interface.get_open_positions()
+            
+            # Filter out zero positions
+            active_positions = [p for p in ib_positions if p.position != 0]
+            
+            logging.info(f"Reconciliation: Found {len(active_positions)} active positions at broker")
+            
+            # Check against saved state
+            for ib_pos in active_positions:
+                if ib_pos.contract.conId in self.open_positions:
+                    logging.info(f"Position {ib_pos.contract.localSymbol} verified with broker")
+                else:
+                    logging.warning(f"Untracked position found: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
+            
+            # Remove positions from state that broker doesn't have
+            for conId in list(self.open_positions.keys()):
+                if not any(p.contract.conId == conId for p in active_positions):
+                    logging.warning(f"Removing stale position {conId} from state")
+                    del self.open_positions[conId]
+            
+            # Save corrected state
+            all_processed_ids = []
+            for channel_deque in self._processed_messages.values():
+                all_processed_ids.extend(list(channel_deque))
+            
+            self.state_manager.save_state(self.open_positions, all_processed_ids)
+            logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
+            
+        except Exception as e:
+            logging.error(f"Error during initial reconciliation: {e}")
+
+    async def shutdown(self):
+        """Graceful shutdown."""
+        logging.info("Shutting down SignalProcessor...")
+        self._shutdown_event.set()
+        
+        # Save final state
+        all_processed_ids = []
+        for channel_deque in self._processed_messages.values():
+            all_processed_ids.extend(list(channel_deque))
+        
+        self.state_manager.save_state(self.open_positions, all_processed_ids)
+
+    async def _reconciliation_loop(self):
+        """Periodic reconciliation with broker - runs every 60 seconds."""
+        while not self._shutdown_event.is_set():
+            await asyncio.sleep(self.config.reconciliation_interval_seconds)
+            
+            try:
+                logging.info("--- Starting periodic position reconciliation ---")
+                
+                # Get broker positions
+                ib_positions = await self.ib_interface.get_open_positions()
+                
+                # Filter out zero positions
+                active_ib_positions = [p for p in ib_positions if p.position != 0]
+                
+                logging.info(f"Reconciliation: Found {len(active_ib_positions)} active positions at broker")
+                
+                # Check for untracked positions
+                untracked_count = 0
+                for ib_pos in active_ib_positions:
+                    if ib_pos.contract.conId not in self.open_positions:
+                        untracked_count += 1
+                        logging.warning(f"Found untracked position: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
+                
+                if untracked_count > 0:
+                    logging.warning(f"Reconciliation: Found {untracked_count} untracked position(s) at broker")
+                
+                # Check for positions we track but broker doesn't have
+                for conId, position in list(self.open_positions.items()):
+                    broker_has_it = any(p.contract.conId == conId for p in active_ib_positions)
+                    if not broker_has_it:
+                        logging.warning(f"Position {position['signal']['ticker']} not found at broker, removing from tracking")
+                        del self.open_positions[conId]
+                
+                # Save state
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
+                logging.info("--- Position reconciliation complete ---")
+                
+            except Exception as e:
+                logging.error(f"Error during reconciliation: {e}")
+
     async def _poll_discord_for_signals(self):
         """Continuously polls Discord channels for new messages."""
         while not self._shutdown_event.is_set():
@@ -84,74 +176,72 @@ class SignalProcessor:
                     
             await asyncio.sleep(self.config.polling_interval_seconds)
 
-async def _process_new_signals(self, raw_messages, profile):
-    """Processes raw Discord messages into trade signals with enhanced logging."""
-    channel_name = profile.get('channel_name', profile['channel_id'])
-    
-    for msg in raw_messages:
-        msg_id = None  # Initialize OUTSIDE try block
-        try:
-            # Handle tuple format: (msg_id, msg_content, timestamp)
-            if isinstance(msg, tuple):
-                msg_id = msg[0]
-                msg_content = msg[1]
-                msg_timestamp = msg[2].isoformat() if len(msg) > 2 else None
-                msg_author = 'Discord'
-            else:
-                # Handle dict format
-                msg_id = msg.get('id', 'UNKNOWN_ID')
-                msg_content = msg.get('content', '')
-                msg_author = msg.get('author', {}).get('username', 'Unknown')
-                msg_timestamp = msg.get('timestamp')
-            
-            # Check if message is too old
-            if msg_timestamp:
-                if isinstance(msg_timestamp, str):
-                    msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
+    async def _process_new_signals(self, raw_messages, profile):
+        """Processes raw Discord messages into trade signals with enhanced logging."""
+        channel_name = profile.get('channel_name', profile['channel_id'])
+        
+        for msg in raw_messages:
+            msg_id = None  # Initialize OUTSIDE try block
+            try:
+                # Handle tuple format: (msg_id, msg_content, timestamp)
+                if isinstance(msg, tuple):
+                    msg_id = msg[0]
+                    msg_content = msg[1]
+                    msg_timestamp = msg[2].isoformat() if len(msg) > 2 else None
+                    msg_author = 'Discord'
                 else:
-                    msg_time = msg_timestamp
-                    
-                if msg_time < self._startup_time:
-                    logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
-                    self._processed_messages[profile['channel_id']].append(msg_id)
-                    continue
-            
-            logging.info(f"Processing message {msg_id} from '{msg_author}'")
-            logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
-            
-            # Skip if already processed
-            if msg_id in self._processed_messages[profile['channel_id']]:
-                logging.debug(f"Message {msg_id} already processed, skipping")
-                continue
-            
-            # Mark as processed immediately
-            self._processed_messages[profile['channel_id']].append(msg_id)
-            
-            # Check for channel-specific ignore keywords
-            channel_ignore = profile.get('buzzwords_ignore', [])
-            global_ignore = self.config.buzzwords_ignore
-            all_ignore_words = set(channel_ignore + global_ignore)
-            
-            if self._contains_keywords(msg_content, all_ignore_words):
-                ignored_word = self._get_matched_keyword(msg_content, all_ignore_words)
-                logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{ignored_word}' | Message: '{msg_content[:100]}'")
-                continue
-            
-            # Parse the signal with channel-specific buzzwords
-            parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
-            
-            if not parsed_signal:
-                logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:100]}'")
-                continue
-            
-            logging.info(f"✓ PARSED - Ticker: {parsed_signal['ticker']} | Strike: {parsed_signal['strike']} | Type: {parsed_signal['contract_type']} | Expiry: {parsed_signal['expiry_date']}")
-            
-            # Check sentiment if enabled
-            if self.config.sentiment_filter.get('enabled', False):
-                sentiment = self.sentiment_analyzer.get_sentiment_score(msg_content)
+                    # Handle dict format
+                    msg_id = msg.get('id', 'UNKNOWN_ID')
+                    msg_content = msg.get('content', '')
+                    msg_author = msg.get('author', {}).get('username', 'Unknown')
+                    msg_timestamp = msg.get('timestamp')
                 
-                if sentiment is not None:
-                    threshold = profile.get('sentiment_threshold', 0.0)
+                # Check if message is too old
+                if msg_timestamp:
+                    if isinstance(msg_timestamp, str):
+                        msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
+                    else:
+                        msg_time = msg_timestamp
+                        
+                    if msg_time < self._startup_time:
+                        logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
+                        self._processed_messages[profile['channel_id']].append(msg_id)
+                        continue
+                
+                logging.info(f"Processing message {msg_id} from '{msg_author}'")
+                logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
+                
+                # Skip if already processed
+                if msg_id in self._processed_messages[profile['channel_id']]:
+                    logging.debug(f"Message {msg_id} already processed, skipping")
+                    continue
+                
+                # Mark as processed immediately
+                self._processed_messages[profile['channel_id']].append(msg_id)
+                
+                # Check for channel-specific ignore keywords
+                channel_ignore = profile.get('buzzwords_ignore', [])
+                global_ignore = self.config.buzzwords_ignore
+                all_ignore_words = set(channel_ignore + global_ignore)
+                
+                if self._contains_keywords(msg_content, all_ignore_words):
+                    ignored_word = self._get_matched_keyword(msg_content, all_ignore_words)
+                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{ignored_word}' | Message: '{msg_content[:100]}'")
+                    continue
+                
+                # Parse the signal with channel-specific buzzwords
+                parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
+                
+                if not parsed_signal:
+                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:100]}'")
+                    continue
+                
+                logging.info(f"✓ PARSED - Ticker: {parsed_signal['ticker']} | Strike: {parsed_signal['strike']} | Type: {parsed_signal['contract_type']}")
+                
+                # Check sentiment if enabled
+                if profile.get('sentiment_filter', {}).get('enabled', False):
+                    sentiment = self.sentiment_analyzer.analyze_sentiment(msg_content)
+                    threshold = profile['sentiment_filter'].get('min_compound_score', 0.1)
                     
                     if sentiment < threshold:
                         logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment:.2f}) | Signal: {parsed_signal['ticker']}")
@@ -171,105 +261,127 @@ async def _process_new_signals(self, raw_messages, profile):
                     parsed_signal['sentiment'] = sentiment
                 else:
                     parsed_signal['sentiment'] = None
-            else:
-                parsed_signal['sentiment'] = None
-            
-            # Check global cooldown
-            if self._last_trade_time:
-                time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
-                cooldown = self.config.cooldown_after_trade_seconds
-                if time_since_last < cooldown:
-                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {cooldown}s) | Signal: {parsed_signal['ticker']}")
-                    continue
-            
-            # Execute the trade
-            logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
-            await self._execute_trade(parsed_signal, profile)
-            
-            # Save state after successful trade
-            all_processed_ids = []
-            for channel_deque in self._processed_messages.values():
-                all_processed_ids.extend(list(channel_deque))
-            
-            self.state_manager.save_state(self.open_positions, all_processed_ids)
-            
-        except Exception as e:
-            # msg_id is now guaranteed to be in scope (initialized at top of loop)
-            error_msg_id = msg_id if msg_id else 'UNKNOWN'
-            logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
+                
+                # Check global cooldown
+                if self._last_trade_time:
+                    time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
+                    cooldown = self.config.cooldown_after_trade_seconds
+                    if time_since_last < cooldown:
+                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {cooldown}s) | Signal: {parsed_signal['ticker']}")
+                        continue
+                
+                # Execute the trade
+                logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
+                await self._execute_trade(parsed_signal, profile)
+                
+                # Save state after successful trade
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
+                
+            except Exception as e:
+                # msg_id is now guaranteed to be in scope (initialized at top of loop)
+                error_msg_id = msg_id if msg_id else 'UNKNOWN'
+                logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
+
     def _contains_keywords(self, text, keywords):
-        """Check if text contains any of the keywords."""
-        text_upper = text.upper()
-        return any(keyword.upper() in text_upper for keyword in keywords)
-    
+        """Helper to check if text contains any keyword."""
+        text_lower = text.lower()
+        return any(keyword.lower() in text_lower for keyword in keywords)
+
     def _get_matched_keyword(self, text, keywords):
-        """Get the first matched keyword."""
-        text_upper = text.upper()
+        """Helper to get which keyword was matched."""
+        text_lower = text.lower()
         for keyword in keywords:
-            if keyword.upper() in text_upper:
+            if keyword.lower() in text_lower:
                 return keyword
         return None
 
-    async def _execute_trade(self, signal, profile):
-        """Executes a parsed trade signal."""
+    async def _execute_trade(self, parsed_signal, profile):
+        """Execute a trade based on the parsed signal."""
         try:
-            channel_name = profile.get('channel_name', 'Unknown')
+            # Create the contract
+            contract = await self.ib_interface.create_option_contract(
+                parsed_signal['ticker'],
+                parsed_signal['expiry'],
+                parsed_signal['strike'],
+                parsed_signal['contract_type'][0]
+            )
             
-            # Create contract from signal
-            contract = await self.ib_interface.create_contract_from_signal(signal)
-            
-            # Get market data
-            market_data = await self.ib_interface.get_live_ticker(contract)
-            
-            if not market_data or market_data.ask <= 0:
-                logging.error(f"No valid market data for {signal['ticker']}, skipping trade")
+            if not contract:
+                logging.error(f"Failed to create contract for {parsed_signal}")
                 return
             
-            market_price = market_data.ask
+            # Get current price
+            ticker_data = await self.ib_interface.get_live_ticker(contract)
+            if not ticker_data or ticker_data.last <= 0:
+                logging.error(f"No market data for {contract.localSymbol}")
+                return
             
-            # Calculate position size
-            allocation = profile['trading']['funds_allocation']
-            quantity = self._calculate_position_size(allocation, market_price)
+            current_price = ticker_data.last
             
+            # Calculate quantity
+            funds = profile['trading']['funds_allocation']
+            min_price = profile['trading']['min_price_per_contract']
+            max_price = profile['trading']['max_price_per_contract']
+            
+            if current_price < min_price or current_price > max_price:
+                logging.info(f"Price ${current_price:.2f} outside range [${min_price:.2f}-${max_price:.2f}]")
+                return
+            
+            quantity = self._calculate_quantity(funds, current_price)
             if quantity <= 0:
-                logging.warning(f"Calculated quantity is 0 or negative for {signal['ticker']}, skipping trade")
+                logging.info(f"Cannot afford contract at ${current_price:.2f}")
                 return
             
-            # Place the order
-            order = await self.ib_interface.place_order(contract, 'BUY', quantity)
+            # Place the order with native trail
+            safety_net = profile.get('safety_net', {})
+            native_trail = safety_net.get('native_trail_percent', 0.35)
             
-            if order:
+            trade = await self.ib_interface.place_order(
+                contract, 
+                quantity, 
+                'BUY',
+                native_trail_percent=native_trail
+            )
+            
+            if trade and trade.orderStatus.status == 'Filled':
                 # Track the position
-                position_info = {
+                conId = contract.conId
+                self.open_positions[conId] = {
                     'contract': contract,
                     'quantity': quantity,
-                    'entry_price': market_price,
+                    'entry_price': current_price,
                     'entry_time': datetime.now(),
+                    'highest_price': current_price,
+                    'signal': parsed_signal,
                     'profile': profile,
-                    'signal': signal,
-                    'order': order,
-                    'highest_price': market_price,
                     'breakeven_triggered': False,
-                    'last_bar': None,
-                    'bars_history': [],
+                    'bars_data': [],
                     'atr_values': [],
-                    'psar_values': {'sar': market_price, 'ep': market_price, 'af': 0.02},
-                    'rsi_values': []
+                    'rsi_values': [],
+                    'psar_values': {'sar': current_price, 'ep': current_price, 'af': 0.02}
                 }
                 
-                self.open_positions[contract.conId] = position_info
+                # Update last trade time
                 self._last_trade_time = datetime.now()
                 
-                # Send notifications
-                await self._send_trade_notification(position_info, 'ENTRY')
+                # Send Telegram notification
+                await self._send_telegram_notification(
+                    'ENTRY', 
+                    self.open_positions[conId], 
+                    'Manual/Unknown reason'
+                )
                 
-                logging.info(f"✅ TRADE OPENED - {signal['ticker']} {quantity}x @ ${market_price}")
-                
+                logging.info(f"✅ FILLED: {quantity} {contract.localSymbol} @ ${current_price:.2f}")
+            
         except Exception as e:
             logging.error(f"Error executing trade: {e}", exc_info=True)
 
-    def _calculate_position_size(self, allocation, price):
-        """Calculate the number of contracts based on allocation and price."""
+    def _calculate_quantity(self, allocation, price):
+        """Calculate the number of contracts to buy based on allocation and price."""
         if price <= 0:
             return 0
         contract_cost = price * 100
@@ -305,101 +417,62 @@ async def _process_new_signals(self, raw_messages, profile):
 
     async def _update_bar_data(self, position, current_price):
         """Update bar data for technical indicators."""
-        try:
-            current_time = datetime.now()
+        bars = position['bars_data']
+        bars.append(current_price)
+        
+        # Keep only recent bars
+        max_bars = 50
+        if len(bars) > max_bars:
+            position['bars_data'] = bars[-max_bars:]
+        
+        # Update ATR
+        if len(bars) >= 14:
+            df = pd.DataFrame({'close': bars})
+            df['high'] = df['close'].rolling(window=5).max()
+            df['low'] = df['close'].rolling(window=5).min()
             
-            # Initialize last_bar if needed
-            if position['last_bar'] is None:
-                position['last_bar'] = {
-                    'timestamp': current_time,
-                    'open': current_price,
-                    'high': current_price,
-                    'low': current_price,
-                    'close': current_price
-                }
-                return
-            
-            # Update current bar
-            position['last_bar']['high'] = max(position['last_bar']['high'], current_price)
-            position['last_bar']['low'] = min(position['last_bar']['low'], current_price)
-            position['last_bar']['close'] = current_price
-            
-            # Check if we should start a new bar (1 minute interval)
-            time_diff = (current_time - position['last_bar']['timestamp']).total_seconds()
-            
-            if time_diff >= 60:
-                # Complete the current bar
-                position['bars_history'].append(position['last_bar'])
-                
-                # Limit history to last 50 bars
-                if len(position['bars_history']) > 50:
-                    position['bars_history'].pop(0)
-                
-                # Calculate indicators
-                if len(position['bars_history']) >= 14:
-                    self._calculate_indicators(position)
-                
-                # Start new bar
-                position['last_bar'] = {
-                    'timestamp': current_time,
-                    'open': current_price,
-                    'high': current_price,
-                    'low': current_price,
-                    'close': current_price
-                }
-                
-        except Exception as e:
-            logging.error(f"Error updating bar data: {e}")
-
-    def _calculate_indicators(self, position):
-        """Calculate ATR, PSAR, and RSI from bar history."""
-        try:
-            bars = position['bars_history']
-            if len(bars) < 14:
-                return
-            
-            df = pd.DataFrame(bars)
-            
-            # ATR
-            profile = position['profile']
-            atr_period = profile['exit_strategy'].get('atr_period', 14)
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = np.max(ranges, axis=1)
-            atr = true_range.rolling(atr_period).mean().iloc[-1]
+            # Calculate ATR
+            df['tr'] = df[['high', 'low', 'close']].apply(
+                lambda x: max(x['high'] - x['low'], 
+                             abs(x['high'] - x['close']), 
+                             abs(x['low'] - x['close'])), 
+                axis=1
+            )
+            atr = df['tr'].rolling(window=14).mean().iloc[-1]
             position['atr_values'].append(atr)
+        
+        # Update RSI
+        if len(bars) >= 14:
+            prices = np.array(bars)
+            deltas = np.diff(prices)
+            gains = np.where(deltas > 0, deltas, 0)
+            losses = np.where(deltas < 0, -deltas, 0)
             
-            # PSAR
-            psar_data = position['psar_values']
-            current_bar = bars[-1]
-            is_call = position['signal']['contract_type'] == 'CALL'
+            avg_gain = np.mean(gains[-14:])
+            avg_loss = np.mean(losses[-14:])
             
-            if is_call:
-                if current_bar['high'] > psar_data['ep']:
-                    psar_data['ep'] = current_bar['high']
-                    psar_data['af'] = min(psar_data['af'] + 0.02, 0.2)
-                psar_data['sar'] = psar_data['sar'] + psar_data['af'] * (psar_data['ep'] - psar_data['sar'])
-            else:
-                if current_bar['low'] < psar_data['ep']:
-                    psar_data['ep'] = current_bar['low']
-                    psar_data['af'] = min(psar_data['af'] + 0.02, 0.2)
-                psar_data['sar'] = psar_data['sar'] + psar_data['af'] * (psar_data['ep'] - psar_data['sar'])
-            
-            # RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            position['rsi_values'].append(rsi.iloc[-1])
-            
-        except Exception as e:
-            logging.error(f"Error calculating indicators: {e}")
+            if avg_loss != 0:
+                rs = avg_gain / avg_loss
+                rsi = 100 - (100 / (1 + rs))
+                position['rsi_values'].append(rsi)
+        
+        # Update PSAR
+        psar = position['psar_values']
+        is_call = position['signal']['contract_type'] == 'CALL'
+        
+        if is_call:
+            if current_price > psar['ep']:
+                psar['ep'] = current_price
+                psar['af'] = min(psar['af'] + 0.02, 0.2)
+            psar['sar'] = psar['sar'] + psar['af'] * (psar['ep'] - psar['sar'])
+        else:
+            if current_price < psar['ep']:
+                psar['ep'] = current_price
+                psar['af'] = min(psar['af'] + 0.02, 0.2)
+            psar['sar'] = psar['sar'] - psar['af'] * (psar['sar'] - psar['ep'])
 
     async def _evaluate_exit_conditions(self, position, current_price):
-        """Evaluate exit conditions in priority order."""
+        """Evaluate all exit conditions based on priority."""
         profile = position['profile']
         exit_strategy = profile['exit_strategy']
         
@@ -470,39 +543,48 @@ async def _process_new_signals(self, raw_messages, profile):
             contract = position['contract']
             quantity = position['quantity']
             
+            # Cancel all orders first to prevent ghost trailing stops
+            await self.ib_interface.cancel_all_orders_for_contract(contract)
+            
             # Place sell order
-            await self.ib_interface.place_order(contract, 'SELL', quantity)
+            trade = await self.ib_interface.place_order(
+                contract, 
+                quantity, 
+                'SELL'
+            )
             
-            # Calculate P&L
-            entry_price = position['entry_price']
-            pnl = (exit_price - entry_price) * quantity * 100
-            pnl_percent = ((exit_price - entry_price) / entry_price) * 100
-            
-            position['exit_price'] = exit_price
-            position['pnl'] = pnl
-            position['pnl_percent'] = pnl_percent
-            position['exit_reason'] = exit_reason
-            
-            # Send notification
-            await self._send_trade_notification(position, 'EXIT', exit_reason)
-            
-            # Remove from tracking
-            del self.open_positions[conId]
-            
-            # Save state
-            all_processed_ids = []
-            for channel_deque in self._processed_messages.values():
-                all_processed_ids.extend(list(channel_deque))
-            
-            self.state_manager.save_state(self.open_positions, all_processed_ids)
-            
-            logging.info(f"✅ CLOSED - {contract.localSymbol} | Reason: {exit_reason} | P&L: ${pnl:.2f} ({pnl_percent:.1f}%)")
-            
+            if trade and trade.orderStatus.status == 'Filled':
+                # Calculate P&L
+                entry_total = position['entry_price'] * quantity * 100
+                exit_total = exit_price * quantity * 100
+                pnl = exit_total - entry_total
+                pnl_percent = (pnl / entry_total) * 100
+                
+                # Update position info for notification
+                position['exit_price'] = exit_price
+                position['pnl'] = pnl
+                position['pnl_percent'] = pnl_percent
+                
+                # Send Telegram notification
+                await self._send_telegram_notification('EXIT', position, exit_reason)
+                
+                # Remove from tracking
+                del self.open_positions[conId]
+                
+                logging.info(f"✅ CLOSED: {quantity} {contract.localSymbol} @ ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_percent:.1f}%)")
+                
+                # Save state
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
+                
         except Exception as e:
-            logging.error(f"Error closing trade: {e}", exc_info=True)
+            logging.error(f"Error closing position: {e}", exc_info=True)
 
-    async def _send_trade_notification(self, position_info, status, exit_reason=None):
-        """Send formatted trade notification via Telegram."""
+    async def _send_telegram_notification(self, status, position_info, exit_reason):
+        """Send formatted Telegram notifications for trade events."""
         try:
             signal = position_info['signal']
             profile = position_info['profile']
@@ -552,94 +634,20 @@ async def _process_new_signals(self, raw_messages, profile):
         except Exception as e:
             logging.error(f"Error sending Telegram notification: {e}")
 
-    async def _reconciliation_loop(self):
-        """Periodic reconciliation with broker."""
-        while not self._shutdown_event.is_set():
-            await asyncio.sleep(self.config.reconciliation_interval_seconds)
-            
-            try:
-                logging.info("--- Starting periodic position reconciliation ---")
-                
-                # Get broker positions
-                ib_positions = await self.ib_interface.get_open_positions()
-                
-                # Filter out zero positions
-                active_ib_positions = [p for p in ib_positions if p.position != 0]
-                
-                logging.info(f"Reconciliation: Found {len(active_ib_positions)} active positions at broker")
-                
-                # Check for untracked positions
-                untracked_count = 0
-                for ib_pos in active_ib_positions:
-                    if ib_pos.contract.conId not in self.open_positions:
-                        untracked_count += 1
-                        logging.warning(f"Found untracked position: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
-                
-                if untracked_count > 0:
-                    logging.warning(f"Reconciliation: Found {untracked_count} untracked position(s) at broker")
-                
-                # Check for positions we track but broker doesn't have
-                for conId, position in list(self.open_positions.items()):
-                    broker_has_it = any(p.contract.conId == conId for p in active_ib_positions)
-                    if not broker_has_it:
-                        logging.warning(f"Position {position['signal']['ticker']} not found at broker, removing from tracking")
-                        del self.open_positions[conId]
-                
-                # Save state
-                all_processed_ids = []
-                for channel_deque in self._processed_messages.values():
-                    all_processed_ids.extend(list(channel_deque))
-                
-                self.state_manager.save_state(self.open_positions, all_processed_ids)
-                logging.info("--- Position reconciliation complete ---")
-                
-            except Exception as e:
-                logging.error(f"Error during reconciliation: {e}")
-
-    async def _initial_reconciliation(self):
-        """Initial reconciliation on startup."""
-        logging.info("Performing initial state reconciliation with broker...")
-        
+    async def _handle_order_fill(self, trade):
+        """Callback for handling order fills from IB."""
         try:
-            ib_positions = await self.ib_interface.get_open_positions()
+            order = trade.order
+            contract = trade.contract
+            fill = trade.fills[-1] if trade.fills else None
             
-            # Filter out zero positions
-            active_positions = [p for p in ib_positions if p.position != 0]
+            if not fill:
+                return
             
-            logging.info(f"Reconciliation: Found {len(active_positions)} active positions at broker")
+            logging.info(f"Order filled: {order.action} {fill.execution.shares} {contract.localSymbol} @ ${fill.execution.avgPrice:.2f}")
             
-            # Check against saved state
-            for ib_pos in active_positions:
-                if ib_pos.contract.conId in self.open_positions:
-                    logging.info(f"Position {ib_pos.contract.localSymbol} verified with broker")
-                else:
-                    logging.warning(f"Untracked position found: {ib_pos.contract.localSymbol} qty={ib_pos.position}")
-            
-            # Remove positions from state that broker doesn't have
-            for conId in list(self.open_positions.keys()):
-                if not any(p.contract.conId == conId for p in active_positions):
-                    logging.warning(f"Removing stale position {conId} from state")
-                    del self.open_positions[conId]
-            
-            # Save corrected state
-            all_processed_ids = []
-            for channel_deque in self._processed_messages.values():
-                all_processed_ids.extend(list(channel_deque))
-            
-            self.state_manager.save_state(self.open_positions, all_processed_ids)
-            logging.info(f"Reconciliation complete. Tracking {len(self.open_positions)} verified positions.")
+            # Update last trade time for cooldown
+            self._last_trade_time = datetime.now()
             
         except Exception as e:
-            logging.error(f"Error during initial reconciliation: {e}")
-
-    async def shutdown(self):
-        """Graceful shutdown."""
-        logging.info("Shutting down SignalProcessor...")
-        self._shutdown_event.set()
-        
-        # Save final state
-        all_processed_ids = []
-        for channel_deque in self._processed_messages.values():
-            all_processed_ids.extend(list(channel_deque))
-        
-        self.state_manager.save_state(self.open_positions, all_processed_ids)
+            logging.error(f"Error handling order fill: {e}", exc_info=True)
