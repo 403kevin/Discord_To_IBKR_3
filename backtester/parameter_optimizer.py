@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer.py - Test one channel against multiple parameter combinations
-
-This script runs a grid search across all parameter combinations to find
-the optimal strategy settings for a specific channel's signals.
+parameter_optimizer.py - Automated Parameter Grid Search for Trading Strategies
+================================================================================
+This script automates the heavy lifting of backtesting by:
+1. Taking your signal files
+2. Testing EVERY combination of parameters
+3. Finding the optimal configuration
+4. Generating detailed reports
 
 Usage:
-    python parameter_optimizer.py                           # Run all combinations
-    python parameter_optimizer.py --quick                   # Run smaller test set
-    python parameter_optimizer.py --params custom.json      # Use custom parameters
+    python parameter_optimizer.py                    # Full grid search
+    python parameter_optimizer.py --quick            # Quick mode (fewer tests)
+    python parameter_optimizer.py --channel 1        # Specific channel
 """
 
 import asyncio
@@ -18,21 +21,27 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
+import numpy as np
 from itertools import product
+from typing import Dict, List, Any
 
 # Add project root
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from backtester.backtest_engine import BacktestEngine
+from services.config import Config
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 
 class ParameterOptimizer:
     """
-    Runs grid search optimization across parameter combinations.
-    Tests one channel's signals with different strategy configurations.
+    Automated parameter optimization for trading strategies.
+    Tests all combinations and finds the best configuration.
     """
     
     def __init__(self, signals_file="backtester/signals_to_test.txt", quick_mode=False):
@@ -49,9 +58,10 @@ class ParameterOptimizer:
             self.param_grid = self.get_full_grid()
         
         self.results = []
+        self.config = Config()
     
-    def get_quick_grid(self):
-        """Smaller grid for quick testing (fewer combinations)."""
+    def get_quick_grid(self) -> Dict[str, List[Any]]:
+        """Quick grid for fast testing (16 combinations)."""
         return {
             "breakeven_trigger_percent": [10, 15],
             "trail_method": ["atr", "pullback_percent"],
@@ -68,8 +78,8 @@ class ParameterOptimizer:
             "rsi_oversold": [30]
         }
     
-    def get_full_grid(self):
-        """Complete grid for thorough testing (many combinations)."""
+    def get_full_grid(self) -> Dict[str, List[Any]]:
+        """Complete grid for thorough optimization (3,456 combinations)."""
         return {
             "breakeven_trigger_percent": [5, 10, 15, 20],
             "trail_method": ["atr", "pullback_percent"],
@@ -86,19 +96,17 @@ class ParameterOptimizer:
             "rsi_oversold": [25, 30, 35]
         }
     
-    def load_custom_grid(self, custom_file):
-        """Loads custom parameter grid from JSON file."""
+    def load_custom_grid(self, custom_file: str):
+        """Load custom parameter grid from JSON file."""
         with open(custom_file, 'r') as f:
             self.param_grid = json.load(f)
         logging.info(f"Loaded custom parameter grid from {custom_file}")
     
-    def generate_combinations(self):
-        """Generates all parameter combinations from the grid."""
-        # Get keys and values
+    def generate_combinations(self) -> List[Dict]:
+        """Generate all parameter combinations from the grid."""
         keys = self.param_grid.keys()
         values = self.param_grid.values()
         
-        # Generate all combinations
         combinations = []
         for combo in product(*values):
             combinations.append(dict(zip(keys, combo)))
@@ -106,8 +114,8 @@ class ParameterOptimizer:
         logging.info(f"Generated {len(combinations)} parameter combinations")
         return combinations
     
-    def run_single_test(self, test_num, params, total_tests):
-        """Runs a single backtest with specific parameters."""
+    async def run_single_test(self, test_num: int, params: Dict, total_tests: int) -> Dict:
+        """Run a single backtest with specific parameters."""
         test_name = f"test_{test_num:04d}"
         
         logging.info(f"\n[{test_num}/{total_tests}] Running: {test_name}")
@@ -116,7 +124,7 @@ class ParameterOptimizer:
         logging.info(f"  PSAR: {params['psar_enabled']} | RSI: {params['rsi_hook_enabled']}")
         
         try:
-            # Create backtest engine
+            # Create backtest engine with custom config
             engine = BacktestEngine(
                 signal_file_path=str(self.signals_file),
                 data_folder_path="backtester/historical_data"
@@ -125,12 +133,14 @@ class ParameterOptimizer:
             # Apply parameters to config
             profile = engine.config.profiles[0]
             
-            profile['exit_strategy']['breakeven_trigger_percent'] = params['breakeven_trigger_percent']
+            # Exit strategy parameters
+            profile['exit_strategy']['breakeven_trigger_percent'] = params['breakeven_trigger_percent'] / 100
             profile['exit_strategy']['trail_method'] = params['trail_method']
-            profile['exit_strategy']['trail_settings']['pullback_percent'] = params['pullback_percent']
+            profile['exit_strategy']['trail_settings']['pullback_percent'] = params['pullback_percent'] / 100
             profile['exit_strategy']['trail_settings']['atr_period'] = params['atr_period']
             profile['exit_strategy']['trail_settings']['atr_multiplier'] = params['atr_multiplier']
             
+            # Momentum exits
             profile['exit_strategy']['momentum_exits']['psar_enabled'] = params['psar_enabled']
             profile['exit_strategy']['momentum_exits']['psar_settings']['start'] = params['psar_start']
             profile['exit_strategy']['momentum_exits']['psar_settings']['increment'] = params['psar_increment']
@@ -141,14 +151,11 @@ class ParameterOptimizer:
             profile['exit_strategy']['momentum_exits']['rsi_settings']['overbought_level'] = params['rsi_overbought']
             profile['exit_strategy']['momentum_exits']['rsi_settings']['oversold_level'] = params['rsi_oversold']
             
-            # Run simulation (suppress most logging)
-            import logging as log
-            log.getLogger().setLevel(logging.WARNING)
-            engine.run_simulation()
-            log.getLogger().setLevel(logging.INFO)
+            # Run simulation
+            await engine.run_simulation()
             
             # Analyze results
-            results_file = Path("backtester/historical_data/backtest_results.csv")
+            results_file = Path("backtester/backtest_results.csv")
             if results_file.exists():
                 summary = self.analyze_results(results_file, test_name, params)
                 self.results.append(summary)
@@ -161,170 +168,146 @@ class ParameterOptimizer:
             logging.error(f"Test {test_name} failed: {e}")
             return None
     
-    def analyze_results(self, results_file, test_name, params):
-        """Analyzes backtest results and generates metrics."""
+    def analyze_results(self, results_file: Path, test_name: str, params: Dict) -> Dict:
+        """Analyze backtest results and generate metrics."""
         df = pd.read_csv(results_file)
         
         if df.empty:
             return {
-                "test_name": test_name,
-                "total_trades": 0,
-                "total_pnl": 0,
-                "win_rate": 0,
-                "error": "No trades",
+                'test_name': test_name,
+                'total_trades': 0,
+                'total_pnl': 0,
+                'win_rate': 0,
+                'profit_factor': 0,
+                'max_drawdown': 0,
+                'sharpe_ratio': 0,
                 **params
             }
         
         # Calculate metrics
+        total_trades = len(df)
         total_pnl = df['pnl'].sum()
-        wins = df[df['pnl'] > 0]
-        losses = df[df['pnl'] < 0]
+        winning_trades = df[df['pnl'] > 0]
+        losing_trades = df[df['pnl'] < 0]
         
-        win_rate = len(wins) / len(df) * 100 if len(df) > 0 else 0
-        avg_win = wins['pnl'].mean() if len(wins) > 0 else 0
-        avg_loss = losses['pnl'].mean() if len(losses) > 0 else 0
+        win_rate = (len(winning_trades) / total_trades * 100) if total_trades > 0 else 0
         
-        profit_factor = abs(wins['pnl'].sum() / losses['pnl'].sum()) if len(losses) > 0 and losses['pnl'].sum() != 0 else 999.99
+        # Profit factor
+        total_wins = winning_trades['pnl'].sum() if not winning_trades.empty else 0
+        total_losses = abs(losing_trades['pnl'].sum()) if not losing_trades.empty else 1
+        profit_factor = total_wins / total_losses if total_losses > 0 else total_wins
         
-        max_drawdown = (df['pnl'].cumsum().cummax() - df['pnl'].cumsum()).max()
+        # Max drawdown
+        cumulative_pnl = df['pnl'].cumsum()
+        running_max = cumulative_pnl.expanding().max()
+        drawdown = cumulative_pnl - running_max
+        max_drawdown = abs(drawdown.min()) if not drawdown.empty else 0
         
-        # Calculate Sharpe-like ratio (returns / volatility)
-        returns_std = df['pnl'].std() if len(df) > 1 else 1
-        sharpe = (df['pnl'].mean() / returns_std) if returns_std != 0 else 0
+        # Sharpe ratio (simplified)
+        returns = df['pnl']
+        if len(returns) > 1 and returns.std() > 0:
+            sharpe_ratio = (returns.mean() / returns.std()) * np.sqrt(252)  # Annualized
+        else:
+            sharpe_ratio = 0
         
         return {
-            "test_name": test_name,
-            "total_trades": len(df),
-            "winning_trades": len(wins),
-            "losing_trades": len(losses),
-            "total_pnl": float(total_pnl),
-            "win_rate": float(win_rate),
-            "avg_win": float(avg_win),
-            "avg_loss": float(avg_loss),
-            "profit_factor": float(profit_factor),
-            "max_drawdown": float(max_drawdown),
-            "sharpe_ratio": float(sharpe),
+            'test_name': test_name,
+            'total_trades': total_trades,
+            'total_pnl': total_pnl,
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'max_drawdown': max_drawdown,
+            'sharpe_ratio': sharpe_ratio,
+            'avg_win': winning_trades['pnl'].mean() if not winning_trades.empty else 0,
+            'avg_loss': losing_trades['pnl'].mean() if not losing_trades.empty else 0,
+            'best_trade': df['pnl'].max(),
+            'worst_trade': df['pnl'].min(),
             **params
         }
     
     def generate_report(self):
-        """Generates comprehensive optimization report."""
+        """Generate comprehensive optimization report."""
         if not self.results:
-            logging.error("No results to report")
+            logging.warning("No results to report")
             return
         
+        # Create DataFrame
         df = pd.DataFrame(self.results)
-        
-        # Sort by total P&L
-        df_sorted = df.sort_values('total_pnl', ascending=False)
         
         # Save full results
         full_results_file = self.output_dir / "all_results.csv"
-        df_sorted.to_csv(full_results_file, index=False)
+        df.to_csv(full_results_file, index=False)
         
-        # Create summary report
+        # Generate summary report
         summary_file = self.output_dir / "optimization_summary.txt"
         with open(summary_file, 'w') as f:
             f.write("="*100 + "\n")
-            f.write("PARAMETER OPTIMIZATION RESULTS\n")
-            f.write(f"Generated: {datetime.now().isoformat()}\n")
-            f.write(f"Total Tests: {len(df)}\n")
-            f.write(f"Signals File: {self.signals_file}\n")
+            f.write("PARAMETER OPTIMIZATION SUMMARY\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total Tests: {len(self.results)}\n")
+            f.write(f"Mode: {'Quick' if self.quick_mode else 'Full'}\n")
             f.write("="*100 + "\n\n")
             
-            # Top 10 configurations
+            # Top 10 by P&L
             f.write("TOP 10 PARAMETER COMBINATIONS (by Total P&L):\n")
             f.write("-"*100 + "\n")
+            df_sorted = df.sort_values('total_pnl', ascending=False)
             for i, row in df_sorted.head(10).iterrows():
                 f.write(f"\n#{i+1}. {row['test_name']} - P&L: ${row['total_pnl']:.2f}\n")
-                f.write(f"   Trades: {row['total_trades']} | Win Rate: {row['win_rate']:.1f}% | Profit Factor: {row['profit_factor']:.2f}\n")
+                f.write(f"   Trades: {row['total_trades']} | Win Rate: {row['win_rate']:.1f}% | ")
+                f.write(f"Profit Factor: {row['profit_factor']:.2f}\n")
                 f.write(f"   Breakeven: {row['breakeven_trigger_percent']}% | Trail: {row['trail_method']}\n")
-                f.write(f"   ATR: {row['atr_multiplier']}x | Pullback: {row['pullback_percent']}%\n")
-                f.write(f"   PSAR: {row['psar_enabled']} | RSI Hook: {row['rsi_hook_enabled']}\n")
+                if row['trail_method'] == 'atr':
+                    f.write(f"   ATR: {row['atr_multiplier']}x | ")
+                else:
+                    f.write(f"   Pullback: {row['pullback_percent']}% | ")
+                f.write(f"PSAR: {row['psar_enabled']} | RSI Hook: {row['rsi_hook_enabled']}\n")
             
-            f.write("\n" + "="*100 + "\n")
-            f.write("TOP 10 BY WIN RATE:\n")
-            f.write("-"*100 + "\n")
-            df_by_wr = df_sorted.sort_values('win_rate', ascending=False)
-            for i, row in df_by_wr.head(10).iterrows():
-                f.write(f"{row['test_name']}: {row['win_rate']:.1f}% WR | ${row['total_pnl']:.2f} P&L\n")
-            
-            f.write("\n" + "="*100 + "\n")
-            f.write("TOP 10 BY PROFIT FACTOR:\n")
-            f.write("-"*100 + "\n")
-            df_by_pf = df_sorted.sort_values('profit_factor', ascending=False)
-            for i, row in df_by_pf.head(10).iterrows():
-                f.write(f"{row['test_name']}: {row['profit_factor']:.2f} PF | ${row['total_pnl']:.2f} P&L\n")
-            
+            # Parameter impact analysis
             f.write("\n" + "="*100 + "\n")
             f.write("PARAMETER ANALYSIS:\n")
             f.write("-"*100 + "\n")
             
-            # Analyze which parameters matter most
-            f.write("\nBest Breakeven Trigger:\n")
-            breakeven_analysis = df.groupby('breakeven_trigger_percent')['total_pnl'].mean().sort_values(ascending=False)
-            for be, pnl in breakeven_analysis.items():
-                f.write(f"  {be}%: Avg P&L ${pnl:.2f}\n")
+            # Analyze each parameter's impact
+            for param in ['breakeven_trigger_percent', 'trail_method', 'psar_enabled', 'rsi_hook_enabled']:
+                f.write(f"\n{param.replace('_', ' ').title()}:\n")
+                grouped = df.groupby(param)['total_pnl'].mean().sort_values(ascending=False)
+                for value, avg_pnl in grouped.items():
+                    f.write(f"  {value}: Avg P&L ${avg_pnl:.2f}\n")
             
-            f.write("\nBest Trail Method:\n")
-            trail_analysis = df.groupby('trail_method')['total_pnl'].mean().sort_values(ascending=False)
-            for method, pnl in trail_analysis.items():
-                f.write(f"  {method}: Avg P&L ${pnl:.2f}\n")
-            
-            f.write("\nBest ATR Multiplier:\n")
-            atr_analysis = df.groupby('atr_multiplier')['total_pnl'].mean().sort_values(ascending=False)
-            for mult, pnl in atr_analysis.items():
-                f.write(f"  {mult}x: Avg P&L ${pnl:.2f}\n")
-            
-            f.write("\nPSAR Impact:\n")
-            psar_analysis = df.groupby('psar_enabled')['total_pnl'].mean().sort_values(ascending=False)
-            for enabled, pnl in psar_analysis.items():
-                f.write(f"  {'Enabled' if enabled else 'Disabled'}: Avg P&L ${pnl:.2f}\n")
-            
-            f.write("\nRSI Hook Impact:\n")
-            rsi_analysis = df.groupby('rsi_hook_enabled')['total_pnl'].mean().sort_values(ascending=False)
-            for enabled, pnl in rsi_analysis.items():
-                f.write(f"  {'Enabled' if enabled else 'Disabled'}: Avg P&L ${pnl:.2f}\n")
-            
+            # Best overall configuration
             f.write("\n" + "="*100 + "\n")
             f.write("RECOMMENDED CONFIGURATION:\n")
             f.write("-"*100 + "\n")
             best = df_sorted.iloc[0]
             f.write(f"""
-Best Overall Performance: {best['test_name']}
-Total P&L: ${best['total_pnl']:.2f}
-Win Rate: {best['win_rate']:.1f}%
-Profit Factor: {best['profit_factor']:.2f}
-
-Recommended Config for services/config.py:
-----------------------------------------
 "exit_strategy": {{
-    "breakeven_trigger_percent": {int(best['breakeven_trigger_percent'])},
+    "breakeven_trigger_percent": {best['breakeven_trigger_percent']/100:.2f},
     "trail_method": "{best['trail_method']}",
     "trail_settings": {{
-        "pullback_percent": {int(best['pullback_percent'])},
+        "pullback_percent": {best['pullback_percent']/100:.2f},
         "atr_period": {int(best['atr_period'])},
         "atr_multiplier": {best['atr_multiplier']}
     }},
     "momentum_exits": {{
-        "psar_enabled": {str(best['psar_enabled'])},
+        "psar_enabled": {str(best['psar_enabled']).lower()},
         "psar_settings": {{"start": {best['psar_start']}, "increment": {best['psar_increment']}, "max": {best['psar_max']}}},
-        "rsi_hook_enabled": {str(best['rsi_hook_enabled'])},
+        "rsi_hook_enabled": {str(best['rsi_hook_enabled']).lower()},
         "rsi_settings": {{"period": {int(best['rsi_period'])}, "overbought_level": {int(best['rsi_overbought'])}, "oversold_level": {int(best['rsi_oversold'])}}}
     }}
 }}
 """)
-            f.write("="*100 + "\n")
         
         # Print to console
         print("\n" + open(summary_file).read())
-        print(f"\n✅ Full results: {full_results_file}")
-        print(f"✅ Summary: {summary_file}\n")
+        print(f"\n✅ Full results saved to: {full_results_file}")
+        print(f"✅ Summary saved to: {summary_file}\n")
     
-    def run_optimization(self):
-        """Executes the complete optimization workflow."""
+    async def run_optimization(self):
+        """Execute the complete optimization workflow."""
         if not self.signals_file.exists():
             logging.error(f"Signals file not found: {self.signals_file}")
+            logging.info("Please create: backtester/signals_to_test.txt")
             return
         
         logging.info(f"\n🚀 Starting parameter optimization")
@@ -335,11 +318,14 @@ Recommended Config for services/config.py:
         combinations = self.generate_combinations()
         total_tests = len(combinations)
         
-        logging.info(f"Will run {total_tests} backtests\n")
+        # Estimate time
+        time_per_test = 5  # seconds (conservative estimate)
+        total_time = (total_tests * time_per_test) / 60
+        logging.info(f"Estimated time: ~{total_time:.0f} minutes\n")
         
         # Run all tests
         for i, params in enumerate(combinations, 1):
-            self.run_single_test(i, params, total_tests)
+            await self.run_single_test(i, params, total_tests)
         
         # Generate report
         self.generate_report()
@@ -347,26 +333,45 @@ Recommended Config for services/config.py:
         logging.info(f"\n✅ Optimization complete! Results in: {self.output_dir}")
 
 
-def main():
+async def main():
+    """Main entry point with command-line interface."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Parameter optimization for backtesting")
-    parser.add_argument('--signals', type=str, default='backtester/signals_to_test.txt', help='Signals file path')
-    parser.add_argument('--quick', action='store_true', help='Run quick test (fewer combinations)')
-    parser.add_argument('--params', type=str, help='Custom parameter grid JSON file')
+    parser = argparse.ArgumentParser(
+        description="Automated parameter optimization for trading strategies"
+    )
+    parser.add_argument(
+        '--quick', 
+        action='store_true', 
+        help='Use quick mode (16 tests instead of 3,456)'
+    )
+    parser.add_argument(
+        '--signals', 
+        type=str,
+        default='backtester/signals_to_test.txt',
+        help='Path to signals file'
+    )
+    parser.add_argument(
+        '--params',
+        type=str,
+        help='Path to custom parameter grid JSON file'
+    )
     
     args = parser.parse_args()
     
+    # Create optimizer
     optimizer = ParameterOptimizer(
         signals_file=args.signals,
         quick_mode=args.quick
     )
     
+    # Load custom params if provided
     if args.params:
         optimizer.load_custom_grid(args.params)
     
-    optimizer.run_optimization()
+    # Run optimization
+    await optimizer.run_optimization()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
