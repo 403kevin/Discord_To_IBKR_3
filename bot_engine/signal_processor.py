@@ -89,9 +89,9 @@ class SignalProcessor:
         channel_name = profile.get('channel_name', profile['channel_id'])
         
         for msg in raw_messages:
-    try:
-        msg_id = msg.get('id', 'UNKNOWN_ID')  # ← Provide default
-        msg_content = msg.get('content', '')
+            try:
+                msg_id = msg.get('id', 'UNKNOWN_ID')  # ← Provide default
+                msg_content = msg.get('content', '')
                 msg_author = msg.get('author', {}).get('username', 'Unknown')
                 msg_timestamp = msg.get('timestamp')
                 
@@ -181,8 +181,8 @@ class SignalProcessor:
                 
                 self.state_manager.save_state(self.open_positions, all_processed_ids)
                 
-      except Exception as e:
-            logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
+            except Exception as e:
+                logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
 
     def _contains_keywords(self, text, keywords):
         """Check if text contains any of the keywords."""
