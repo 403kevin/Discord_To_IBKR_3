@@ -84,19 +84,28 @@ class SignalProcessor:
                     
             await asyncio.sleep(self.config.polling_interval_seconds)
 
+The code looks correct syntactically. The issue must be **above** this section. 
+
+The `except` at line 196 belongs to the `try` block that starts earlier in the loop. Check if there's a **missing indent** or **incomplete statement** in the lines BEFORE what you pasted.
+
+**Most likely culprit:** The tuple/dict handling code you added has a syntax error.
+
+**Solution: Replace the entire `_process_new_signals` method with this corrected version:**
+
+```python
 async def _process_new_signals(self, raw_messages, profile):
     """Processes raw Discord messages into trade signals with enhanced logging."""
     channel_name = profile.get('channel_name', profile['channel_id'])
     
     for msg in raw_messages:
-        msg_id = None
+        msg_id = None  # Initialize OUTSIDE try block
         try:
             # Handle tuple format: (msg_id, msg_content, timestamp)
             if isinstance(msg, tuple):
                 msg_id = msg[0]
                 msg_content = msg[1]
                 msg_timestamp = msg[2].isoformat() if len(msg) > 2 else None
-                msg_author = 'Discord'  # Not available in tuple format
+                msg_author = 'Discord'
             else:
                 # Handle dict format
                 msg_id = msg.get('id', 'UNKNOWN_ID')
@@ -104,99 +113,102 @@ async def _process_new_signals(self, raw_messages, profile):
                 msg_author = msg.get('author', {}).get('username', 'Unknown')
                 msg_timestamp = msg.get('timestamp')
             
-            # Rest of the code stays the same...
+            # Check if message is too old
             if msg_timestamp:
                 if isinstance(msg_timestamp, str):
                     msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
                 else:
-                    msg_time = msg_timestamp  # Already datetime
+                    msg_time = msg_timestamp
                     
                 if msg_time < self._startup_time:
                     logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
                     self._processed_messages[profile['channel_id']].append(msg_id)
                     continue
+            
+            logging.info(f"Processing message {msg_id} from '{msg_author}'")
+            logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
+            
+            # Skip if already processed
+            if msg_id in self._processed_messages[profile['channel_id']]:
+                logging.debug(f"Message {msg_id} already processed, skipping")
+                continue
+            
+            # Mark as processed immediately
+            self._processed_messages[profile['channel_id']].append(msg_id)
+            
+            # Check for channel-specific ignore keywords
+            channel_ignore = profile.get('buzzwords_ignore', [])
+            global_ignore = self.config.buzzwords_ignore
+            all_ignore_words = set(channel_ignore + global_ignore)
+            
+            if self._contains_keywords(msg_content, all_ignore_words):
+                ignored_word = self._get_matched_keyword(msg_content, all_ignore_words)
+                logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{ignored_word}' | Message: '{msg_content[:100]}'")
+                continue
+            
+            # Parse the signal with channel-specific buzzwords
+            parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
+            
+            if not parsed_signal:
+                logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:100]}'")
+                continue
+            
+            logging.info(f"✓ PARSED - Ticker: {parsed_signal['ticker']} | Strike: {parsed_signal['strike']} | Type: {parsed_signal['contract_type']} | Expiry: {parsed_signal['expiry_date']}")
+            
+            # Check sentiment if enabled
+            if self.config.sentiment_filter.get('enabled', False):
+                sentiment = self.sentiment_analyzer.get_sentiment_score(msg_content)
                 
-                logging.info(f"Processing message {msg_id} from '{msg_author}'")
-                logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
-                
-                # Skip if already processed
-                if msg_id in self._processed_messages[profile['channel_id']]:
-                    logging.debug(f"Message {msg_id} already processed, skipping")
-                    continue
-                
-                # Mark as processed immediately
-                self._processed_messages[profile['channel_id']].append(msg_id)
-                
-                # Check for channel-specific ignore keywords
-                channel_ignore = profile.get('buzzwords_ignore', [])
-                global_ignore = self.config.buzzwords_ignore
-                all_ignore_words = set(channel_ignore + global_ignore)
-                
-                if self._contains_keywords(msg_content, all_ignore_words):
-                    ignored_word = self._get_matched_keyword(msg_content, all_ignore_words)
-                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{ignored_word}' | Message: '{msg_content[:100]}'")
-                    continue
-                
-                # Parse the signal with channel-specific buzzwords
-                parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
-                
-                if not parsed_signal:
-                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:100]}'")
-                    continue
-                
-                logging.info(f"✓ PARSED - Ticker: {parsed_signal['ticker']} | Strike: {parsed_signal['strike']} | Type: {parsed_signal['contract_type']} | Expiry: {parsed_signal['expiry_date']}")
-                
-                # Check sentiment if enabled
-                if self.config.sentiment_filter.get('enabled', False):
-                    sentiment = self.sentiment_analyzer.get_sentiment_score(msg_content)
+                if sentiment is not None:
+                    threshold = profile.get('sentiment_threshold', 0.0)
                     
-                    if sentiment is not None:
-                        threshold = profile.get('sentiment_threshold', 0.0)
+                    if sentiment < threshold:
+                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment:.2f}) | Signal: {parsed_signal['ticker']}")
                         
-                        if sentiment < threshold:
-                            logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment:.2f}) | Signal: {parsed_signal['ticker']}")
-                            
-                            # Send Telegram notification for sentiment veto
-                            veto_msg = (
-                                f"🚫 *Trade Vetoed by Sentiment*\n\n"
-                                f"Channel: {channel_name}\n"
-                                f"Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}\n"
-                                f"Sentiment Score: {sentiment:.2f}\n"
-                                f"Threshold: {threshold:.2f}\n"
-                                f"Message: _{msg_content[:100]}_"
-                            )
-                            await self.telegram_interface.send_message(veto_msg)
-                            continue
-                        
-                        parsed_signal['sentiment'] = sentiment
-                    else:
-                        parsed_signal['sentiment'] = None
+                        # Send Telegram notification for sentiment veto
+                        veto_msg = (
+                            f"🚫 *Trade Vetoed by Sentiment*\n\n"
+                            f"Channel: {channel_name}\n"
+                            f"Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}\n"
+                            f"Sentiment Score: {sentiment:.2f}\n"
+                            f"Threshold: {threshold:.2f}\n"
+                            f"Message: _{msg_content[:100]}_"
+                        )
+                        await self.telegram_interface.send_message(veto_msg)
+                        continue
+                    
+                    parsed_signal['sentiment'] = sentiment
                 else:
                     parsed_signal['sentiment'] = None
-                
-                # Check global cooldown
-                if self._last_trade_time:
-                    time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
-                    cooldown = self.config.cooldown_after_trade_seconds
-                    if time_since_last < cooldown:
-                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {cooldown}s) | Signal: {parsed_signal['ticker']}")
-                        continue
-                
-                # Execute the trade
-                logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
-                await self._execute_trade(parsed_signal, profile)
-                
-                # Save state after successful trade
-                all_processed_ids = []
-                for channel_deque in self._processed_messages.values():
-                    all_processed_ids.extend(list(channel_deque))
-                
-                self.state_manager.save_state(self.open_positions, all_processed_ids)
-                
-            except Exception as e:
-                # msg_id is now guaranteed to be in scope (initialized at top of loop)
-                error_msg_id = msg_id if msg_id else 'UNKNOWN'
-                logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
+            else:
+                parsed_signal['sentiment'] = None
+            
+            # Check global cooldown
+            if self._last_trade_time:
+                time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
+                cooldown = self.config.cooldown_after_trade_seconds
+                if time_since_last < cooldown:
+                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {cooldown}s) | Signal: {parsed_signal['ticker']}")
+                    continue
+            
+            # Execute the trade
+            logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
+            await self._execute_trade(parsed_signal, profile)
+            
+            # Save state after successful trade
+            all_processed_ids = []
+            for channel_deque in self._processed_messages.values():
+                all_processed_ids.extend(list(channel_deque))
+            
+            self.state_manager.save_state(self.open_positions, all_processed_ids)
+            
+        except Exception as e:
+            # msg_id is now guaranteed to be in scope (initialized at top of loop)
+            error_msg_id = msg_id if msg_id else 'UNKNOWN'
+            logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
+
+
+This is the complete, properly indented method that handles both tuple and dict message formats.=True)
 
     def _contains_keywords(self, text, keywords):
         """Check if text contains any of the keywords."""
