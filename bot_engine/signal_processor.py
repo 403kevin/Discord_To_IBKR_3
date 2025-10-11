@@ -84,25 +84,37 @@ class SignalProcessor:
                     
             await asyncio.sleep(self.config.polling_interval_seconds)
 
-    async def _process_new_signals(self, raw_messages, profile):
-        """Processes raw Discord messages into trade signals with enhanced logging."""
-        channel_name = profile.get('channel_name', profile['channel_id'])
-        
-        for msg in raw_messages:
-            msg_id = None  # Initialize OUTSIDE try block to ensure it's in scope
-            try:
+async def _process_new_signals(self, raw_messages, profile):
+    """Processes raw Discord messages into trade signals with enhanced logging."""
+    channel_name = profile.get('channel_name', profile['channel_id'])
+    
+    for msg in raw_messages:
+        msg_id = None
+        try:
+            # Handle tuple format: (msg_id, msg_content, timestamp)
+            if isinstance(msg, tuple):
+                msg_id = msg[0]
+                msg_content = msg[1]
+                msg_timestamp = msg[2].isoformat() if len(msg) > 2 else None
+                msg_author = 'Discord'  # Not available in tuple format
+            else:
+                # Handle dict format
                 msg_id = msg.get('id', 'UNKNOWN_ID')
                 msg_content = msg.get('content', '')
                 msg_author = msg.get('author', {}).get('username', 'Unknown')
                 msg_timestamp = msg.get('timestamp')
-                
-                # Check if message is too old
-                if msg_timestamp:
+            
+            # Rest of the code stays the same...
+            if msg_timestamp:
+                if isinstance(msg_timestamp, str):
                     msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
-                    if msg_time < self._startup_time:
-                        logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
-                        self._processed_messages[profile['channel_id']].append(msg_id)
-                        continue
+                else:
+                    msg_time = msg_timestamp  # Already datetime
+                    
+                if msg_time < self._startup_time:
+                    logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
+                    self._processed_messages[profile['channel_id']].append(msg_id)
+                    continue
                 
                 logging.info(f"Processing message {msg_id} from '{msg_author}'")
                 logging.info(f"Raw content: '{msg_content[:200]}{'...' if len(msg_content) > 200 else ''}'")
