@@ -10,6 +10,7 @@ class IBInterface:
     This version contains the fixed native trail implementation and order fill callback system.
     FIX: Added explicit order cancellation to prevent ghost trailing stops.
     FIX: Added monitored close to prevent overselling positions.
+    FIX: Added get_historical_data method for backtesting data harvester.
     """
     def __init__(self, config):
         self.config = config
@@ -261,6 +262,58 @@ class IBInterface:
             return ticker
         except Exception as e:
             logging.error(f"Error fetching ticker for {contract.localSymbol}: {e}", exc_info=True)
+            return None
+
+    async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
+        """
+        NEW METHOD: Fetches historical data for backtesting.
+        This method was missing and causing the AttributeError.
+        
+        Args:
+            contract: IBKR contract object
+            duration: Time period to fetch (e.g., '1 D', '2 D', '1 W')
+            bar_size: Bar size ('5 secs', '1 min', '5 mins', etc.)
+        
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume
+        """
+        if not self.is_connected():
+            logging.error("Cannot fetch historical data, not connected to IBKR.")
+            return None
+        
+        try:
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime='',  # Empty means "now"
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=True,  # Regular Trading Hours only
+                formatDate=1  # Return as datetime objects
+            )
+            
+            if not bars:
+                logging.warning(f"No historical data returned for {contract.localSymbol}")
+                return None
+            
+            # Convert to DataFrame
+            df = util.df(bars)
+            
+            # Rename columns to match expected format
+            df = df.rename(columns={
+                'date': 'timestamp',
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume'
+            })
+            
+            logging.info(f"Retrieved {len(df)} bars of historical data for {contract.localSymbol}")
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
             return None
 
     async def stream_market_data_ticks(self, contract):
