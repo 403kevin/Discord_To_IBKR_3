@@ -141,7 +141,8 @@ class BacktestEngine:
             
             try:
                 df = pd.read_csv(data_file)
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                # FIX: Strip timezone info to make timestamps naive for comparison
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
                 
                 # Add each tick as a TICK event
                 for _, row in df.iterrows():
