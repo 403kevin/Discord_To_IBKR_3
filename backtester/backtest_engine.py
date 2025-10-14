@@ -2,6 +2,7 @@ import logging
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime, timedelta
+from ib_insync import Contract
 import os
 import sys
 
@@ -122,8 +123,18 @@ class BacktestEngine:
             # Add signal event
             event_queue.append((signal['signal_timestamp'], 'SIGNAL', signal))
             
-            # Load corresponding historical data
-            data_file = get_data_filename(signal, self.data_folder_path)
+            # FIX: Create a proper Contract object to pass to get_data_filename()
+            contract = Contract(
+                symbol=signal['ticker'],
+                lastTradeDateOrContractMonth=signal['expiry_date'],
+                strike=signal['strike'],
+                right=signal['contract_type'][0].upper()
+            )
+            
+            # Now get the filename using the contract object
+            data_filename = get_data_filename(contract)
+            data_file = os.path.join(self.data_folder_path, data_filename)
+            
             if not os.path.exists(data_file):
                 logging.warning(f"No data file found for {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} at {data_file}")
                 continue
@@ -156,200 +167,174 @@ class BacktestEngine:
         """Processes a signal event (opens a position)."""
         position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
         
-        if position_key in self.portfolio['positions']:
-            logging.info(f"{timestamp} | Position already exists for {position_key}")
-            return
-        
-        # Simulate opening a position
-        entry_price = signal.get('entry_price', signal['strike'] * 0.02)  # Default 2% of strike
-        quantity = 4  # Default quantity
+        # Assume entry at a default price (this would be refined in a real backtest)
+        entry_price = 1.50
+        quantity = int(1000 / entry_price)  # Simple sizing
         
         self.portfolio['positions'][position_key] = {
-            'entry_time': timestamp,
-            'entry_price': entry_price,
-            'quantity': quantity,
             'signal': signal,
+            'entry_price': entry_price,
+            'entry_time': timestamp,
+            'quantity': quantity,
             'highest_price': entry_price,
-            'lowest_price': entry_price
+            'lowest_price': entry_price,
+            'bars': [],
+            'breakeven_activated': False
         }
         
-        # Deduct cost from cash
-        cost = entry_price * quantity * 100
-        self.portfolio['cash'] -= cost
+        self.portfolio['cash'] -= (entry_price * quantity * 100)
         
-        # Initialize position tracking
-        self.position_data_cache[position_key] = pd.DataFrame()
-        self.breakeven_activated[position_key] = False
-        
-        logging.info(f"{timestamp} | OPENED {quantity} of {position_key} at ${entry_price:.2f}")
+        logging.info(f"[{timestamp}] OPENED {position_key} | Qty: {quantity} | Entry: ${entry_price:.2f}")
 
     def _process_tick_event(self, timestamp, tick_data):
-        """Processes a market tick event."""
+        """Processes a market tick event and evaluates exit conditions."""
         position_key = tick_data['position_key']
         
         if position_key not in self.portfolio['positions']:
-            return  # No position to update
+            return
         
         position = self.portfolio['positions'][position_key]
         current_price = tick_data['price']
         
-        # Update high/low tracking
+        # Update highest/lowest for trailing logic
         position['highest_price'] = max(position['highest_price'], current_price)
         position['lowest_price'] = min(position['lowest_price'], current_price)
         
-        # Add to data cache for technical indicators
-        new_row = pd.DataFrame([{
+        # Build bar data for technical indicators (simulated 1-min bars)
+        if position_key not in self.tick_buffer:
+            self.tick_buffer[position_key] = []
+        
+        self.tick_buffer[position_key].append({
             'timestamp': timestamp,
             'close': current_price,
             'high': tick_data['high'],
             'low': tick_data['low'],
             'volume': tick_data['volume']
-        }])
+        })
         
-        self.position_data_cache[position_key] = pd.concat([
-            self.position_data_cache[position_key], 
-            new_row
-        ], ignore_index=True)
+        # Every 60 seconds, aggregate a bar
+        if position_key not in self.last_bar_timestamp or \
+           (timestamp - self.last_bar_timestamp[position_key]).total_seconds() >= 60:
+            self._aggregate_bar(position_key, timestamp)
+            self.last_bar_timestamp[position_key] = timestamp
         
         # Evaluate exit conditions
-        self._evaluate_simulated_exit(timestamp, position_key, current_price)
+        exit_reason = self._evaluate_exit_conditions(position, current_price, timestamp)
+        
+        if exit_reason:
+            self._close_position(position_key, current_price, timestamp, exit_reason)
 
-    def _evaluate_simulated_exit(self, timestamp, position_key, current_price):
-        """Evaluates exit conditions for a position."""
-        if position_key not in self.portfolio['positions']:
+    def _aggregate_bar(self, position_key, timestamp):
+        """Aggregates tick buffer into a 1-minute bar."""
+        if position_key not in self.tick_buffer or not self.tick_buffer[position_key]:
             return
         
+        ticks = self.tick_buffer[position_key]
+        bar = {
+            'timestamp': timestamp,
+            'open': ticks[0]['close'],
+            'high': max(t['high'] for t in ticks),
+            'low': min(t['low'] for t in ticks),
+            'close': ticks[-1]['close'],
+            'volume': sum(t['volume'] for t in ticks)
+        }
+        
+        position = self.portfolio['positions'].get(position_key)
+        if position:
+            position['bars'].append(bar)
+        
+        # Clear buffer
+        self.tick_buffer[position_key] = []
+
+    def _evaluate_exit_conditions(self, position, current_price, timestamp):
+        """Evaluates all exit conditions in priority order."""
+        entry_price = position['entry_price']
+        pnl_percent = ((current_price - entry_price) / entry_price) * 100
+        
+        # 1. Breakeven trigger
+        if not position['breakeven_activated'] and pnl_percent >= self.config.profiles[0]['exit_strategy']['breakeven_trigger_percent']:
+            position['breakeven_activated'] = True
+            logging.info(f"[{timestamp}] BREAKEVEN activated for {position['signal']['ticker']}")
+        
+        if position['breakeven_activated'] and current_price <= entry_price:
+            return "Breakeven stop hit"
+        
+        # 2. ATR trailing stop
+        if len(position['bars']) >= 14:
+            df = pd.DataFrame(position['bars'])
+            atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
+            atr_stop = position['highest_price'] - (atr * 1.5)
+            
+            if current_price <= atr_stop:
+                return f"ATR trail stop (ATR: {atr:.2f})"
+        
+        # 3. Pullback percent trailing stop
+        pullback_percent = self.config.profiles[0]['exit_strategy']['trail_settings']['pullback_percent']
+        pullback_stop = position['highest_price'] * (1 - pullback_percent / 100)
+        
+        if current_price <= pullback_stop:
+            return f"Pullback stop ({pullback_percent}% from high)"
+        
+        return None
+
+    def _close_position(self, position_key, exit_price, timestamp, reason):
+        """Closes a position and logs the trade."""
         position = self.portfolio['positions'][position_key]
-        signal = position['signal']
-        profile = self.config.profiles[0]  # Use first profile for backtesting
         
         entry_price = position['entry_price']
-        is_call = signal['contract_type'] == 'CALL'
+        quantity = position['quantity']
+        pnl = (exit_price - entry_price) * quantity * 100
         
-        # Get cached data
-        data = self.position_data_cache[position_key]
-        if len(data) < 2:
-            return  # Need at least 2 rows for calculations
+        self.portfolio['cash'] += (exit_price * quantity * 100)
         
-        exit_reason = None
+        trade_record = {
+            'ticker': position['signal']['ticker'],
+            'entry_time': position['entry_time'],
+            'exit_time': timestamp,
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'quantity': quantity,
+            'pnl': pnl,
+            'reason': reason
+        }
         
-        # Check each exit type in priority order
-        for exit_type in ["breakeven", "atr_trail", "pullback_trail", "rsi_hook", "psar_flip"]:
-            if exit_reason:
-                break
-            
-            if exit_type == "breakeven":
-                trigger_pct = profile['exit_strategy']['breakeven_trigger_percent']
-                if not self.breakeven_activated.get(position_key):
-                    pnl_percent = ((current_price - entry_price) / entry_price) * 100
-                    if pnl_percent >= trigger_pct * 100:
-                        self.breakeven_activated[position_key] = True
-                        logging.info(f"Breakeven activated for {position_key} at {pnl_percent:.2f}% gain")
-                
-                if self.breakeven_activated.get(position_key):
-                    if (is_call and current_price <= entry_price) or (not is_call and current_price >= entry_price):
-                        exit_reason = f"Breakeven Stop (entry: ${entry_price:.2f})"
-            
-            elif exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
-                settings = profile['exit_strategy']['trail_settings']
-                data.ta.atr(length=settings['atr_period'], append=True)
-                atr_col = f'ATRr_{settings["atr_period"]}'
-                
-                if atr_col in data.columns and not pd.isna(data[atr_col].iloc[-1]):
-                    atr_value = data[atr_col].iloc[-1]
-                    if is_call:
-                        stop_price = position['highest_price'] - (atr_value * settings['atr_multiplier'])
-                        if current_price <= stop_price:
-                            exit_reason = f"ATR Trail Stop (ATR: {atr_value:.2f}, multiplier: {settings['atr_multiplier']})"
-                    else:
-                        stop_price = position['lowest_price'] + (atr_value * settings['atr_multiplier'])
-                        if current_price >= stop_price:
-                            exit_reason = f"ATR Trail Stop (ATR: {atr_value:.2f}, multiplier: {settings['atr_multiplier']})"
-            
-            elif exit_type == "pullback_trail" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
-                pullback_pct = profile['exit_strategy']['trail_settings']['pullback_percent']
-                if is_call:
-                    stop_price = position['highest_price'] * (1 - pullback_pct)
-                    if current_price <= stop_price:
-                        exit_reason = f"Pullback Trail ({pullback_pct*100:.0f}% from high ${position['highest_price']:.2f})"
-                else:
-                    stop_price = position['lowest_price'] * (1 + pullback_pct)
-                    if current_price >= stop_price:
-                        exit_reason = f"Pullback Trail ({pullback_pct*100:.0f}% from low ${position['lowest_price']:.2f})"
-            
-            elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
-                settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
-                data.ta.rsi(length=settings['period'], append=True)
-                rsi_col = f'RSI_{settings["period"]}'
-                
-                if rsi_col not in data.columns: continue
-                last_rsi = data[rsi_col].iloc[-1]
-                if pd.isna(last_rsi) or len(data) < 2: continue
+        self.trade_log.append(trade_record)
+        
+        logging.info(f"[{timestamp}] CLOSED {position_key} | Exit: ${exit_price:.2f} | P&L: ${pnl:.2f} | Reason: {reason}")
+        
+        del self.portfolio['positions'][position_key]
 
-                prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
-                if is_call and prev_rsi > settings['overbought_level'] and last_rsi <= settings['overbought_level']:
-                    exit_reason = f"RSI Hook from Overbought ({prev_rsi:.2f} -> {last_rsi:.2f})"
-                elif not is_call and prev_rsi < settings.get('oversold_level', 30) and last_rsi >= settings.get('oversold_level', 30):
-                    exit_reason = f"RSI Hook from Oversold ({prev_rsi:.2f} -> {last_rsi:.2f})"
-            
-            elif exit_type == "psar_flip" and profile['exit_strategy']['momentum_exits']['psar_enabled']:
-                settings = profile['exit_strategy']['momentum_exits']['psar_settings']
-                data.ta.psar(initial=settings['start'], increment=settings['increment'], maximum=settings['max'], append=True)
-                psar_long_col = f'PSARl_{settings["start"]}_{settings["max"]}'
-                psar_short_col = f'PSARs_{settings["start"]}_{settings["max"]}'
-                
-                if psar_long_col in data.columns and not pd.isna(data[psar_long_col].iloc[-1]):
-                    if is_call and current_price < data[psar_long_col].iloc[-1]:
-                        exit_reason = "PSAR Flip"
-                if psar_short_col in data.columns and not pd.isna(data[psar_short_col].iloc[-1]):
-                    if not is_call and current_price > data[psar_short_col].iloc[-1]:
-                        exit_reason = "PSAR Flip"
-
-        if exit_reason:
-            self._close_simulated_position(timestamp, position_key, current_price, exit_reason)
-
-    def _close_simulated_position(self, timestamp, position_key, exit_price, reason):
-        """Closes a position in the simulation and logs the trade."""
-        if position_key in self.portfolio['positions']:
-            position = self.portfolio['positions'].pop(position_key)
-            pnl = (exit_price - position['entry_price']) * position['quantity'] * 100
-            self.portfolio['cash'] += (exit_price * position['quantity'] * 100)
-            
-            self.trade_log.append({
-                'entry_time': position['entry_time'], 'exit_time': timestamp,
-                'position': position_key, 'entry_price': position['entry_price'],
-                'exit_price': exit_price, 'quantity': position['quantity'],
-                'pnl': pnl, 'exit_reason': reason
-            })
-            logging.info(f"{timestamp} | CLOSED {position['quantity']} of {position_key} at ${exit_price:.2f} for P/L ${pnl:.2f}. Reason: {reason}")
-    
     def _log_results(self):
-        """Prints a summary of the backtest results."""
-        df = pd.DataFrame(self.trade_log)
-        if df.empty:
-            logging.warning("No trades were executed during the simulation.")
-            return
-
-        total_pnl = df['pnl'].sum()
-        win_rate = (df['pnl'] > 0).mean() * 100 if not df.empty else 0
+        """Logs final backtest results."""
+        logging.info("\n" + "="*80)
+        logging.info("BACKTEST RESULTS SUMMARY")
+        logging.info("="*80)
         
-        logging.info("\n--- Backtest Results Summary ---")
-        logging.info(f"Total Trades: {len(df)}")
-        logging.info(f"Win Rate: {win_rate:.2f}%")
-        logging.info(f"Total P/L: ${total_pnl:.2f}")
+        total_trades = len(self.trade_log)
+        winning_trades = sum(1 for t in self.trade_log if t['pnl'] > 0)
+        total_pnl = sum(t['pnl'] for t in self.trade_log)
+        
+        logging.info(f"Total Trades: {total_trades}")
+        logging.info(f"Winning Trades: {winning_trades}")
+        logging.info(f"Win Rate: {(winning_trades/total_trades*100):.1f}%" if total_trades > 0 else "N/A")
+        logging.info(f"Total P&L: ${total_pnl:.2f}")
         logging.info(f"Final Portfolio Value: ${self.portfolio['cash']:.2f}")
-        logging.info("--------------------------------\n")
+        logging.info("="*80)
         
-        log_path = os.path.join(self.data_folder_path, "backtest_results.csv")
-        df.to_csv(log_path, index=False)
-        logging.info(f"Full trade log saved to {log_path}")
+        # Save detailed results
+        if self.trade_log:
+            df = pd.DataFrame(self.trade_log)
+            output_file = os.path.join(self.data_folder_path, '../backtest_results.csv')
+            df.to_csv(output_file, index=False)
+            logging.info(f"Detailed results saved to {output_file}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     signal_file = os.path.join(script_dir, 'signals_to_test.txt')
     data_folder = os.path.join(script_dir, 'historical_data')
-
+    
     engine = BacktestEngine(signal_file, data_folder)
     engine.run_simulation()
