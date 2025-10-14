@@ -196,12 +196,18 @@ class SignalProcessor:
                     msg_author = msg.get('author', {}).get('username', 'Unknown')
                     msg_timestamp = msg.get('timestamp')
                 
-                # Check if message is too old
+
                 if msg_timestamp:
                     if isinstance(msg_timestamp, str):
+                        # Parse Discord timestamp and strip timezone to make it naive
                         msg_time = datetime.fromisoformat(msg_timestamp.replace('Z', '+00:00'))
+                        # Remove timezone info to match startup_time
+                        msg_time = msg_time.replace(tzinfo=None)
                     else:
                         msg_time = msg_timestamp
+                        # Remove timezone info if present
+                        if hasattr(msg_time, 'tzinfo') and msg_time.tzinfo is not None:
+                            msg_time = msg_time.replace(tzinfo=None)
                         
                     if msg_time < self._startup_time:
                         logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
