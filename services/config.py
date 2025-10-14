@@ -494,7 +494,7 @@ class Config:
             {
                 "channel_id": "1260988811832328263",
                 "channel_name": "DD_Alerts_9",
-                "enabled": True,
+                "enabled": False,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
                 
