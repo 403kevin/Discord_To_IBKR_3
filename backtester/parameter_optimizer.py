@@ -152,7 +152,7 @@ class ParameterOptimizer:
             profile['exit_strategy']['momentum_exits']['rsi_settings']['oversold_level'] = params['rsi_oversold']
             
             # Run simulation
-            await engine.run_simulation()
+            engine.run_simulation()
             
             # Analyze results
             results_file = Path("backtester/backtest_results.csv")
