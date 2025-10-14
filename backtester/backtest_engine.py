@@ -65,194 +65,225 @@ class BacktestEngine:
         Supports both simple and timestamped formats.
         """
         signals = []
+        if not os.path.exists(self.signal_file_path):
+            logging.error(f"FATAL: signals_to_test.txt not found at '{self.signal_file_path}'")
+            return []
+
+        # Use first profile as default for parsing
         default_profile = self.config.profiles[0] if self.config.profiles else {
             'assume_buy_on_ambiguous': True,
             'ambiguous_expiry_enabled': True
         }
-        
+
         with open(self.signal_file_path, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                
-                # Skip comments and empty lines
                 if not line or line.startswith('#'):
                     continue
                 
-                timestamp = None
-                
-                # Check if line has timestamp (Format 2: YYYY-MM-DD HH:MM:SS | channel | signal)
+                # Check if line has timestamp format
                 if '|' in line:
                     parts = line.split('|')
                     if len(parts) == 3:
                         timestamp_str = parts[0].strip()
+                        channel = parts[1].strip()
                         signal_text = parts[2].strip()
-                        try:
-                            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                        except ValueError:
-                            logging.warning(f"Invalid timestamp on line #{line_num}: '{timestamp_str}'")
-                            continue
+                        
+                        # Parse the signal
+                        parsed_signal = self.signal_parser.parse_signal(signal_text, default_profile)
+                        if parsed_signal:
+                            # Add timestamp to parsed signal
+                            parsed_signal['signal_timestamp'] = datetime.strptime(
+                                timestamp_str, '%Y-%m-%d %H:%M:%S'
+                            )
+                            parsed_signal['channel'] = channel
+                            signals.append(parsed_signal)
+                            logging.info(f"Loaded timestamped signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]} at {timestamp_str}")
                     else:
-                        logging.warning(f"Malformed timestamped line #{line_num}")
-                        continue
+                        logging.warning(f"Malformed timestamped line #{line_num}: '{line}'")
                 else:
-                    # Simple format - use a default timestamp (market open)
-                    signal_text = line
-                    timestamp = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
-                
-                # Parse using the multi-format parser
-                parsed_signal = self.signal_parser.parse_signal(signal_text, default_profile)
-                
-                if parsed_signal:
-                    parsed_signal['timestamp'] = timestamp
-                    signals.append(parsed_signal)
-                else:
-                    logging.warning(f"Could not parse line #{line_num}: '{signal_text}'")
+                    # Simple format without timestamp
+                    parsed_signal = self.signal_parser.parse_signal(line, default_profile)
+                    if parsed_signal:
+                        # Assign a default timestamp (market open)
+                        parsed_signal['signal_timestamp'] = datetime.now().replace(hour=9, minute=30, second=0)
+                        parsed_signal['channel'] = 'default'
+                        signals.append(parsed_signal)
+                        logging.info(f"Loaded simple signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}")
         
-        logging.info(f"Loaded {len(signals)} valid signals.")
+        logging.info(f"Successfully loaded {len(signals)} signals for backtesting")
         return signals
 
     def _create_event_queue(self, signals):
-        """Loads all historical tick data and merges it with signals into a single event queue."""
+        """Creates a chronological event queue from signals and market data."""
         event_queue = []
         
         for signal in signals:
-            event_queue.append((signal['timestamp'], 'SIGNAL', signal))
-
-        unique_contracts = {
-            f"{s['ticker']}_{s['expiry_date']}_{int(s['strike'])}{s['contract_type'][0]}" for s in signals
-        }
-        
-        for contract_str in unique_contracts:
-            # Reconstruct a mock contract to generate the filename
-            parts = contract_str.split('_')
-            mock_contract = type('MockContract', (), {'symbol': parts[0], 'lastTradeDateOrContractMonth': parts[1], 'strike': int(parts[2][:-1]), 'right': parts[2][-1]})
-            filename = get_data_filename(mock_contract)
-            file_path = os.path.join(self.data_folder_path, filename)
+            # Add signal event
+            event_queue.append((signal['signal_timestamp'], 'SIGNAL', signal))
             
-            if os.path.exists(file_path):
-                df = pd.read_csv(file_path, parse_dates=['date'])
-                for row in df.itertuples():
-                    event_queue.append((row.date, 'TICK', {'contract_str': contract_str, 'price': row.close}))
-            else:
-                logging.warning(f"No historical data found for {contract_str} at {file_path}")
-
-        logging.info(f"Created event queue with {len(event_queue)} total events.")
+            # Load corresponding historical data
+            data_file = get_data_filename(signal, self.data_folder_path)
+            if not os.path.exists(data_file):
+                logging.warning(f"No data file found for {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} at {data_file}")
+                continue
+            
+            try:
+                df = pd.read_csv(data_file)
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                
+                # Add each tick as a TICK event
+                for _, row in df.iterrows():
+                    position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+                    tick_data = {
+                        'position_key': position_key,
+                        'signal': signal,
+                        'price': row['close'],
+                        'volume': row.get('volume', 0),
+                        'high': row.get('high', row['close']),
+                        'low': row.get('low', row['close'])
+                    }
+                    event_queue.append((row['timestamp'], 'TICK', tick_data))
+                
+                logging.info(f"Added {len(df)} tick events for {position_key}")
+            except Exception as e:
+                logging.error(f"Error loading data for {signal}: {e}")
+        
+        logging.info(f"Created event queue with {len(event_queue)} total events")
         return event_queue
 
-    def _process_signal_event(self, timestamp, signal_data):
-        """Simulates the bot's reaction to a new signal."""
-        profile = self.config.profiles[0]
+    def _process_signal_event(self, timestamp, signal):
+        """Processes a signal event (opens a position)."""
+        position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
         
-        mock_ask_price = 1.5 # Using a mock price for sizing
-        quantity = int(profile['trading']['funds_allocation'] / (mock_ask_price * 100))
+        if position_key in self.portfolio['positions']:
+            logging.info(f"{timestamp} | Position already exists for {position_key}")
+            return
         
-        if quantity > 0:
-            position_key = f"{signal_data['ticker']}_{signal_data['expiry_date']}_{int(signal_data['strike'])}{signal_data['contract_type'][0]}"
-            cost = quantity * mock_ask_price * 100
-            
-            self.portfolio['cash'] -= cost
-            self.portfolio['positions'][position_key] = {
-                'entry_price': mock_ask_price, 'quantity': quantity,
-                'entry_time': timestamp, 'is_call': signal_data['contract_type'] == 'CALL'
-            }
-            self.trailing_highs_and_lows[position_key] = {'high': mock_ask_price, 'low': mock_ask_price}
-            self.breakeven_activated[position_key] = False
-            logging.info(f"{timestamp} | OPENED {quantity} of {position_key} at ${mock_ask_price:.2f}")
+        # Simulate opening a position
+        entry_price = signal.get('entry_price', signal['strike'] * 0.02)  # Default 2% of strike
+        quantity = 4  # Default quantity
+        
+        self.portfolio['positions'][position_key] = {
+            'entry_time': timestamp,
+            'entry_price': entry_price,
+            'quantity': quantity,
+            'signal': signal,
+            'highest_price': entry_price,
+            'lowest_price': entry_price
+        }
+        
+        # Deduct cost from cash
+        cost = entry_price * quantity * 100
+        self.portfolio['cash'] -= cost
+        
+        # Initialize position tracking
+        self.position_data_cache[position_key] = pd.DataFrame()
+        self.breakeven_activated[position_key] = False
+        
+        logging.info(f"{timestamp} | OPENED {quantity} of {position_key} at ${entry_price:.2f}")
 
     def _process_tick_event(self, timestamp, tick_data):
-        """Processes a single market data tick for any relevant open positions."""
-        position_key = tick_data['contract_str']
-        if position_key in self.portfolio['positions']:
-            self._resample_simulated_ticks_to_bar(timestamp, position_key, tick_data['price'])
-
-    def _resample_simulated_ticks_to_bar(self, timestamp, position_key, price):
-        """Mirrors the live bot's resampling logic."""
-        if position_key not in self.tick_buffer:
-            self.tick_buffer[position_key] = []
-            self.last_bar_timestamp[position_key] = timestamp.replace(second=0, microsecond=0)
-
-        self.tick_buffer[position_key].append(price)
-
-        if timestamp >= self.last_bar_timestamp[position_key] + timedelta(minutes=1):
-            profile = self.config.profiles[0]
-            min_ticks = profile['exit_strategy']['min_ticks_per_bar']
-
-            if len(self.tick_buffer[position_key]) >= min_ticks:
-                prices = self.tick_buffer[position_key]
-                new_bar = {'open': prices[0], 'high': max(prices), 'low': min(prices), 'close': prices[-1]}
-                new_bar_df = pd.DataFrame([new_bar], index=[self.last_bar_timestamp[position_key]])
-                
-                if position_key in self.position_data_cache:
-                    self.position_data_cache[position_key] = pd.concat([self.position_data_cache[position_key], new_bar_df])
-                else:
-                    self.position_data_cache[position_key] = new_bar_df
-                
-                self._evaluate_simulated_exit(timestamp, position_key)
-
-            self.tick_buffer[position_key] = []
-            self.last_bar_timestamp[position_key] = timestamp.replace(second=0, microsecond=0)
-
-    def _evaluate_simulated_exit(self, timestamp, position_key):
-        """
-        THE AWAKENED PILOT: Complete mirror of the live bot's dynamic exit logic.
-        Now includes RSI hook and PSAR flip momentum exits.
-        """
-        position = self.portfolio['positions'][position_key]
-        profile = self.config.profiles[0]
-        data = self.position_data_cache.get(position_key)
-        if data is None or data.empty or len(data) < 2: return
-
-        is_call = position['is_call']
-        exit_reason = None
-        current_price = data['close'].iloc[-1]
+        """Processes a market tick event."""
+        position_key = tick_data['position_key']
         
-        high_low = self.trailing_highs_and_lows[position_key]
-        high_low['high'] = max(high_low['high'], current_price)
-        high_low['low'] = min(high_low['low'], current_price)
+        if position_key not in self.portfolio['positions']:
+            return  # No position to update
+        
+        position = self.portfolio['positions'][position_key]
+        current_price = tick_data['price']
+        
+        # Update high/low tracking
+        position['highest_price'] = max(position['highest_price'], current_price)
+        position['lowest_price'] = min(position['lowest_price'], current_price)
+        
+        # Add to data cache for technical indicators
+        new_row = pd.DataFrame([{
+            'timestamp': timestamp,
+            'close': current_price,
+            'high': tick_data['high'],
+            'low': tick_data['low'],
+            'volume': tick_data['volume']
+        }])
+        
+        self.position_data_cache[position_key] = pd.concat([
+            self.position_data_cache[position_key], 
+            new_row
+        ], ignore_index=True)
+        
+        # Evaluate exit conditions
+        self._evaluate_simulated_exit(timestamp, position_key, current_price)
 
-        for exit_type in profile['exit_strategy']['exit_priority']:
-            if exit_reason: break
-
-            if exit_type == "breakeven" and not self.breakeven_activated.get(position_key):
-                pnl_percent = ((current_price - position['entry_price']) / position['entry_price']) * 100
-                trigger_pct = profile['exit_strategy']['breakeven_trigger_percent']
-                if (is_call and pnl_percent >= trigger_pct) or (not is_call and pnl_percent <= -trigger_pct):
-                    self.breakeven_activated[position_key] = True
+    def _evaluate_simulated_exit(self, timestamp, position_key, current_price):
+        """Evaluates exit conditions for a position."""
+        if position_key not in self.portfolio['positions']:
+            return
+        
+        position = self.portfolio['positions'][position_key]
+        signal = position['signal']
+        profile = self.config.profiles[0]  # Use first profile for backtesting
+        
+        entry_price = position['entry_price']
+        is_call = signal['contract_type'] == 'CALL'
+        
+        # Get cached data
+        data = self.position_data_cache[position_key]
+        if len(data) < 2:
+            return  # Need at least 2 rows for calculations
+        
+        exit_reason = None
+        
+        # Check each exit type in priority order
+        for exit_type in ["breakeven", "atr_trail", "pullback_trail", "rsi_hook", "psar_flip"]:
+            if exit_reason:
+                break
             
-            if self.breakeven_activated.get(position_key):
-                if (is_call and current_price <= position['entry_price']) or (not is_call and current_price >= position['entry_price']):
-                    exit_reason = "Breakeven Stop Hit"
-
-            if exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
+            if exit_type == "breakeven":
+                trigger_pct = profile['exit_strategy']['breakeven_trigger_percent']
+                if not self.breakeven_activated.get(position_key):
+                    pnl_percent = ((current_price - entry_price) / entry_price) * 100
+                    if pnl_percent >= trigger_pct * 100:
+                        self.breakeven_activated[position_key] = True
+                        logging.info(f"Breakeven activated for {position_key} at {pnl_percent:.2f}% gain")
+                
+                if self.breakeven_activated.get(position_key):
+                    if (is_call and current_price <= entry_price) or (not is_call and current_price >= entry_price):
+                        exit_reason = f"Breakeven Stop (entry: ${entry_price:.2f})"
+            
+            elif exit_type == "atr_trail" and profile['exit_strategy']['trail_method'] == 'atr':
                 settings = profile['exit_strategy']['trail_settings']
                 data.ta.atr(length=settings['atr_period'], append=True)
-                last_atr = data.get(f'ATRr_{settings["atr_period"]}', pd.Series([0])).iloc[-1]
-                if pd.isna(last_atr): continue
+                atr_col = f'ATRr_{settings["atr_period"]}'
                 
-                if is_call:
-                    stop_price = current_price - (last_atr * settings['atr_multiplier'])
-                    self.atr_stop_prices[position_key] = max(self.atr_stop_prices.get(position_key, 0), stop_price)
-                    if current_price < self.atr_stop_prices[position_key]:
-                        exit_reason = f"ATR Trail ({current_price:.2f} < {self.atr_stop_prices[position_key]:.2f})"
-                else:
-                    stop_price = current_price + (last_atr * settings['atr_multiplier'])
-                    self.atr_stop_prices[position_key] = min(self.atr_stop_prices.get(position_key, float('inf')), stop_price)
-                    if current_price > self.atr_stop_prices[position_key]:
-                        exit_reason = f"ATR Trail ({current_price:.2f} > {self.atr_stop_prices[position_key]:.2f})"
-
-            elif exit_type == "pullback_stop" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
+                if atr_col in data.columns and not pd.isna(data[atr_col].iloc[-1]):
+                    atr_value = data[atr_col].iloc[-1]
+                    if is_call:
+                        stop_price = position['highest_price'] - (atr_value * settings['atr_multiplier'])
+                        if current_price <= stop_price:
+                            exit_reason = f"ATR Trail Stop (ATR: {atr_value:.2f}, multiplier: {settings['atr_multiplier']})"
+                    else:
+                        stop_price = position['lowest_price'] + (atr_value * settings['atr_multiplier'])
+                        if current_price >= stop_price:
+                            exit_reason = f"ATR Trail Stop (ATR: {atr_value:.2f}, multiplier: {settings['atr_multiplier']})"
+            
+            elif exit_type == "pullback_trail" and profile['exit_strategy']['trail_method'] == 'pullback_percent':
                 pullback_pct = profile['exit_strategy']['trail_settings']['pullback_percent']
                 if is_call:
-                    stop_price = high_low['high'] * (1 - (pullback_pct / 100))
-                    if current_price < stop_price: exit_reason = f"Pullback Stop ({pullback_pct}%)"
+                    stop_price = position['highest_price'] * (1 - pullback_pct)
+                    if current_price <= stop_price:
+                        exit_reason = f"Pullback Trail ({pullback_pct*100:.0f}% from high ${position['highest_price']:.2f})"
                 else:
-                    stop_price = high_low['low'] * (1 + (pullback_pct / 100))
-                    if current_price > stop_price: exit_reason = f"Pullback Stop ({pullback_pct}%)"
+                    stop_price = position['lowest_price'] * (1 + pullback_pct)
+                    if current_price >= stop_price:
+                        exit_reason = f"Pullback Trail ({pullback_pct*100:.0f}% from low ${position['lowest_price']:.2f})"
             
             elif exit_type == "rsi_hook" and profile['exit_strategy']['momentum_exits']['rsi_hook_enabled']:
                 settings = profile['exit_strategy']['momentum_exits']['rsi_settings']
                 data.ta.rsi(length=settings['period'], append=True)
-                last_rsi = data.get(f'RSI_{settings["period"]}', pd.Series([0])).iloc[-1]
+                rsi_col = f'RSI_{settings["period"]}'
+                
+                if rsi_col not in data.columns: continue
+                last_rsi = data[rsi_col].iloc[-1]
                 if pd.isna(last_rsi) or len(data) < 2: continue
 
                 prev_rsi = data[f'RSI_{settings["period"]}'].iloc[-2]
