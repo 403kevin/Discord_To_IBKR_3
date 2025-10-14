@@ -20,12 +20,15 @@ class DataHarvester:
     Downloads historical options data from Interactive Brokers for backtesting.
     Now uses the battle-tested multi-format SignalParser.
     """
-    def __init__(self, signals_path, output_dir):
+    def __init__(self, signals_path=None, output_dir=None):
         self.config = Config()
         self.ib_interface = IBInterface(self.config)
         self.signal_parser = SignalParser(self.config)
-        self.signals_path = signals_path
-        self.output_dir = output_dir
+        
+        # GPS-aware default paths if not provided
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.signals_path = signals_path or os.path.join(script_dir, 'signals_to_test.txt')
+        self.output_dir = output_dir or os.path.join(script_dir, 'historical_data')
         os.makedirs(self.output_dir, exist_ok=True)
 
     async def run(self):
@@ -111,11 +114,11 @@ class DataHarvester:
                 logging.warning(f"Could not create contract for signal #{i}")
                 continue
 
-            # Fetch historical data (5-second bars for 1 day)
+            # Fetch historical data (1-minute bars for 1 day) - CHANGED FROM 5 SECS
             data = await self.ib_interface.get_historical_data(
                 contract, 
                 duration='1 D', 
-                bar_size='5 secs'
+                bar_size='1 min'
             )
 
             if data is not None and not data.empty:
@@ -134,10 +137,5 @@ class DataHarvester:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
-    # GPS-aware pathing
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    signals_path = os.path.join(script_dir, 'signals_to_test.txt')
-    output_dir = os.path.join(script_dir, 'historical_data')
-
-    harvester = DataHarvester(signals_path, output_dir)
+    harvester = DataHarvester()
     asyncio.run(harvester.run())
