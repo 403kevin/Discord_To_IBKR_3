@@ -282,7 +282,8 @@ class IBInterface:
             return None
         
         try:
-            bars = self.ib.reqHistoricalData(
+            # Use reqHistoricalDataAsync for async context
+            bars = await self.ib.reqHistoricalDataAsync(
                 contract,
                 endDateTime='',  # Empty means "now"
                 durationStr=duration,
