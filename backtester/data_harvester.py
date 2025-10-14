@@ -114,11 +114,11 @@ class DataHarvester:
                 logging.warning(f"Could not create contract for signal #{i}")
                 continue
 
-            # Fetch historical data (1-minute bars for 1 day) - CHANGED FROM 5 SECS
+            # Fetch historical data (5-second bars for 1 day)
             data = await self.ib_interface.get_historical_data(
                 contract, 
                 duration='1 D', 
-                bar_size='1 min'
+                bar_size='5 secs'
             )
 
             if data is not None and not data.empty:
