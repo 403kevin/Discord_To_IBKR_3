@@ -157,6 +157,7 @@ class SignalProcessor:
                 logging.info(f"Raw content: '{msg_content}'")
                 
                 # Check timestamp - FIX: Parse timestamp correctly
+# Check timestamp - FIX: Parse timestamp correctly
                 try:
                     if isinstance(timestamp_str, str):
                         # Discord timestamp format: '2025-10-15T13:05:00.123456+00:00'
@@ -180,12 +181,12 @@ class SignalProcessor:
                     # If we can't parse timestamp, skip the message to be safe
                     continue
                 
-# Check ignore keywords (use per-channel reject_if_contains)
-channel_ignore = profile.get('reject_if_contains', [])
-if any(word.lower() in msg_content.lower() for word in channel_ignore):
-    matched_word = self._get_matched_keyword(msg_content, channel_ignore)
-    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{matched_word}' | Message: '{msg_content[:150]}'")
-    continue
+                # Check ignore keywords (use per-channel reject_if_contains)
+                channel_ignore = profile.get('reject_if_contains', [])
+                if any(word.lower() in msg_content.lower() for word in channel_ignore):
+                    matched_word = self._get_matched_keyword(msg_content, channel_ignore)
+                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{matched_word}' | Message: '{msg_content[:150]}'")
+                    continue
                 
                 # Parse the signal
                 parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
