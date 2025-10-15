@@ -4,6 +4,10 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 
+logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
+logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
+
 # --- GPS for our fortress ---
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
