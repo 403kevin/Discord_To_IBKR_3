@@ -227,7 +227,6 @@ class SignalProcessor:
                 
                 # Check for channel-specific ignore keywords
                 channel_ignore = profile.get('buzzwords_ignore', [])
-                global_ignore = self.config.buzzwords_ignore
                 all_ignore_words = set(channel_ignore + global_ignore)
                 
                 if self._contains_keywords(msg_content, all_ignore_words):
