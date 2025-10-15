@@ -345,11 +345,13 @@ class SignalProcessor:
             safety_net = profile.get('safety_net', {})
             native_trail = safety_net.get('native_trail_percent', 0.35)
             
+            order_type = profile['trading']['entry_order_type']  # Get from config (should be 'MKT')
+            
             trade = await self.ib_interface.place_order(
                 contract, 
+                order_type,
                 quantity, 
-                'BUY',
-                native_trail_percent=native_trail
+                'BUY'
             )
             
             if trade and trade.orderStatus.status == 'Filled':
