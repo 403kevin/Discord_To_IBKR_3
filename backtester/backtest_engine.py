@@ -20,6 +20,7 @@ class BacktestEngine:
     """
     A true, event-driven backtesting engine that simulates the live bot's
     tick-processing and decision-making logic with high fidelity.
+    FIXED: Added null checks for technical indicators.
     """
     def __init__(self, signal_file_path, data_folder_path):
         self.config = Config()
@@ -248,29 +249,187 @@ class BacktestEngine:
         self.tick_buffer[position_key] = []
 
     def _evaluate_exit_conditions(self, position, current_price, timestamp):
-        """Evaluates all exit conditions in priority order."""
+        """Evaluates all exit conditions in priority order with NULL CHECKS."""
         entry_price = position['entry_price']
         pnl_percent = ((current_price - entry_price) / entry_price) * 100
         
+        # Get config settings
+        profile = self.config.profiles[0] if self.config.profiles else {}
+        exit_strategy = profile.get('exit_strategy', {})
+        
         # 1. Breakeven trigger
-        if not position['breakeven_activated'] and pnl_percent >= self.config.profiles[0]['exit_strategy']['breakeven_trigger_percent']:
+        breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 10)
+        if not position['breakeven_activated'] and pnl_percent >= breakeven_trigger:
             position['breakeven_activated'] = True
             logging.info(f"[{timestamp}] BREAKEVEN activated for {position['signal']['ticker']}")
         
         if position['breakeven_activated'] and current_price <= entry_price:
             return "Breakeven stop hit"
         
-        # 2. ATR trailing stop
-        if len(position['bars']) >= 14:
+        # 2. RSI Hook (check before ATR to prioritize momentum)
+        momentum_exits = exit_strategy.get('momentum_exits', {})
+        if momentum_exits.get('rsi_hook_enabled', False) and len(position['bars']) >= 14:
+            rsi_exit = self._check_rsi_hook(position, current_price)
+            if rsi_exit:
+                return rsi_exit
+        
+        # 3. PSAR Flip
+        if momentum_exits.get('psar_enabled', False) and len(position['bars']) >= 5:
+            psar_exit = self._check_psar_flip(position, current_price)
+            if psar_exit:
+                return psar_exit
+        
+        # 4. ATR trailing stop
+        trail_method = exit_strategy.get('trail_method', 'pullback_percent')
+        if trail_method == 'atr' and len(position['bars']) >= 14:
+            atr_exit = self._check_atr_trail(position, current_price)
+            if atr_exit:
+                return atr_exit
+        
+        # 5. Pullback percent trailing stop (fallback)
+        pullback_exit = self._check_pullback_stop(position, current_price)
+        if pullback_exit:
+            return pullback_exit
+        
+        return None
+
+    def _check_rsi_hook(self, position, current_price):
+        """Check RSI hook exit with NULL protection."""
+        if len(position['bars']) < 14:
+            return None
+        
+        try:
             df = pd.DataFrame(position['bars'])
-            atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
-            atr_stop = position['highest_price'] - (atr * 1.5)
+            rsi_settings = self.config.profiles[0]['exit_strategy']['momentum_exits'].get('rsi_settings', {})
+            rsi_period = rsi_settings.get('period', 14)
+            overbought = rsi_settings.get('overbought_level', 70)
+            oversold = rsi_settings.get('oversold_level', 30)
+            
+            # ✅ NULL CHECK - Calculate RSI
+            rsi_series = ta.rsi(df['close'], length=rsi_period)
+            
+            if rsi_series is None or len(rsi_series) == 0:
+                return None
+            
+            # Get last two RSI values
+            if len(rsi_series) < 2:
+                return None
+                
+            current_rsi = rsi_series.iloc[-1]
+            previous_rsi = rsi_series.iloc[-2]
+            
+            # ✅ NULL CHECK - Verify RSI values are valid
+            if pd.isna(current_rsi) or pd.isna(previous_rsi):
+                return None
+            
+            # Check for hook from overbought
+            if previous_rsi > overbought and current_rsi < overbought:
+                return f"RSI Hook from overbought ({current_rsi:.1f})"
+            
+            # Check for hook from oversold
+            if previous_rsi < oversold and current_rsi > oversold:
+                return f"RSI Hook from oversold ({current_rsi:.1f})"
+        
+        except Exception as e:
+            logging.warning(f"Error in RSI calculation: {e}")
+            return None
+        
+        return None
+
+    def _check_psar_flip(self, position, current_price):
+        """Check PSAR flip exit with NULL protection."""
+        if len(position['bars']) < 5:
+            return None
+        
+        try:
+            df = pd.DataFrame(position['bars'])
+            psar_settings = self.config.profiles[0]['exit_strategy']['momentum_exits'].get('psar_settings', {})
+            
+            # ✅ NULL CHECK - Calculate PSAR
+            psar_series = ta.psar(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                af0=psar_settings.get('start', 0.02),
+                af=psar_settings.get('increment', 0.02),
+                max_af=psar_settings.get('max', 0.2)
+            )
+            
+            if psar_series is None or len(psar_series) == 0:
+                return None
+            
+            # Get PSARl and PSARs columns
+            if isinstance(psar_series, pd.DataFrame):
+                psar_long = psar_series.get('PSARl_0.02_0.2')
+                psar_short = psar_series.get('PSARs_0.02_0.2')
+                
+                if psar_long is None or psar_short is None:
+                    return None
+                
+                # ✅ NULL CHECK - Get last values
+                if len(psar_long) == 0 or len(psar_short) == 0:
+                    return None
+                
+                last_psar_long = psar_long.iloc[-1]
+                last_psar_short = psar_short.iloc[-1]
+                
+                # ✅ NULL CHECK - Verify values are valid
+                if pd.isna(last_psar_long) and pd.isna(last_psar_short):
+                    return None
+                
+                # If PSARs has a value (bearish), exit
+                if not pd.isna(last_psar_short):
+                    return f"PSAR Flip (bearish)"
+        
+        except Exception as e:
+            logging.warning(f"Error in PSAR calculation: {e}")
+            return None
+        
+        return None
+
+    def _check_atr_trail(self, position, current_price):
+        """Check ATR trailing stop with NULL protection."""
+        if len(position['bars']) < 14:
+            return None
+        
+        try:
+            df = pd.DataFrame(position['bars'])
+            trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+            atr_period = trail_settings.get('atr_period', 14)
+            atr_multiplier = trail_settings.get('atr_multiplier', 1.5)
+            
+            # ✅ NULL CHECK - Calculate ATR
+            atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_period)
+            
+            if atr_series is None or len(atr_series) == 0:
+                return None
+            
+            # ✅ NULL CHECK - Get last ATR value
+            if len(atr_series) < 1:
+                return None
+            
+            atr = atr_series.iloc[-1]
+            
+            # ✅ NULL CHECK - Verify ATR is valid
+            if pd.isna(atr) or atr <= 0:
+                return None
+            
+            atr_stop = position['highest_price'] - (atr * atr_multiplier)
             
             if current_price <= atr_stop:
                 return f"ATR trail stop (ATR: {atr:.2f})"
         
-        # 3. Pullback percent trailing stop
-        pullback_percent = self.config.profiles[0]['exit_strategy']['trail_settings']['pullback_percent']
+        except Exception as e:
+            logging.warning(f"Error in ATR calculation: {e}")
+            return None
+        
+        return None
+
+    def _check_pullback_stop(self, position, current_price):
+        """Check pullback percentage stop."""
+        trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+        pullback_percent = trail_settings.get('pullback_percent', 10)
+        
         pullback_stop = position['highest_price'] * (1 - pullback_percent / 100)
         
         if current_price <= pullback_stop:
