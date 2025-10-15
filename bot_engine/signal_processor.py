@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import deque
 import json
 import os
@@ -27,8 +27,8 @@ class SignalProcessor:
         self._processed_messages = {profile['channel_id']: deque(maxlen=100) 
                                     for profile in self.config.profiles if profile['enabled']}
         
-        # Bot startup time for filtering old messages
-        self._bot_start_time = datetime.now()
+        # Bot startup time for filtering old messages - make it timezone aware
+        self._bot_start_time = datetime.now(tz=timezone.utc)
         self._last_trade_time = None
         self._shutdown_event = asyncio.Event()
         
@@ -124,7 +124,7 @@ class SignalProcessor:
                     if raw_messages:
                         await self._process_new_signals(raw_messages, profile)
                     
-                await asyncio.sleep(self.config.discord_poll_interval_seconds)
+                await asyncio.sleep(self.config.polling_interval_seconds)
                 
             except Exception as e:
                 logging.error(f"Error polling Discord: {e}", exc_info=True)
