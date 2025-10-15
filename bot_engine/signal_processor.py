@@ -195,11 +195,41 @@ class SignalProcessor:
                     logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:150]}'")
                     continue
                 
-        self.sentiment_filter = {
-            "enabled": False,
-            "sentiment_threshold": 0.05,
-            "put_sentiment_threshold": -0.05
-        }
+# Parse the signal
+                parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
+                
+                if not parsed_signal:
+                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:150]}'")
+                    continue
+                
+                # Add sentiment if enabled
+                if self.config.sentiment_filter['enabled']:
+                    sentiment = self.sentiment_analyzer.analyze(msg_content)
+                    
+                    # Determine threshold based on contract type
+                    if parsed_signal['contract_type'] == 'CALL':
+                        threshold = self.config.sentiment_filter['sentiment_threshold']
+                    else:  # PUT
+                        threshold = self.config.sentiment_filter['put_sentiment_threshold']
+                    
+                    if sentiment < threshold:
+                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment:.2f}) | Signal: {parsed_signal['ticker']}")
+                        
+                        # Send Telegram notification for sentiment veto
+                        veto_msg = (
+                            f"🚫 *Trade Vetoed by Sentiment*\n\n"
+                            f"Channel: {channel_name}\n"
+                            f"Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}\n"
+                            f"Sentiment Score: {sentiment:.2f}\n"
+                            f"Threshold: {threshold:.2f}\n"
+                            f"Message: _{msg_content[:100]}_"
+                        )
+                        await self.telegram_interface.send_message(veto_msg)
+                        continue
+                    
+                    parsed_signal['sentiment'] = sentiment
+                else:
+                    parsed_signal['sentiment'] = None
                 
                 # Check global cooldown
                 if self._last_trade_time:
