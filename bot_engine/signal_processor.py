@@ -117,8 +117,9 @@ class SignalProcessor:
                     channel_id = profile['channel_id']
                     channel_name = profile.get('channel_name', 'Unknown')
                     
-                    # Get recent messages (last 50)
-                    raw_messages = await self.discord_interface.get_messages(channel_id, 50)
+                    # Poll for new messages
+                    processed_ids = list(self._processed_messages[channel_id])
+                    raw_messages = await self.discord_interface.poll_for_new_messages(channel_id, processed_ids)
                     
                     if raw_messages:
                         await self._process_new_signals(raw_messages, profile)
