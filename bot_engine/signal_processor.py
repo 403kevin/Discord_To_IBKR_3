@@ -310,7 +310,7 @@ class SignalProcessor:
             # Create the contract
             contract = await self.ib_interface.create_option_contract(
                 parsed_signal['ticker'],
-                parsed_signal['expiry'],
+                parsed_signal['expiry_date'],
                 parsed_signal['strike'],
                 parsed_signal['contract_type'][0]
             )
