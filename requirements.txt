@@ -1,13 +1,12 @@
-ib-insync
-playwright
+ib-insync==0.9.86
+playwright==1.48.0
 vaderSentiment==3.3.2
-pytz==2024.1
+pytz==2024.2
 python-dotenv==1.0.1
-pandas
-numpy==2.2.0
-nltk
-aiohttp
-beautifulsoup4
-pandas-ta
-requests
-pip freeze > requirements.txt
+pandas==2.2.3
+numpy==2.1.3
+nltk==3.9.1
+aiohttp==3.11.7
+pandas-ta==0.3.14b0
+requests==2.32.3
+databento==0.39.0
