@@ -689,34 +689,64 @@ class SignalProcessor:
     async def _send_telegram_notification(self, status, position_info, exit_reason=None):
         """Send formatted Telegram notifications for trade events."""
         try:
+            # Helper to escape special characters for Telegram MarkdownV2
+            def escape_md(text):
+                if text is None:
+                    return 'N/A'
+                text = str(text)
+                escape_chars = r'\_*[]()~`>#+-=|{}.!'
+                import re
+                return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+            
             if status == 'ENTRY':
+                ticker = escape_md(position_info['signal']['ticker'])
+                strike = escape_md(position_info['signal']['strike'])
+                contract_type = escape_md(position_info['signal']['contract_type'])
+                expiry = escape_md(position_info['signal']['expiry_date'])
+                qty = escape_md(position_info['quantity'])
+                entry_price = escape_md(f"{position_info['entry_price']:.2f}")
+                total_cost = escape_md(f"{position_info['entry_price'] * position_info['quantity'] * 100:.2f}")
+                entry_time = escape_md(position_info['entry_time'].strftime('%Y-%m-%d %H:%M:%S'))
+                
                 message = f"""
-🟢 **ENTRY FILLED**
+🟢 *ENTRY FILLED*
 
-**Symbol:** {position_info['signal']['ticker']}
-**Strike:** {position_info['signal']['strike']}{position_info['signal']['contract_type']}
-**Expiry:** {position_info['signal']['expiry_date']}
-**Quantity:** {position_info['quantity']}
-**Entry Price:** ${position_info['entry_price']:.2f}
-**Total Cost:** ${position_info['entry_price'] * position_info['quantity'] * 100:.2f}
-**Time:** {position_info['entry_time'].strftime('%Y-%m-%d %H:%M:%S')}
+*Symbol:* {ticker}
+*Strike:* {strike}{contract_type}
+*Expiry:* {expiry}
+*Quantity:* {qty}
+*Entry Price:* ${entry_price}
+*Total Cost:* ${total_cost}
+*Time:* {entry_time}
 """
             
             elif status == 'EXIT':
-                pnl_emoji = "🟢" if position_info.get('pnl', 0) > 0 else "🔴"
+                pnl_value = position_info.get('pnl', 0)
+                pnl_emoji = "🟢" if pnl_value > 0 else "🔴"
+                
+                ticker = escape_md(position_info['signal']['ticker'])
+                strike = escape_md(position_info['signal']['strike'])
+                contract_type = escape_md(position_info['signal']['contract_type'])
+                reason = escape_md(exit_reason)
+                entry_price = escape_md(f"{position_info['entry_price']:.2f}")
+                exit_price = escape_md(f"{position_info.get('exit_price', 0):.2f}")
+                qty = escape_md(position_info['quantity'])
+                pnl = escape_md(f"{pnl_value:.2f}")
+                pnl_pct = escape_md(f"{position_info.get('pnl_percent', 0):.1f}")
+                
                 message = f"""
-{pnl_emoji} **EXIT FILLED**
+{pnl_emoji} *EXIT FILLED*
 
-**Symbol:** {position_info['signal']['ticker']}
-**Strike:** {position_info['signal']['strike']}{position_info['signal']['contract_type']}
-**Reason:** {exit_reason}
-**Entry Price:** ${position_info['entry_price']:.2f}
-**Exit Price:** ${position_info.get('exit_price', 0):.2f}
-**Quantity:** {position_info['quantity']}
-**P&L:** ${position_info.get('pnl', 0):.2f} ({position_info.get('pnl_percent', 0):.1f}%)
+*Symbol:* {ticker}
+*Strike:* {strike}{contract_type}
+*Reason:* {reason}
+*Entry Price:* ${entry_price}
+*Exit Price:* ${exit_price}
+*Quantity:* {qty}
+*P/L:* ${pnl} \\({pnl_pct}%\\)
 """
             
-            await self.telegram_interface.send_message(message)
+            await self.telegram_interface.send_message(message.strip())
             
         except Exception as e:
             logging.error(f"Error sending Telegram notification: {e}", exc_info=True)
