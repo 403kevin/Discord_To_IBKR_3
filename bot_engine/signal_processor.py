@@ -699,51 +699,90 @@ class SignalProcessor:
                 return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
             
             if status == 'ENTRY':
-                ticker = escape_md(position_info['signal']['ticker'])
-                strike = escape_md(position_info['signal']['strike'])
-                contract_type = escape_md(position_info['signal']['contract_type'])
-                expiry = escape_md(position_info['signal']['expiry_date'])
+                # Get channel name from profile
+                channel_name = escape_md(position_info.get('profile', {}).get('channel_name', 'Unknown'))
+                
+                # Contract details: SPX 6625PUT 20251016
+                ticker = position_info['signal']['ticker']
+                strike = position_info['signal']['strike']
+                contract_type = position_info['signal']['contract_type']
+                expiry = position_info['signal']['expiry_date']
+                contract_details = escape_md(f"{ticker} {strike}{contract_type} {expiry}")
+                
                 qty = escape_md(position_info['quantity'])
                 entry_price = escape_md(f"{position_info['entry_price']:.2f}")
-                total_cost = escape_md(f"{position_info['entry_price'] * position_info['quantity'] * 100:.2f}")
-                entry_time = escape_md(position_info['entry_time'].strftime('%Y-%m-%d %H:%M:%S'))
+                
+                # Get trail method from profile
+                profile = position_info.get('profile', {})
+                exit_strategy = profile.get('exit_strategy', {})
+                trail_method = exit_strategy.get('trail_method', 'N/A')
+                trail_method = escape_md(trail_method)
+                
+                # Get momentum exit settings
+                momentum_exits = exit_strategy.get('momentum_exits', {})
+                psar_enabled = momentum_exits.get('psar_enabled', False)
+                rsi_enabled = momentum_exits.get('rsi_hook_enabled', False)
+                
+                if psar_enabled and rsi_enabled:
+                    momentum_exit = escape_md('PSAR, RSI')
+                elif psar_enabled:
+                    momentum_exit = escape_md('PSAR')
+                elif rsi_enabled:
+                    momentum_exit = escape_md('RSI')
+                else:
+                    momentum_exit = escape_md('NONE')
                 
                 message = f"""
-🟢 *ENTRY FILLED*
+✅ *Trade Entry Confirmed* ✅
 
-*Symbol:* {ticker}
-*Strike:* {strike}{contract_type}
-*Expiry:* {expiry}
+*Source Channel:* {channel_name}
+*Contract Details:* {contract_details}
 *Quantity:* {qty}
 *Entry Price:* ${entry_price}
-*Total Cost:* ${total_cost}
-*Time:* {entry_time}
+*Trail Method:* {trail_method}
+*Momentum Exit:* {momentum_exit}
 """
             
             elif status == 'EXIT':
-                pnl_value = position_info.get('pnl', 0)
-                pnl_emoji = "🟢" if pnl_value > 0 else "🔴"
+                # Contract details
+                ticker = position_info['signal']['ticker']
+                strike = position_info['signal']['strike']
+                contract_type = position_info['signal']['contract_type']
+                expiry = position_info['signal']['expiry_date']
+                contract_details = escape_md(f"{ticker} {strike}{contract_type} {expiry}")
                 
-                ticker = escape_md(position_info['signal']['ticker'])
-                strike = escape_md(position_info['signal']['strike'])
-                contract_type = escape_md(position_info['signal']['contract_type'])
-                reason = escape_md(exit_reason)
-                entry_price = escape_md(f"{position_info['entry_price']:.2f}")
                 exit_price = escape_md(f"{position_info.get('exit_price', 0):.2f}")
-                qty = escape_md(position_info['quantity'])
-                pnl = escape_md(f"{pnl_value:.2f}")
-                pnl_pct = escape_md(f"{position_info.get('pnl_percent', 0):.1f}")
+                reason = escape_md(exit_reason if exit_reason else 'Unknown')
                 
                 message = f"""
-{pnl_emoji} *EXIT FILLED*
+🔴 *SELL Order Executed*
 
-*Symbol:* {ticker}
-*Strike:* {strike}{contract_type}
-*Reason:* {reason}
-*Entry Price:* ${entry_price}
+*Contract Details:* {contract_details}
 *Exit Price:* ${exit_price}
-*Quantity:* {qty}
-*P/L:* ${pnl} \\({pnl_pct}%\\)
+*Reason:* {reason}
+*Native Trail:* Cancelled
+"""
+            
+            elif status == 'VETO':
+                # Get channel name
+                channel_name = escape_md(position_info.get('channel_name', 'Unknown'))
+                
+                # Contract details from signal
+                signal = position_info.get('signal', {})
+                ticker = signal.get('ticker', 'N/A')
+                strike = signal.get('strike', 'N/A')
+                contract_type = signal.get('contract_type', 'N/A')
+                expiry = signal.get('expiry_date', 'N/A')
+                contract_details = escape_md(f"{ticker} {strike}{contract_type} {expiry}")
+                
+                reason = escape_md(position_info.get('reason', 'Unknown'))
+                
+                message = f"""
+❌ *Trade Vetoed* ❌
+
+*Source Channel:* {channel_name}
+*Contract Details:* {contract_details}
+*Reason:* {reason}
 """
             
             await self.telegram_interface.send_message(message.strip())
