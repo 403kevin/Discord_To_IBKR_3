@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import os
+from dotenv import load_dotenv
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -70,8 +71,13 @@ class DatabentoHarvester:
         symbol = f"{ticker}{expiry_str}{right}{strike_str}"
         
         # Download tick data for 1 day
-        start_date = datetime.strptime(expiry, '%Y%m%d') - timedelta(days=1)
-        end_date = datetime.strptime(expiry, '%Y%m%d')
+        try:
+            exp_date = datetime.strptime(expiry, '%Y%m%d')
+        except:
+            exp_date = datetime.strptime(expiry, '%Y-%m-%d')
+            
+        start_date = exp_date - timedelta(days=1)
+        end_date = exp_date
         
         try:
             data = self.client.timeseries.get_range(
@@ -94,7 +100,7 @@ class DatabentoHarvester:
                 'price': 'close'
             })
             
-            filename = get_data_filename_databento(ticker, expiry, strike, right)
+            filename = get_data_filename_databento(ticker, expiry_str, strike, right)
             filepath = self.output_dir / filename
             df[['timestamp', 'close', 'size']].to_csv(filepath, index=False)
             
@@ -106,10 +112,22 @@ class DatabentoHarvester:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
+    # Load .env file
+    load_dotenv()
+    
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api-key', required=True, help='Databento API key')
+    parser.add_argument('--api-key', help='Databento API key (or set DATABENTO_API_KEY in .env)')
     args = parser.parse_args()
     
-    harvester = DatabentoHarvester(args.api_key)
+    # Get API key from args or env
+    api_key = args.api_key or os.getenv('DATABENTO_API_KEY')
+    
+    if not api_key:
+        print("ERROR: API key required")
+        print("Usage: python Databento_Harvester.py --api-key YOUR_KEY")
+        print("   OR: Set DATABENTO_API_KEY in .env file")
+        sys.exit(1)
+    
+    harvester = DatabentoHarvester(api_key)
     harvester.run()
