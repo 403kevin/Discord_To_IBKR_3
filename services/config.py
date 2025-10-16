@@ -87,7 +87,7 @@ class Config:
         # ADD THIS NEW SECTION BELOW sentiment_filter
         # No API key required - uses TradingView's public endpoints
         self.vix_filter = {
-            "enabled": True,
+            "enabled": False,
             
             # Basic VIX range
             "vix_max": 30,      # Don't trade when VIX > 30 (market panic/extreme fear)
@@ -122,7 +122,7 @@ class Config:
         # ADD THIS NEW SECTION BELOW vix_filter
         # Uses data already available from IBKR - no external API needed
         self.spread_filter = {
-            "enabled": True,
+            "enabled": False,
             
             # Bid-ask spread check
             "max_spread_percent": 10,   # Max allowed spread as % of mid price
@@ -143,7 +143,7 @@ class Config:
         # ADD THIS NEW SECTION BELOW spread_filter
         # No external data needed - uses system clock
         self.time_filter = {
-            "enabled": True,
+            "enabled": False,
             
             # Trading window (in market timezone)
             "trading_hours": {
