@@ -10,3 +10,4 @@ aiohttp
 beautifulsoup4
 pandas-ta
 requests
+pip freeze > requirements.txt
