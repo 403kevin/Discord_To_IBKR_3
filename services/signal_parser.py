@@ -7,6 +7,7 @@ class SignalParser:
     """
     The Master Linguist - now with per-channel buzzword support.
     Parses 17+ signal formats with surgical precision.
+    FIXED: ambiguous_expiry now works for ALL tickers, not just daily expiry tickers.
     """
 
     def __init__(self, config):
@@ -45,6 +46,7 @@ class SignalParser:
     def _parse_multi_step(self, text, profile):
         """
         The "Step-by-Step Surgeon" - now with strict ticker validation.
+        FIXED: ambiguous_expiry now calculates next Friday for ALL tickers when enabled.
         """
         # Split text into parts for component extraction
         msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*]+|\*\*', text) if p.strip()]
@@ -117,18 +119,26 @@ class SignalParser:
             logging.debug(f"Missing components: ticker={ticker}, strike={strike}, type={contract_type}")
             return None
 
-        # Handle expiry date
+        # FIXED: Handle expiry date with corrected logic
         if exp_month and exp_day:
-            pass  # Already extracted
-        elif ticker in self.config.daily_expiry_tickers:
-            if profile.get('ambiguous_expiry_enabled', False):
+            # Expiry was explicitly provided in the signal
+            pass
+        elif profile.get('ambiguous_expiry_enabled', False):
+            # Calculate expiry when ambiguous_expiry is enabled
+            if ticker in self.config.daily_expiry_tickers:
+                # Daily expiry tickers (SPX, SPY, QQQ) → 0DTE
                 logging.info(f"Ticker {ticker} is a daily expiry ticker. Defaulting to 0DTE.")
                 today = datetime.now()
                 exp_month, exp_day = today.month, today.day
             else:
-                logging.info(f"No expiry found for {ticker}. Defaulting to next Friday.")
+                # Regular stocks → next Friday
+                logging.info(f"No expiry found for {ticker}. Calculating next Friday.")
                 next_friday = self._get_next_friday()
                 exp_month, exp_day = next_friday.month, next_friday.day
+        else:
+            # ambiguous_expiry is disabled and no expiry provided
+            logging.debug(f"Parser requires explicit expiry date for {ticker} (ambiguous_expiry_enabled=False)")
+            return None
 
         # Final validation
         if not all([exp_month, exp_day]):
@@ -177,5 +187,7 @@ class SignalParser:
         """Get next Friday date."""
         today = datetime.today()
         days_to_friday = (4 - today.weekday() + 7) % 7
+        if days_to_friday == 0:  # If today is Friday, get next Friday
+            days_to_friday = 7
         next_friday = today + timedelta(days=days_to_friday)
         return next_friday
