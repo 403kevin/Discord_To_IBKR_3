@@ -157,7 +157,6 @@ class SignalProcessor:
                 logging.info(f"Raw content: '{msg_content}'")
                 
                 # Check timestamp - FIX: Parse timestamp correctly
-# Check timestamp - FIX: Parse timestamp correctly
                 try:
                     if isinstance(timestamp_str, str):
                         # Discord timestamp format: '2025-10-15T13:05:00.123456+00:00'
@@ -195,67 +194,39 @@ class SignalProcessor:
                     logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:150]}'")
                     continue
                 
-# Parse the signal
-                parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
-                
-                if not parsed_signal:
-                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:150]}'")
-                    continue
-                
-                # Add sentiment if enabled
-                if self.config.sentiment_filter['enabled']:
-                    sentiment = self.sentiment_analyzer.analyze(msg_content)
-                    
-                    # Determine threshold based on contract type
-                    if parsed_signal['contract_type'] == 'CALL':
-                        threshold = self.config.sentiment_filter['sentiment_threshold']
-                    else:  # PUT
-                        threshold = self.config.sentiment_filter['put_sentiment_threshold']
-                    
-                    if sentiment < threshold:
-                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Low sentiment ({sentiment:.2f}) | Signal: {parsed_signal['ticker']}")
-                        
-                        # Send Telegram notification for sentiment veto
-                        veto_msg = (
-                            f"🚫 *Trade Vetoed by Sentiment*\n\n"
-                            f"Channel: {channel_name}\n"
-                            f"Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}\n"
-                            f"Sentiment Score: {sentiment:.2f}\n"
-                            f"Threshold: {threshold:.2f}\n"
-                            f"Message: _{msg_content[:100]}_"
-                        )
-                        await self.telegram_interface.send_message(veto_msg)
-                        continue
-                    
-                    parsed_signal['sentiment'] = sentiment
-                else:
-                    parsed_signal['sentiment'] = None
-                
-                # Check global cooldown
+                # Check cooldown
                 if self._last_trade_time:
-                    time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
-                    cooldown = self.config.cooldown_after_trade_seconds
-                    if time_since_last < cooldown:
-                        logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Cooldown ({time_since_last:.0f}s < {cooldown}s) | Signal: {parsed_signal['ticker']}")
+                    cooldown_seconds = self.config.cooldown_after_trade_seconds
+                    time_since_last_trade = (datetime.now() - self._last_trade_time).total_seconds()
+                    if time_since_last_trade < cooldown_seconds:
+                        remaining = cooldown_seconds - time_since_last_trade
+                        logging.info(f"⏳ COOLDOWN - {remaining:.0f}s remaining")
+                        continue
+                
+                # Check VIX if available
+                if hasattr(self, 'vix_checker') and self.vix_checker:
+                    if not await self.vix_checker.check_vix_threshold():
+                        logging.info(f"❌ VIX VETO - Market volatility too high")
+                        continue
+                
+                # Check sentiment if enabled
+                if profile.get('sentiment_filter', {}).get('enabled', False):
+                    sentiment_score = self.sentiment_analyzer.analyze(msg_content)
+                    required_score = profile['sentiment_filter']['required_score']
+                    
+                    if abs(sentiment_score) < required_score:
+                        logging.info(f"❌ SENTIMENT VETO - Score: {sentiment_score:.2f} < Required: {required_score}")
                         continue
                 
                 # Execute the trade
-                logging.info(f"🎯 EXECUTING - Channel: {channel_name} | Signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']}")
+                logging.info(f"✅ SIGNAL ACCEPTED - Executing trade for {parsed_signal['ticker']}")
                 await self._execute_trade(parsed_signal, profile)
                 
-                # Save state after successful trade
-                all_processed_ids = []
-                for channel_deque in self._processed_messages.values():
-                    all_processed_ids.extend(list(channel_deque))
-                
-                self.state_manager.save_state(self.open_positions, all_processed_ids)
-                
             except Exception as e:
-                error_msg_id = msg_id if msg_id else 'UNKNOWN'
-                logging.error(f"Error processing message {error_msg_id}: {e}", exc_info=True)
+                logging.error(f"Error processing message {msg_id}: {e}", exc_info=True)
 
     def _get_matched_keyword(self, text, keywords):
-        """Helper to get which keyword was matched."""
+        """Helper to find which keyword matched in the text."""
         text_lower = text.lower()
         for keyword in keywords:
             if keyword.lower() in text_lower:
@@ -507,9 +478,18 @@ class SignalProcessor:
         if conId not in self._bars_data or len(self._bars_data[conId]) < 5:
             return None
         
-        # Simplified PSAR check
-        recent_lows = [bar['low'] for bar in self._bars_data[conId][-5:]]
-        if current_price < min(recent_lows):
+        # Calculate PSAR
+        bars_df = pd.DataFrame(self._bars_data[conId])
+        settings = position['profile']['exit_strategy'].get('momentum_exits', {}).get('psar_settings', {})
+        
+        start = settings.get('start', 0.02)
+        increment = settings.get('increment', 0.02)
+        maximum = settings.get('max', 0.2)
+        
+        psar = self._calculate_psar(bars_df, start, increment, maximum)
+        
+        # If PSAR flips above price, exit
+        if psar is not None and psar > current_price:
             return "PSAR Flip"
         
         return None
@@ -520,39 +500,46 @@ class SignalProcessor:
         if conId not in self._bars_data or len(self._bars_data[conId]) < 14:
             return None
         
-        # Calculate ATR
-        atr = self._calculate_atr(self._bars_data[conId][-14:])
-        settings = position['profile']['exit_strategy'].get('trail_settings', {})
+        bars_df = pd.DataFrame(self._bars_data[conId])
+        settings = position['profile']['exit_strategy']
+        
+        period = settings.get('atr_period', 14)
         multiplier = settings.get('atr_multiplier', 1.5)
         
+        atr = self._calculate_atr(bars_df, period)
+        if atr is None:
+            return None
+        
         stop_price = position['highest_price'] - (atr * multiplier)
+        
         if current_price <= stop_price:
             return "ATR Trail"
         
         return None
 
     def _check_pullback_stop(self, position, current_price):
-        """Check pullback percentage stop."""
-        settings = position['profile']['exit_strategy'].get('trail_settings', {})
+        """Check percentage pullback stop."""
+        settings = position['profile']['exit_strategy']
         pullback_percent = settings.get('pullback_percent', 10)
         
         stop_price = position['highest_price'] * (1 - pullback_percent / 100)
+        
         if current_price <= stop_price:
-            return f"Pullback Stop ({pullback_percent}%)"
+            return "Pullback Stop"
         
         return None
 
-    def _calculate_rsi(self, prices, period=14):
-        """Calculate RSI from price list."""
-        if len(prices) < period:
-            return 50  # Neutral RSI if not enough data
+    def _calculate_rsi(self, closes, period=14):
+        """Calculate RSI indicator."""
+        if len(closes) < period + 1:
+            return 50  # Neutral
         
-        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
+        deltas = np.diff(closes)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
         
-        avg_gain = sum(gains) / len(gains)
-        avg_loss = sum(losses) / len(losses)
+        avg_gain = np.mean(gains[-period:])
+        avg_loss = np.mean(losses[-period:])
         
         if avg_loss == 0:
             return 100
@@ -561,27 +548,54 @@ class SignalProcessor:
         rsi = 100 - (100 / (1 + rs))
         return rsi
 
-    def _calculate_atr(self, bars, period=14):
-        """Calculate ATR from bars."""
-        if not bars:
-            return 0
+    def _calculate_psar(self, bars_df, start, increment, maximum):
+        """Calculate Parabolic SAR."""
+        if len(bars_df) < 2:
+            return None
         
-        true_ranges = []
-        for i, bar in enumerate(bars):
-            if i == 0:
-                tr = bar['high'] - bar['low']
-            else:
-                tr = max(
-                    bar['high'] - bar['low'],
-                    abs(bar['high'] - bars[i-1]['close']),
-                    abs(bar['low'] - bars[i-1]['close'])
-                )
-            true_ranges.append(tr)
+        # Simplified PSAR calculation
+        try:
+            import pandas_ta as ta
+            psar_result = ta.psar(
+                high=bars_df['high'],
+                low=bars_df['low'],
+                close=bars_df['close'],
+                af0=start,
+                af=increment,
+                max_af=maximum
+            )
+            
+            if psar_result is not None and len(psar_result) > 0:
+                # Return the long (bullish) PSAR value
+                return psar_result.iloc[-1]['PSARl_' + str(start) + '_' + str(maximum)]
+        except:
+            pass
         
-        return sum(true_ranges) / len(true_ranges)
+        return None
+
+    def _calculate_atr(self, bars_df, period):
+        """Calculate Average True Range."""
+        if len(bars_df) < period:
+            return None
+        
+        try:
+            import pandas_ta as ta
+            atr_result = ta.atr(
+                high=bars_df['high'],
+                low=bars_df['low'],
+                close=bars_df['close'],
+                length=period
+            )
+            
+            if atr_result is not None and len(atr_result) > 0:
+                return atr_result.iloc[-1]
+        except:
+            pass
+        
+        return None
 
     async def _close_position(self, conId, exit_reason, exit_price):
-        """Close a position and update tracking."""
+        """Close a position."""
         try:
             position = self.open_positions[conId]
             contract = position['contract']
@@ -631,53 +645,37 @@ class SignalProcessor:
     async def _send_telegram_notification(self, status, position_info, exit_reason=None):
         """Send formatted Telegram notifications for trade events."""
         try:
-            signal = position_info['signal']
-            profile = position_info['profile']
-            channel_name = profile.get('channel_name', 'Unknown')
-            
             if status == 'ENTRY':
-                sentiment_text = "N/A"
-                if signal.get('sentiment'):
-                    sentiment_text = f"{signal['sentiment']:.2f}"
-                
-                # Get exit strategy info
-                trail_method = profile['exit_strategy'].get('trail_method', 'N/A')
-                momentum_exits = []
-                if profile['exit_strategy'].get('momentum_exits', {}).get('psar_enabled'):
-                    momentum_exits.append('PSAR')
-                if profile['exit_strategy'].get('momentum_exits', {}).get('rsi_hook_enabled'):
-                    momentum_exits.append('RSI')
-                momentum_text = ', '.join(momentum_exits) if momentum_exits else 'None'
-                
-                message = (
-                    f"✅ *Trade Entry Confirmed* ✅\n\n"
-                    f"*Source Channel:* {channel_name}\n"
-                    f"*Contract:* {signal['ticker']} {position_info['contract'].localSymbol}\n"
-                    f"*Quantity:* {position_info['quantity']}\n"
-                    f"*Entry Price:* ${position_info['entry_price']:.2f}\n"
-                    f"*Vader Sentiment:* {sentiment_text}\n"
-                    f"*Trail Method:* {trail_method.upper()}\n"
-                    f"*Momentum Exit:* {momentum_text}"
-                )
-            else:  # EXIT
-                pnl = position_info.get('pnl', 0)
-                pnl_percent = position_info.get('pnl_percent', 0)
-                exit_price = position_info.get('exit_price', 0)
-                
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                
-                message = (
-                    f"{emoji} *SELL Order Executed*\n\n"
-                    f"*Contract:* {signal['ticker']} {position_info['contract'].localSymbol}\n"
-                    f"*Exit Price:* ${exit_price:.2f}\n"
-                    f"*Reason:* {exit_reason}\n"
-                    f"*P&L:* ${pnl:.2f} ({pnl_percent:.1f}%)"
-                )
+                message = f"""
+🟢 **ENTRY FILLED**
+
+**Symbol:** {position_info['signal']['ticker']}
+**Strike:** {position_info['signal']['strike']}{position_info['signal']['contract_type']}
+**Expiry:** {position_info['signal']['expiry_date']}
+**Quantity:** {position_info['quantity']}
+**Entry Price:** ${position_info['entry_price']:.2f}
+**Total Cost:** ${position_info['entry_price'] * position_info['quantity'] * 100:.2f}
+**Time:** {position_info['entry_time'].strftime('%Y-%m-%d %H:%M:%S')}
+"""
+            
+            elif status == 'EXIT':
+                pnl_emoji = "🟢" if position_info.get('pnl', 0) > 0 else "🔴"
+                message = f"""
+{pnl_emoji} **EXIT FILLED**
+
+**Symbol:** {position_info['signal']['ticker']}
+**Strike:** {position_info['signal']['strike']}{position_info['signal']['contract_type']}
+**Reason:** {exit_reason}
+**Entry Price:** ${position_info['entry_price']:.2f}
+**Exit Price:** ${position_info.get('exit_price', 0):.2f}
+**Quantity:** {position_info['quantity']}
+**P&L:** ${position_info.get('pnl', 0):.2f} ({position_info.get('pnl_percent', 0):.1f}%)
+"""
             
             await self.telegram_interface.send_message(message)
             
         except Exception as e:
-            logging.error(f"Error sending Telegram notification: {e}")
+            logging.error(f"Error sending Telegram notification: {e}", exc_info=True)
 
     async def _reconciliation_loop(self):
         """Periodic reconciliation with broker."""
