@@ -7,26 +7,48 @@ import sys
 import os
 from dotenv import load_dotenv
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+# Get absolute project root
+project_root = Path(__file__).parent.parent.absolute()
+sys.path.insert(0, str(project_root))
 
 from services.signal_parser import SignalParser
 from services.config import Config
 from services.utils import get_data_filename_databento
 
 class DatabentoHarvester:
-    def __init__(self, api_key, signals_path="backtester/signals_to_test.txt", output_dir="backtester/historical_data"):
+    def __init__(self, api_key, signals_path=None, output_dir=None):
         self.client = db.Historical(api_key)
-        self.signals_path = Path(signals_path)
-        self.output_dir = Path(output_dir)
+        
+        # Use absolute paths
+        if signals_path:
+            self.signals_path = Path(signals_path)
+        else:
+            self.signals_path = project_root / "backtester" / "signals_to_test.txt"
+        
+        if output_dir:
+            self.output_dir = Path(output_dir)
+        else:
+            self.output_dir = project_root / "backtester" / "historical_data"
+            
         self.output_dir.mkdir(exist_ok=True, parents=True)
         
         self.config = Config()
         self.signal_parser = SignalParser(self.config)
         
+        logging.info(f"Using signals file: {self.signals_path}")
+        
     def run(self):
         logging.info("Starting Databento data download...")
+        
+        if not self.signals_path.exists():
+            logging.error(f"Signals file not found: {self.signals_path}")
+            return
+            
         signals = self._parse_signals()
+        
+        if not signals:
+            logging.error("No valid signals found")
+            return
         
         for signal in signals:
             self._download_signal_data(signal)
@@ -52,7 +74,9 @@ class DatabentoHarvester:
                 parsed = self.signal_parser.parse_signal(signal_text, default_profile)
                 if parsed:
                     signals.append(parsed)
+                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{parsed['contract_type'][0]} {parsed['expiry_date']}")
         
+        logging.info(f"\nFound {len(signals)} valid signals")
         return signals
     
     def _download_signal_data(self, signal):
@@ -61,16 +85,17 @@ class DatabentoHarvester:
         strike = signal['strike']
         right = signal['contract_type'][0]
         
-        logging.info(f"Downloading {ticker} {expiry} {strike}{right}...")
+        logging.info(f"\n📥 {ticker} {strike}{right} exp {expiry}")
         
         # Convert expiry to Databento format YYYYMMDD
         expiry_str = expiry.replace('-', '')
         
-        # Build OCC symbol: TICKER + EXPIRY + C/P + STRIKE (padded)
+        # Build OCC symbol
         strike_str = f"{int(strike * 1000):08d}"
         symbol = f"{ticker}{expiry_str}{right}{strike_str}"
+        logging.info(f"   OCC: {symbol}")
         
-        # Download tick data for 1 day
+        # Get data
         try:
             exp_date = datetime.strptime(expiry, '%Y%m%d')
         except:
@@ -80,6 +105,8 @@ class DatabentoHarvester:
         end_date = exp_date
         
         try:
+            logging.info(f"   Fetching: {start_date.date()} to {end_date.date()}")
+            
             data = self.client.timeseries.get_range(
                 dataset='OPRA.pillar',
                 symbols=[symbol],
@@ -91,43 +118,56 @@ class DatabentoHarvester:
             df = data.to_df()
             
             if df.empty:
-                logging.warning(f"No data for {symbol}")
+                logging.warning(f"   ⚠️  No data")
                 return
             
             # Convert to backtest format
+            df = df.reset_index()
             df = df.rename(columns={
                 'ts_event': 'timestamp',
                 'price': 'close'
             })
             
+            # Add high/low/volume columns
+            df['high'] = df['close']
+            df['low'] = df['close']
+            df['volume'] = df.get('size', 0)
+            
             filename = get_data_filename_databento(ticker, expiry_str, strike, right)
             filepath = self.output_dir / filename
-            df[['timestamp', 'close', 'size']].to_csv(filepath, index=False)
             
-            logging.info(f"✅ Saved {len(df)} ticks to {filename}")
+            df[['timestamp', 'close', 'high', 'low', 'volume']].to_csv(filepath, index=False)
+            
+            logging.info(f"   ✅ Saved {len(df)} ticks")
             
         except Exception as e:
-            logging.error(f"Failed to download {symbol}: {e}")
+            logging.error(f"   ❌ Failed: {e}")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     
-    # Load .env file
+    # Load .env
     load_dotenv()
     
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api-key', help='Databento API key (or set DATABENTO_API_KEY in .env)')
+    parser.add_argument('--api-key', help='Databento API key')
     args = parser.parse_args()
     
-    # Get API key from args or env
     api_key = args.api_key or os.getenv('DATABENTO_API_KEY')
     
     if not api_key:
         print("ERROR: API key required")
-        print("Usage: python Databento_Harvester.py --api-key YOUR_KEY")
-        print("   OR: Set DATABENTO_API_KEY in .env file")
+        print("Add DATABENTO_API_KEY to .env or use --api-key")
         sys.exit(1)
+    
+    print("="*60)
+    print("DATABENTO DATA HARVESTER")
+    print("="*60)
     
     harvester = DatabentoHarvester(api_key)
     harvester.run()
+    
+    print("\n" + "="*60)
+    print("COMPLETE")
+    print("="*60)
