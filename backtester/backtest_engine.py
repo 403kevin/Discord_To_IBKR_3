@@ -6,33 +6,24 @@ from ib_insync import Contract
 import os
 import sys
 
-# --- GPS FOR THE FORTRESS ---
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# FIX: Changed from "from utils import" to "from services.utils import"
 from services.config import Config
 from services.signal_parser import SignalParser
 from services.utils import get_data_filename
 
 class BacktestEngine:
-    """
-    A true, event-driven backtesting engine that simulates the live bot's
-    tick-processing and decision-making logic with high fidelity.
-    FIXED: Added null checks for technical indicators.
-    """
     def __init__(self, signal_file_path, data_folder_path):
         self.config = Config()
         self.signal_parser = SignalParser(self.config)
         self.signal_file_path = signal_file_path
         self.data_folder_path = data_folder_path
         
-        # Simulation state
         self.portfolio = {'cash': 100000, 'positions': {}}
         self.trade_log = []
         
-        # Mirrored logic from the live bot
         self.position_data_cache = {}
         self.tick_buffer = {}
         self.last_bar_timestamp = {}
@@ -43,7 +34,6 @@ class BacktestEngine:
         logging.info("Backtest Engine initialized.")
 
     def run_simulation(self):
-        """Main entry point: loads data, creates an event queue, and processes events."""
         logging.info("--- 🚀 Starting Backtest Simulation 🚀 ---")
         
         signals = self._load_signals()
@@ -62,16 +52,11 @@ class BacktestEngine:
         logging.info("--- 🏁 Backtest Simulation Complete 🏁 ---")
 
     def _load_signals(self):
-        """
-        Loads and parses signals from the signals_to_test.txt file.
-        Supports both simple and timestamped formats.
-        """
         signals = []
         if not os.path.exists(self.signal_file_path):
             logging.error(f"FATAL: signals_to_test.txt not found at '{self.signal_file_path}'")
             return []
 
-        # Use first profile as default for parsing
         default_profile = self.config.profiles[0] if self.config.profiles else {
             'assume_buy_on_ambiguous': True,
             'ambiguous_expiry_enabled': True
@@ -83,7 +68,6 @@ class BacktestEngine:
                 if not line or line.startswith('#'):
                     continue
                 
-                # Check if line has timestamp format
                 if '|' in line:
                     parts = line.split('|')
                     if len(parts) == 3:
@@ -91,10 +75,8 @@ class BacktestEngine:
                         channel = parts[1].strip()
                         signal_text = parts[2].strip()
                         
-                        # Parse the signal
                         parsed_signal = self.signal_parser.parse_signal(signal_text, default_profile)
                         if parsed_signal:
-                            # Add timestamp to parsed signal
                             parsed_signal['signal_timestamp'] = datetime.strptime(
                                 timestamp_str, '%Y-%m-%d %H:%M:%S'
                             )
@@ -104,10 +86,8 @@ class BacktestEngine:
                     else:
                         logging.warning(f"Malformed timestamped line #{line_num}: '{line}'")
                 else:
-                    # Simple format without timestamp
                     parsed_signal = self.signal_parser.parse_signal(line, default_profile)
                     if parsed_signal:
-                        # Assign a default timestamp (market open)
                         parsed_signal['signal_timestamp'] = datetime.now().replace(hour=9, minute=30, second=0)
                         parsed_signal['channel'] = 'default'
                         signals.append(parsed_signal)
@@ -117,14 +97,11 @@ class BacktestEngine:
         return signals
 
     def _create_event_queue(self, signals):
-        """Creates a chronological event queue from signals and market data."""
         event_queue = []
         
         for signal in signals:
-            # Add signal event
             event_queue.append((signal['signal_timestamp'], 'SIGNAL', signal))
             
-            # FIX: Create a proper Contract object to pass to get_data_filename()
             contract = Contract(
                 symbol=signal['ticker'],
                 lastTradeDateOrContractMonth=signal['expiry_date'],
@@ -132,7 +109,6 @@ class BacktestEngine:
                 right=signal['contract_type'][0].upper()
             )
             
-            # Now get the filename using the contract object
             data_filename = get_data_filename(contract)
             data_file = os.path.join(self.data_folder_path, data_filename)
             
@@ -142,10 +118,8 @@ class BacktestEngine:
             
             try:
                 df = pd.read_csv(data_file)
-                # FIX: Strip timezone info to make timestamps naive for comparison
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
                 
-                # Add each tick as a TICK event
                 for _, row in df.iterrows():
                     position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
                     tick_data = {
@@ -166,12 +140,10 @@ class BacktestEngine:
         return event_queue
 
     def _process_signal_event(self, timestamp, signal):
-        """Processes a signal event (opens a position)."""
         position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
         
-        # Assume entry at a default price (this would be refined in a real backtest)
         entry_price = 1.50
-        quantity = int(1000 / entry_price)  # Simple sizing
+        quantity = int(1000 / entry_price)
         
         self.portfolio['positions'][position_key] = {
             'signal': signal,
@@ -189,7 +161,6 @@ class BacktestEngine:
         logging.info(f"[{timestamp}] OPENED {position_key} | Qty: {quantity} | Entry: ${entry_price:.2f}")
 
     def _process_tick_event(self, timestamp, tick_data):
-        """Processes a market tick event and evaluates exit conditions."""
         position_key = tick_data['position_key']
         
         if position_key not in self.portfolio['positions']:
@@ -198,11 +169,9 @@ class BacktestEngine:
         position = self.portfolio['positions'][position_key]
         current_price = tick_data['price']
         
-        # Update highest/lowest for trailing logic
         position['highest_price'] = max(position['highest_price'], current_price)
         position['lowest_price'] = min(position['lowest_price'], current_price)
         
-        # Build bar data for technical indicators (simulated 1-min bars)
         if position_key not in self.tick_buffer:
             self.tick_buffer[position_key] = []
         
@@ -214,20 +183,17 @@ class BacktestEngine:
             'volume': tick_data['volume']
         })
         
-        # Every 60 seconds, aggregate a bar
         if position_key not in self.last_bar_timestamp or \
            (timestamp - self.last_bar_timestamp[position_key]).total_seconds() >= 60:
             self._aggregate_bar(position_key, timestamp)
             self.last_bar_timestamp[position_key] = timestamp
         
-        # Evaluate exit conditions
         exit_reason = self._evaluate_exit_conditions(position, current_price, timestamp)
         
         if exit_reason:
             self._close_position(position_key, current_price, timestamp, exit_reason)
 
     def _aggregate_bar(self, position_key, timestamp):
-        """Aggregates tick buffer into a 1-minute bar."""
         if position_key not in self.tick_buffer or not self.tick_buffer[position_key]:
             return
         
@@ -245,19 +211,16 @@ class BacktestEngine:
         if position:
             position['bars'].append(bar)
         
-        # Clear buffer
         self.tick_buffer[position_key] = []
 
     def _evaluate_exit_conditions(self, position, current_price, timestamp):
-        """Evaluates all exit conditions in priority order with NULL CHECKS."""
         entry_price = position['entry_price']
         pnl_percent = ((current_price - entry_price) / entry_price) * 100
         
-        # Get config settings
         profile = self.config.profiles[0] if self.config.profiles else {}
         exit_strategy = profile.get('exit_strategy', {})
         
-        # 1. Breakeven trigger
+        # 1. Breakeven
         breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 10)
         if not position['breakeven_activated'] and pnl_percent >= breakeven_trigger:
             position['breakeven_activated'] = True
@@ -266,35 +229,47 @@ class BacktestEngine:
         if position['breakeven_activated'] and current_price <= entry_price:
             return "Breakeven stop hit"
         
-        # 2. RSI Hook (check before ATR to prioritize momentum)
+        # 2. Native Trail
+        native_trail_percent = exit_strategy.get('native_trail_percent')
+        if native_trail_percent:
+            native_exit = self._check_native_trail(position, current_price, native_trail_percent)
+            if native_exit:
+                return native_exit
+        
+        # 3. RSI Hook
         momentum_exits = exit_strategy.get('momentum_exits', {})
         if momentum_exits.get('rsi_hook_enabled', False) and len(position['bars']) >= 14:
             rsi_exit = self._check_rsi_hook(position, current_price)
             if rsi_exit:
                 return rsi_exit
         
-        # 3. PSAR Flip
+        # 4. PSAR Flip
         if momentum_exits.get('psar_enabled', False) and len(position['bars']) >= 5:
             psar_exit = self._check_psar_flip(position, current_price)
             if psar_exit:
                 return psar_exit
         
-        # 4. ATR trailing stop
+        # 5. ATR Trail
         trail_method = exit_strategy.get('trail_method', 'pullback_percent')
         if trail_method == 'atr' and len(position['bars']) >= 14:
             atr_exit = self._check_atr_trail(position, current_price)
             if atr_exit:
                 return atr_exit
         
-        # 5. Pullback percent trailing stop (fallback)
+        # 6. Pullback
         pullback_exit = self._check_pullback_stop(position, current_price)
         if pullback_exit:
             return pullback_exit
         
         return None
 
+    def _check_native_trail(self, position, current_price, trail_percent):
+        stop_price = position['highest_price'] * (1 - trail_percent / 100)
+        if current_price <= stop_price:
+            return f"Native trail stop ({trail_percent}% from high ${position['highest_price']:.2f})"
+        return None
+
     def _check_rsi_hook(self, position, current_price):
-        """Check RSI hook exit with NULL protection."""
         if len(position['bars']) < 14:
             return None
         
@@ -305,28 +280,23 @@ class BacktestEngine:
             overbought = rsi_settings.get('overbought_level', 70)
             oversold = rsi_settings.get('oversold_level', 30)
             
-            # ✅ NULL CHECK - Calculate RSI
             rsi_series = ta.rsi(df['close'], length=rsi_period)
             
             if rsi_series is None or len(rsi_series) == 0:
                 return None
             
-            # Get last two RSI values
             if len(rsi_series) < 2:
                 return None
                 
             current_rsi = rsi_series.iloc[-1]
             previous_rsi = rsi_series.iloc[-2]
             
-            # ✅ NULL CHECK - Verify RSI values are valid
             if pd.isna(current_rsi) or pd.isna(previous_rsi):
                 return None
             
-            # Check for hook from overbought
             if previous_rsi > overbought and current_rsi < overbought:
                 return f"RSI Hook from overbought ({current_rsi:.1f})"
             
-            # Check for hook from oversold
             if previous_rsi < oversold and current_rsi > oversold:
                 return f"RSI Hook from oversold ({current_rsi:.1f})"
         
@@ -337,7 +307,6 @@ class BacktestEngine:
         return None
 
     def _check_psar_flip(self, position, current_price):
-        """Check PSAR flip exit with NULL protection."""
         if len(position['bars']) < 5:
             return None
         
@@ -345,7 +314,6 @@ class BacktestEngine:
             df = pd.DataFrame(position['bars'])
             psar_settings = self.config.profiles[0]['exit_strategy']['momentum_exits'].get('psar_settings', {})
             
-            # ✅ NULL CHECK - Calculate PSAR
             psar_series = ta.psar(
                 high=df['high'],
                 low=df['low'],
@@ -358,7 +326,6 @@ class BacktestEngine:
             if psar_series is None or len(psar_series) == 0:
                 return None
             
-            # Get PSARl and PSARs columns
             if isinstance(psar_series, pd.DataFrame):
                 psar_long = psar_series.get('PSARl_0.02_0.2')
                 psar_short = psar_series.get('PSARs_0.02_0.2')
@@ -366,18 +333,15 @@ class BacktestEngine:
                 if psar_long is None or psar_short is None:
                     return None
                 
-                # ✅ NULL CHECK - Get last values
                 if len(psar_long) == 0 or len(psar_short) == 0:
                     return None
                 
                 last_psar_long = psar_long.iloc[-1]
                 last_psar_short = psar_short.iloc[-1]
                 
-                # ✅ NULL CHECK - Verify values are valid
                 if pd.isna(last_psar_long) and pd.isna(last_psar_short):
                     return None
                 
-                # If PSARs has a value (bearish), exit
                 if not pd.isna(last_psar_short):
                     return f"PSAR Flip (bearish)"
         
@@ -388,7 +352,6 @@ class BacktestEngine:
         return None
 
     def _check_atr_trail(self, position, current_price):
-        """Check ATR trailing stop with NULL protection."""
         if len(position['bars']) < 14:
             return None
         
@@ -398,19 +361,16 @@ class BacktestEngine:
             atr_period = trail_settings.get('atr_period', 14)
             atr_multiplier = trail_settings.get('atr_multiplier', 1.5)
             
-            # ✅ NULL CHECK - Calculate ATR
             atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_period)
             
             if atr_series is None or len(atr_series) == 0:
                 return None
             
-            # ✅ NULL CHECK - Get last ATR value
             if len(atr_series) < 1:
                 return None
             
             atr = atr_series.iloc[-1]
             
-            # ✅ NULL CHECK - Verify ATR is valid
             if pd.isna(atr) or atr <= 0:
                 return None
             
@@ -426,7 +386,6 @@ class BacktestEngine:
         return None
 
     def _check_pullback_stop(self, position, current_price):
-        """Check pullback percentage stop."""
         trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
         pullback_percent = trail_settings.get('pullback_percent', 10)
         
@@ -438,7 +397,6 @@ class BacktestEngine:
         return None
 
     def _close_position(self, position_key, exit_price, timestamp, reason):
-        """Closes a position and logs the trade."""
         position = self.portfolio['positions'][position_key]
         
         entry_price = position['entry_price']
@@ -465,7 +423,6 @@ class BacktestEngine:
         del self.portfolio['positions'][position_key]
 
     def _log_results(self):
-        """Logs final backtest results."""
         logging.info("\n" + "="*80)
         logging.info("BACKTEST RESULTS SUMMARY")
         logging.info("="*80)
@@ -481,13 +438,11 @@ class BacktestEngine:
         logging.info(f"Final Portfolio Value: ${self.portfolio['cash']:.2f}")
         logging.info("="*80)
         
-        # Save detailed results
         if self.trade_log:
             df = pd.DataFrame(self.trade_log)
             output_file = os.path.join(self.data_folder_path, '../backtest_results.csv')
             df.to_csv(output_file, index=False)
             logging.info(f"Detailed results saved to {output_file}")
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
