@@ -248,8 +248,8 @@ class SignalProcessor:
                 
                 # Check VIX if available
                 if hasattr(self, 'vix_checker') and self.vix_checker:
-                    if not await self.vix_checker.check_vix_threshold():
-                        logging.info(f"❌ VIX VETO - Market volatility too high")
+                    if not self.vix_checker.should_trade():
+                        logging.info(f"❌ VIX VETO - Market volatility out of range")
                         continue
                 
                 # Check sentiment if enabled
