@@ -19,3 +19,18 @@ def get_data_filename(contract: Contract) -> str:
     right = contract.right[0].upper() # Just 'C' or 'P'
 
     return f"{symbol}_{expiry}_{strike}{right}_5sec_data.csv"
+
+def get_data_filename_databento(ticker, expiry, strike, right):
+    """
+    Generate filename for Databento-sourced data.
+    
+    Args:
+        ticker: Stock symbol
+        expiry: Expiry date string (YYYYMMDD format)
+        strike: Strike price
+        right: 'C' or 'P'
+    
+    Returns:
+        Standardized filename
+    """
+    return f"{ticker}_{expiry}_{int(strike)}{right}_databento.csv"
