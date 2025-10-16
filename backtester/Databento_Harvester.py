@@ -100,10 +100,12 @@ class DatabentoHarvester:
             return
         
         # Build OCC symbol with CORRECT Databento format
-        # Format: {Ticker}{Expiry:YYMMDD}{Right}{Strike:8 digits}
-        expiry_str = exp_date.strftime('%y%m%d')  # ✅ YYMMDD not YYYYMMDD
-        strike_str = f"{int(strike * 1000):08d}"
-        occ_symbol = f"{ticker}{expiry_str}{right}{strike_str}"
+        # Format: {Ticker:6chars}{Expiry:YYMMDD}{Right}{Strike:8 digits}
+        # Ticker must be padded to 6 characters with spaces
+        expiry_str = exp_date.strftime('%y%m%d')  # YYMMDD
+        ticker_padded = ticker.ljust(6)  # Pad to 6 chars with spaces
+        strike_str = f"{int(strike * 1000):08d}"  # Strike × 1000, 8 digits
+        occ_symbol = f"{ticker_padded}{expiry_str}{right}{strike_str}"
         
         logging.info(f"   OCC: {occ_symbol}")
         
