@@ -9,4 +9,4 @@ nltk
 aiohttp
 beautifulsoup4
 pandas-ta
-
+requests
