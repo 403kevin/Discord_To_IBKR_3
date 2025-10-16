@@ -58,6 +58,9 @@ class SignalProcessor:
         # Perform initial reconciliation
         await self._initial_reconciliation()
         
+        # WARMUP: Mark all existing messages as processed to avoid startup spam
+        await self._warmup_message_cache()
+        
         # Create all async tasks
         tasks = [
             asyncio.create_task(self._poll_discord_for_signals()),
@@ -106,6 +109,46 @@ class SignalProcessor:
         except Exception as e:
             logging.error(f"Error during initial reconciliation: {e}")
 
+    async def _warmup_message_cache(self):
+        """
+        WARMUP PHASE: Silently mark all existing Discord messages as processed
+        to prevent log spam on startup. Only NEW messages after this point will be processed.
+        """
+        logging.info("🔥 Warming up message cache (marking existing messages as processed)...")
+        
+        warmup_count = 0
+        for profile in self.config.profiles:
+            if not profile['enabled']:
+                continue
+            
+            channel_id = profile['channel_id']
+            channel_name = profile.get('channel_name', 'Unknown')
+            
+            try:
+                # Get last 50 messages from channel
+                processed_ids = list(self._processed_messages[channel_id])
+                raw_messages = await self.discord_interface.poll_for_new_messages(channel_id, processed_ids)
+                
+                # Silently mark all as processed
+                for message_data in raw_messages:
+                    if isinstance(message_data, tuple):
+                        msg_id = message_data[0]
+                    else:
+                        msg_id = message_data.get('id')
+                    
+                    if msg_id not in self._processed_messages[channel_id]:
+                        self._processed_messages[channel_id].append(msg_id)
+                        warmup_count += 1
+                
+                # Small delay to respect rate limits
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                logging.warning(f"Could not warmup channel '{channel_name}': {e}")
+        
+        logging.info(f"✅ Warmup complete: Marked {warmup_count} existing messages as processed")
+        logging.info("🎯 Bot is now live and monitoring for NEW signals only")
+
     async def _poll_discord_for_signals(self):
         """Polls Discord for new signals from all enabled channels."""
         while not self._shutdown_event.is_set():
@@ -153,8 +196,8 @@ class SignalProcessor:
                 
                 self._processed_messages[channel_id].append(msg_id)
                 
-                logging.info(f"Processing message {msg_id} from '{channel_name}'")
-                logging.info(f"Raw content: '{msg_content}'")
+                logging.debug(f"Processing message {msg_id} from '{channel_name}'")
+                logging.debug(f"Raw content: '{msg_content}'")
                 
                 # Check timestamp - FIX: Parse timestamp correctly
                 try:
@@ -166,13 +209,13 @@ class SignalProcessor:
                     
                     # Check if message is from before bot started
                     if msg_time < self._bot_start_time:
-                        logging.info(f"Ignoring stale message {msg_id} (timestamp before bot start)")
+                        logging.debug(f"Ignoring stale message {msg_id} (timestamp before bot start)")
                         continue
                     
                     # Check if message is too old (> 60 seconds)
                     age_seconds = (datetime.now(msg_time.tzinfo) - msg_time).total_seconds()
                     if age_seconds > self.config.signal_max_age_seconds:
-                        logging.info(f"Ignoring old message {msg_id} (age: {age_seconds:.1f}s > {self.config.signal_max_age_seconds}s)")
+                        logging.debug(f"Ignoring old message {msg_id} (age: {age_seconds:.1f}s > {self.config.signal_max_age_seconds}s)")
                         continue
                         
                 except Exception as e:
@@ -191,7 +234,7 @@ class SignalProcessor:
                 parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
                 
                 if not parsed_signal:
-                    logging.info(f"⚠️ NOT PARSED - Channel: {channel_name} | Reason: Invalid format | Message: '{msg_content[:150]}'")
+                    logging.debug(f"⚠️ NOT PARSED - Channel: {channel_name} | Message: '{msg_content[:100]}'")
                     continue
                 
                 # Check cooldown
@@ -219,7 +262,8 @@ class SignalProcessor:
                         continue
                 
                 # Execute the trade
-                logging.info(f"✅ SIGNAL ACCEPTED - Executing trade for {parsed_signal['ticker']}")
+                logging.info(f"✅ SIGNAL ACCEPTED - {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']} {parsed_signal['expiry_date']}")
+                logging.info(f"📝 Raw signal: '{msg_content}'")
                 await self._execute_trade(parsed_signal, profile)
                 
             except Exception as e:
