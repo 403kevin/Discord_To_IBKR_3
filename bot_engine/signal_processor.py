@@ -227,15 +227,28 @@ class SignalProcessor:
                 channel_ignore = profile.get('reject_if_contains', [])
                 if any(word.lower() in msg_content.lower() for word in channel_ignore):
                     matched_word = self._get_matched_keyword(msg_content, channel_ignore)
-                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{matched_word}' | Message: '{msg_content[:150]}'")
+                    logging.info(f"❌ REJECTED - Channel: {channel_name} | Reason: Ignore keyword '{matched_word}'")
+                    
+                    # Send veto notification
+                    if parsed_signal:  # Only notify if we could parse the signal
+                        veto_info = {
+                            'channel_name': channel_name,
+                            'signal': parsed_signal,
+                            'reason': f'Ignore Buzzword: {matched_word}'
+                        }
+                        await self._send_telegram_notification('VETO', veto_info)
                     continue
                 
                 # Parse the signal
                 parsed_signal = self.signal_parser.parse_signal(msg_content, profile)
                 
                 if not parsed_signal:
-                    logging.debug(f"⚠️ NOT PARSED - Channel: {channel_name} | Message: '{msg_content[:100]}'")
+                    logging.info(f"⚠️ SIGNAL NOT PARSED - Channel: {channel_name} | Message: '{msg_content}'")
+                    logging.info(f"   Reason: Parser could not extract ticker, strike, type, or expiry")
+                    logging.info(f"   Profile settings: assume_buy={profile.get('assume_buy_on_ambiguous')}, ambiguous_expiry={profile.get('ambiguous_expiry_enabled')}")
                     continue
+                
+                logging.info(f"✅ PARSED: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type']} {parsed_signal['expiry_date']}")
                 
                 # Check cooldown
                 if self._last_trade_time:
@@ -243,13 +256,21 @@ class SignalProcessor:
                     time_since_last_trade = (datetime.now() - self._last_trade_time).total_seconds()
                     if time_since_last_trade < cooldown_seconds:
                         remaining = cooldown_seconds - time_since_last_trade
-                        logging.info(f"⏳ COOLDOWN - {remaining:.0f}s remaining")
+                        logging.info(f"⏳ COOLDOWN ACTIVE - {remaining:.0f}s remaining | Signal rejected")
                         continue
                 
                 # Check VIX if available
                 if hasattr(self, 'vix_checker') and self.vix_checker:
                     if not self.vix_checker.should_trade():
                         logging.info(f"❌ VIX VETO - Market volatility out of range")
+                        
+                        # Send veto notification
+                        veto_info = {
+                            'channel_name': channel_name,
+                            'signal': parsed_signal,
+                            'reason': 'VIX out of range'
+                        }
+                        await self._send_telegram_notification('VETO', veto_info)
                         continue
                 
                 # Check sentiment if enabled
@@ -259,6 +280,14 @@ class SignalProcessor:
                     
                     if abs(sentiment_score) < required_score:
                         logging.info(f"❌ SENTIMENT VETO - Score: {sentiment_score:.2f} < Required: {required_score}")
+                        
+                        # Send veto notification
+                        veto_info = {
+                            'channel_name': channel_name,
+                            'signal': parsed_signal,
+                            'reason': f'Sentiment score too low: {sentiment_score:.2f}'
+                        }
+                        await self._send_telegram_notification('VETO', veto_info)
                         continue
                 
                 # Execute the trade
