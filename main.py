@@ -18,6 +18,7 @@ from services.config import Config
 from services.state_manager import StateManager
 from services.sentiment_analyzer import SentimentAnalyzer
 from services.signal_parser import SignalParser
+from services.vix_checker import VIXChecker  # NEW: VIX filter
 from bot_engine.signal_processor import SignalProcessor
 
 # --- Interfaces ---
@@ -72,6 +73,17 @@ async def main():
         sentiment_analyzer = SentimentAnalyzer()
         signal_parser = SignalParser(config)
         
+        # NEW: Initialize VIX checker (TradingView data source - no API key needed)
+        logging.info("Initializing VIX checker...")
+        vix_checker = VIXChecker(config)
+        
+        # Optional: Print initial volatility regime on startup
+        try:
+            regime_summary = vix_checker.get_regime_summary()
+            logging.info(f"\n{regime_summary}")
+        except Exception as e:
+            logging.warning(f"Could not fetch initial VIX data: {e}")
+        
         # --- MOCK BROKER SWITCH ---
         use_mock = os.getenv("USE_MOCK_BROKER", "false").lower() == "true"
         if use_mock:
@@ -93,7 +105,7 @@ async def main():
 
         await telegram_interface.send_message("*🚀 Bot is starting up\\.\\.\\.*")
 
-        # FIX: Corrected constructor call to match signal_processor.py signature
+        # Create signal processor
         signal_processor = SignalProcessor(
             config=config,
             discord_interface=discord_interface,
@@ -103,6 +115,9 @@ async def main():
             sentiment_analyzer=sentiment_analyzer,
             state_manager=state_manager
         )
+        
+        # NEW: Attach VIX checker to signal processor
+        signal_processor.vix_checker = vix_checker
 
         logging.info("Starting main event loop...")
         processor_task = asyncio.create_task(signal_processor.start())
