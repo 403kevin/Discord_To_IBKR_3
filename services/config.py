@@ -71,15 +71,93 @@ class Config:
             raise ValueError(
                 "One or more required environment variables (tokens/IDs) are missing. Please check your .env file.")
 
-        # =================================================================
+# =================================================================
         # --- LEGEND: SENTIMENT ANALYSIS (VADER) ---
         # =================================================================
+        # THIS ALREADY EXISTS IN YOUR CONFIG - KEEP IT AS-IS
         self.sentiment_filter = {
             "enabled": False,
             "sentiment_threshold": 0.05,
             "put_sentiment_threshold": -0.05
         }
 
+        # =================================================================
+        # --- LEGEND: VIX VOLATILITY FILTER (TradingView Data Source) ---
+        # =================================================================
+        # ADD THIS NEW SECTION BELOW sentiment_filter
+        # No API key required - uses TradingView's public endpoints
+        self.vix_filter = {
+            "enabled": True,
+            
+            # Basic VIX range
+            "vix_max": 30,      # Don't trade when VIX > 30 (market panic/extreme fear)
+            "vix_min": 12,      # Don't trade when VIX < 12 (too calm, small moves expected)
+            
+            # Caching to avoid hammering TradingView
+            "cache_duration": 300,  # Cache VIX for 5 minutes (300 seconds)
+            
+            # Fallback behavior if TradingView fetch fails
+            "fail_open": True,  # True = allow trades if VIX unavailable, False = block trades
+            
+            # ADVANCED: Multi-metric volatility regime detection
+            # Set "enabled": True to use sophisticated vol filtering
+            "advanced_metrics": {
+                "enabled": False,  # Set True to enable advanced filtering
+                
+                "vvix_max": 130,   # VIX of VIX - don't trade if volatility itself is too volatile
+                                   # Normal range: 70-100, High: 100-130, Extreme: >130
+                
+                "skew_min": 130,   # CBOE Skew Index - measure of tail risk (crash protection)
+                                   # Normal: 130-150, Low (<130) = elevated crash risk
+                
+                "avoid_backwardation": False,  # True = don't trade when VIX futures in backwardation
+                                               # Backwardation = near-term fear > long-term fear (danger)
+                                               # Contango = normal market (safe to trade)
+            }
+        }
+
+        # =================================================================
+        # --- LEGEND: SPREAD/LIQUIDITY FILTER ---
+        # =================================================================
+        # ADD THIS NEW SECTION BELOW vix_filter
+        # Uses data already available from IBKR - no external API needed
+        self.spread_filter = {
+            "enabled": True,
+            
+            # Bid-ask spread check
+            "max_spread_percent": 10,   # Max allowed spread as % of mid price
+                                        # Example: $5.00 mid, $0.50 spread = 10%
+                                        # Wider spreads = you get ripped off on entry/exit
+            
+            # Volume/liquidity checks
+            "min_volume": 100,          # Minimum daily volume (contracts traded today)
+                                        # Low volume = hard to exit, wide spreads
+            
+            "min_open_interest": 500,   # Minimum open interest (total contracts outstanding)
+                                        # Low OI = illiquid, manipulable
+        }
+
+        # =================================================================
+        # --- LEGEND: TIME-OF-DAY FILTER ---
+        # =================================================================
+        # ADD THIS NEW SECTION BELOW spread_filter
+        # No external data needed - uses system clock
+        self.time_filter = {
+            "enabled": True,
+            
+            # Trading window (in market timezone)
+            "trading_hours": {
+                "start": "09:45",  # Start trading 15 min after market open
+                                   # Avoids 9:30-9:45 open volatility/manipulation
+                
+                "end": "15:45"     # Stop trading 15 min before close
+                                   # Avoids 15:45-16:00 close manipulation/pin risk
+            },
+            
+            # Optional: Skip low-volume lunch period
+            "blackout_lunch": False,  # Set True to skip 12:00-13:00 EST
+                                      # (lower volume, choppy price action)
+        }
         # =================================================================
         # --- MASTER ---
         # =================================================================
