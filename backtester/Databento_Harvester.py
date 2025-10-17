@@ -114,9 +114,10 @@ class DatabentoHarvester:
         logging.info(f"   OCC: {occ_symbol}")
         
         # Date range for data fetch
-        # For 0DTE/short-dated options, we only need the expiry day itself
+        # For 0DTE/short-dated options, fetch the expiry day
+        # End date must be AFTER start date for API
         start_date = exp_date
-        end_date = exp_date
+        end_date = exp_date + timedelta(days=1)
         
         try:
             logging.info(f"   Fetching: {start_date.date()} to {end_date.date()}")
