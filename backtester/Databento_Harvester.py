@@ -103,17 +103,8 @@ class DatabentoHarvester:
         # Format: {Ticker:6chars}{Expiry:YYMMDD}{Right}{Strike:8 digits}
         # Ticker must be padded to 6 characters with spaces
         
-        # CRITICAL: SPX weekly options use SPXW, not SPX
-        # SPX = monthly expiries only (3rd Friday)
-        # SPXW = all other expiries (Mon/Wed/Fri)
-        root_symbol = ticker
-        if ticker.upper() == 'SPX':
-            # Check if this is the 3rd Friday (monthly expiry)
-            # If not, use SPXW
-            import calendar
-            third_friday = self._get_third_friday(exp_date.year, exp_date.month)
-            if exp_date.date() != third_friday:
-                root_symbol = 'SPXW'
+        # CRITICAL: All SPX options in Databento use SPXW root symbol
+        root_symbol = 'SPXW' if ticker.upper() == 'SPX' else ticker
         
         expiry_str = exp_date.strftime('%y%m%d')  # YYMMDD
         ticker_padded = root_symbol.ljust(6)  # Pad to 6 chars with spaces
