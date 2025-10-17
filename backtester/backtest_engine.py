@@ -12,7 +12,7 @@ if project_root not in sys.path:
 
 from services.config import Config
 from services.signal_parser import SignalParser
-from services.utils import get_data_filename, get_data_filename_databento
+from services.utils import get_data_filename
 
 class BacktestEngine:
     def __init__(self, signal_file_path, data_folder_path):
@@ -102,13 +102,14 @@ class BacktestEngine:
         for signal in signals:
             event_queue.append((signal['signal_timestamp'], 'SIGNAL', signal))
             
-            # FIX: Use databento filename format instead of IBKR format
-            data_filename = get_data_filename_databento(
-                signal['ticker'],
-                signal['expiry_date'],
-                signal['strike'],
-                signal['contract_type'][0].upper()
+            contract = Contract(
+                symbol=signal['ticker'],
+                lastTradeDateOrContractMonth=signal['expiry_date'],
+                strike=signal['strike'],
+                right=signal['contract_type'][0].upper()
             )
+            
+            data_filename = get_data_filename(contract)
             data_file = os.path.join(self.data_folder_path, data_filename)
             
             if not os.path.exists(data_file):
@@ -139,10 +140,25 @@ class BacktestEngine:
         return event_queue
 
     def _process_signal_event(self, timestamp, signal):
+        """
+        FIXED VERSION: Gets real entry price from historical data instead of hardcoding $1.50
+        """
         position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
         
-        entry_price = 1.50
-        quantity = int(1000 / entry_price)
+        # NEW: Get actual entry price from historical data
+        entry_price = self._get_entry_price_from_data(signal, timestamp)
+        
+        if entry_price is None:
+            logging.warning(f"Could not find entry price for {position_key} at {timestamp}, skipping")
+            return
+        
+        # Use realistic position sizing (10% of portfolio per trade)
+        position_size = self.portfolio['cash'] * 0.10
+        quantity = int(position_size / (entry_price * 100))  # Divide by 100 for contract multiplier
+        
+        if quantity == 0:
+            logging.warning(f"Position size too small for {position_key}, skipping")
+            return
         
         self.portfolio['positions'][position_key] = {
             'signal': signal,
@@ -159,6 +175,44 @@ class BacktestEngine:
         
         logging.info(f"[{timestamp}] OPENED {position_key} | Qty: {quantity} | Entry: ${entry_price:.2f}")
 
+    def _get_entry_price_from_data(self, signal, signal_timestamp):
+        """
+        NEW METHOD: Gets the actual entry price from historical data
+        Returns the first tick price AFTER the signal timestamp
+        """
+        contract = Contract(
+            symbol=signal['ticker'],
+            lastTradeDateOrContractMonth=signal['expiry_date'],
+            strike=signal['strike'],
+            right=signal['contract_type'][0].upper()
+        )
+        
+        data_filename = get_data_filename(contract)
+        data_file = os.path.join(self.data_folder_path, data_filename)
+        
+        if not os.path.exists(data_file):
+            logging.warning(f"No data file for {signal['ticker']} {signal['strike']}{signal['contract_type'][0]}")
+            return None
+        
+        try:
+            df = pd.read_csv(data_file)
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+            
+            # Find first tick AFTER signal timestamp
+            future_ticks = df[df['timestamp'] >= signal_timestamp]
+            
+            if future_ticks.empty:
+                logging.warning(f"No price data after signal timestamp for {signal['ticker']}")
+                return None
+            
+            entry_price = future_ticks.iloc[0]['close']
+            logging.debug(f"Found real entry price ${entry_price:.2f} for {signal['ticker']} at {future_ticks.iloc[0]['timestamp']}")
+            return entry_price
+            
+        except Exception as e:
+            logging.error(f"Error reading data file for entry price: {e}")
+            return None
+
     def _process_tick_event(self, timestamp, tick_data):
         position_key = tick_data['position_key']
         
@@ -171,7 +225,10 @@ class BacktestEngine:
         position['highest_price'] = max(position['highest_price'], current_price)
         position['lowest_price'] = min(position['lowest_price'], current_price)
         
-        position['bars'].append({
+        if position_key not in self.tick_buffer:
+            self.tick_buffer[position_key] = []
+        
+        self.tick_buffer[position_key].append({
             'timestamp': timestamp,
             'close': current_price,
             'high': tick_data['high'],
@@ -179,85 +236,123 @@ class BacktestEngine:
             'volume': tick_data['volume']
         })
         
+        if position_key not in self.last_bar_timestamp or \
+           (timestamp - self.last_bar_timestamp[position_key]).total_seconds() >= 60:
+            self._aggregate_bar(position_key, timestamp)
+            self.last_bar_timestamp[position_key] = timestamp
+        
         exit_reason = self._evaluate_exit_conditions(position, current_price, timestamp)
+        
         if exit_reason:
             self._close_position(position_key, current_price, timestamp, exit_reason)
 
+    def _aggregate_bar(self, position_key, timestamp):
+        if position_key not in self.tick_buffer or not self.tick_buffer[position_key]:
+            return
+        
+        ticks = self.tick_buffer[position_key]
+        bar = {
+            'timestamp': timestamp,
+            'open': ticks[0]['close'],
+            'high': max(t['high'] for t in ticks),
+            'low': min(t['low'] for t in ticks),
+            'close': ticks[-1]['close'],
+            'volume': sum(t['volume'] for t in ticks)
+        }
+        
+        position = self.portfolio['positions'].get(position_key)
+        if position:
+            position['bars'].append(bar)
+        
+        self.tick_buffer[position_key] = []
+
     def _evaluate_exit_conditions(self, position, current_price, timestamp):
-        profile = self.config.profiles[0]
+        entry_price = position['entry_price']
+        pnl_percent = ((current_price - entry_price) / entry_price) * 100
+        
+        profile = self.config.profiles[0] if self.config.profiles else {}
         exit_strategy = profile.get('exit_strategy', {})
         
-        # Check breakeven trigger
-        if not position['breakeven_activated']:
-            breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 0.10)
-            pnl_percent = (current_price - position['entry_price']) / position['entry_price']
-            
-            if pnl_percent >= breakeven_trigger:
-                position['breakeven_activated'] = True
+        # 1. Breakeven
+        breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 10)
+        if not position['breakeven_activated'] and pnl_percent >= breakeven_trigger:
+            position['breakeven_activated'] = True
+            logging.info(f"[{timestamp}] BREAKEVEN activated for {position['signal']['ticker']}")
         
-        # Check if price fell back to entry after breakeven activated
-        if position['breakeven_activated'] and current_price <= position['entry_price']:
-            return "Breakeven Stop"
+        if position['breakeven_activated'] and current_price <= entry_price:
+            return "Breakeven stop hit"
         
-        # Check trail method
+        # 2. Native Trail
+        native_trail_percent = exit_strategy.get('native_trail_percent')
+        if native_trail_percent:
+            native_exit = self._check_native_trail(position, current_price, native_trail_percent)
+            if native_exit:
+                return native_exit
+        
+        # 3. Trail Method
         trail_method = exit_strategy.get('trail_method', 'atr')
-        
-        if trail_method == 'pullback_percent':
-            trail_settings = exit_strategy.get('trail_settings', {})
-            pullback_percent = trail_settings.get('pullback_percent', 0.10)
-            
-            pullback_threshold = position['highest_price'] * (1 - pullback_percent)
-            if current_price <= pullback_threshold:
-                return f"Pullback Trail ({pullback_percent*100:.0f}%)"
-        
-        elif trail_method == 'atr':
+        if trail_method == 'atr':
             atr_exit = self._check_atr_trail(position, current_price)
             if atr_exit:
                 return atr_exit
+        elif trail_method == 'pullback_percent':
+            pullback_exit = self._check_pullback_stop(position, current_price)
+            if pullback_exit:
+                return pullback_exit
         
-        # Check momentum exits
+        # 4. Momentum Exits
         momentum_exits = exit_strategy.get('momentum_exits', {})
-        
-        if momentum_exits.get('psar_enabled', False):
-            psar_exit = self._check_psar_flip(position, current_price)
-            if psar_exit:
-                return psar_exit
         
         if momentum_exits.get('rsi_hook_enabled', False):
             rsi_exit = self._check_rsi_hook(position, current_price)
             if rsi_exit:
                 return rsi_exit
         
+        if momentum_exits.get('psar_enabled', False):
+            psar_exit = self._check_psar_flip(position, current_price)
+            if psar_exit:
+                return psar_exit
+        
         return None
 
-    def _check_atr_trail(self, position, current_price):
+    def _check_native_trail(self, position, current_price, trail_percent):
+        """Native trailing stop at fixed percentage from high"""
+        trail_stop = position['highest_price'] * (1 - trail_percent / 100)
+        
+        if current_price <= trail_stop:
+            return f"Native trail stop ({trail_percent}% from high)"
+        
+        return None
+
+    def _check_rsi_hook(self, position, current_price):
         if len(position['bars']) < 14:
             return None
         
         try:
             df = pd.DataFrame(position['bars'])
-            trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+            momentum_exits = self.config.profiles[0]['exit_strategy'].get('momentum_exits', {})
+            rsi_settings = momentum_exits.get('rsi_settings', {})
+            rsi_period = rsi_settings.get('period', 14)
             
-            atr_period = trail_settings.get('atr_period', 14)
-            atr_multiplier = trail_settings.get('atr_multiplier', 1.5)
+            rsi_series = ta.rsi(df['close'], length=rsi_period)
             
-            atr = ta.atr(df['high'], df['low'], df['close'], length=atr_period)
-            
-            if atr is None or len(atr) == 0:
+            if rsi_series is None or len(rsi_series) == 0:
                 return None
             
-            current_atr = atr.iloc[-1]
+            current_rsi = rsi_series.iloc[-1]
             
-            if pd.isna(current_atr):
+            if pd.isna(current_rsi):
                 return None
             
-            atr_stop_price = position['highest_price'] - (current_atr * atr_multiplier)
+            overbought = rsi_settings.get('overbought_level', 70)
             
-            if current_price <= atr_stop_price:
-                return f"ATR Trail ({atr_multiplier}x)"
+            if current_rsi >= overbought:
+                peak_price = position['highest_price']
+                if current_price < peak_price * 0.98:
+                    return f"RSI hook (RSI: {current_rsi:.1f})"
         
         except Exception as e:
-            logging.warning(f"Error in ATR calculation: {e}")
+            logging.warning(f"Error in RSI calculation: {e}")
             return None
         
         return None
@@ -268,38 +363,27 @@ class BacktestEngine:
         
         try:
             df = pd.DataFrame(position['bars'])
-            psar_settings = self.config.profiles[0]['exit_strategy']['momentum_exits'].get('psar_settings', {})
+            momentum_exits = self.config.profiles[0]['exit_strategy'].get('momentum_exits', {})
+            psar_settings = momentum_exits.get('psar_settings', {})
             
             psar_series = ta.psar(
-                high=df['high'],
-                low=df['low'],
-                close=df['close'],
-                af0=psar_settings.get('start', 0.02),
-                af=psar_settings.get('increment', 0.02),
+                df['high'],
+                df['low'],
+                df['close'],
+                af=psar_settings.get('start', 0.02),
                 max_af=psar_settings.get('max', 0.2)
             )
             
-            if psar_series is None or len(psar_series) == 0:
+            if psar_series is None or 'PSARl_0.02_0.2' not in psar_series.columns:
                 return None
             
-            if isinstance(psar_series, pd.DataFrame):
-                psar_long = psar_series.get('PSARl_0.02_0.2')
-                psar_short = psar_series.get('PSARs_0.02_0.2')
-                
-                if psar_long is None or psar_short is None:
-                    return None
-                
-                if len(psar_long) == 0 or len(psar_short) == 0:
-                    return None
-                
-                last_psar_long = psar_long.iloc[-1]
-                last_psar_short = psar_short.iloc[-1]
-                
-                if pd.isna(last_psar_long) and pd.isna(last_psar_short):
-                    return None
-                
-                if not pd.isna(last_psar_short):
-                    return f"PSAR Flip (bearish)"
+            psar = psar_series['PSARl_0.02_0.2'].iloc[-1]
+            
+            if pd.isna(psar):
+                return None
+            
+            if current_price < psar:
+                return f"PSAR flip (PSAR: ${psar:.2f})"
         
         except Exception as e:
             logging.warning(f"Error in PSAR calculation: {e}")
@@ -307,34 +391,48 @@ class BacktestEngine:
         
         return None
 
-    def _check_rsi_hook(self, position, current_price):
+    def _check_atr_trail(self, position, current_price):
         if len(position['bars']) < 14:
             return None
         
         try:
             df = pd.DataFrame(position['bars'])
-            rsi_settings = self.config.profiles[0]['exit_strategy']['momentum_exits'].get('rsi_settings', {})
+            trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+            atr_period = trail_settings.get('atr_period', 14)
+            atr_multiplier = trail_settings.get('atr_multiplier', 1.5)
             
-            rsi_period = rsi_settings.get('period', 14)
-            overbought = rsi_settings.get('overbought_level', 70)
+            atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_period)
             
-            rsi = ta.rsi(df['close'], length=rsi_period)
-            
-            if rsi is None or len(rsi) < 2:
+            if atr_series is None or len(atr_series) == 0:
                 return None
             
-            current_rsi = rsi.iloc[-1]
-            prev_rsi = rsi.iloc[-2]
-            
-            if pd.isna(current_rsi) or pd.isna(prev_rsi):
+            if len(atr_series) < 1:
                 return None
             
-            if prev_rsi > overbought and current_rsi < overbought:
-                return f"RSI Hook (from {prev_rsi:.1f} to {current_rsi:.1f})"
+            atr = atr_series.iloc[-1]
+            
+            if pd.isna(atr) or atr <= 0:
+                return None
+            
+            atr_stop = position['highest_price'] - (atr * atr_multiplier)
+            
+            if current_price <= atr_stop:
+                return f"ATR trail stop (ATR: {atr:.2f})"
         
         except Exception as e:
-            logging.warning(f"Error in RSI calculation: {e}")
+            logging.warning(f"Error in ATR calculation: {e}")
             return None
+        
+        return None
+
+    def _check_pullback_stop(self, position, current_price):
+        trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+        pullback_percent = trail_settings.get('pullback_percent', 10)
+        
+        pullback_stop = position['highest_price'] * (1 - pullback_percent / 100)
+        
+        if current_price <= pullback_stop:
+            return f"Pullback stop ({pullback_percent}% from high)"
         
         return None
 
@@ -343,16 +441,12 @@ class BacktestEngine:
         
         entry_price = position['entry_price']
         quantity = position['quantity']
-        
         pnl = (exit_price - entry_price) * quantity * 100
         
         self.portfolio['cash'] += (exit_price * quantity * 100)
         
         trade_record = {
             'ticker': position['signal']['ticker'],
-            'strike': position['signal']['strike'],
-            'contract_type': position['signal']['contract_type'],
-            'expiry': position['signal']['expiry_date'],
             'entry_time': position['entry_time'],
             'exit_time': timestamp,
             'entry_price': entry_price,
