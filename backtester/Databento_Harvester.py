@@ -102,15 +102,29 @@ class DatabentoHarvester:
         # Build OCC symbol with CORRECT Databento format
         # Format: {Ticker:6chars}{Expiry:YYMMDD}{Right}{Strike:8 digits}
         # Ticker must be padded to 6 characters with spaces
+        
+        # CRITICAL: SPX weekly options use SPXW, not SPX
+        # SPX = monthly expiries only (3rd Friday)
+        # SPXW = all other expiries (Mon/Wed/Fri)
+        root_symbol = ticker
+        if ticker.upper() == 'SPX':
+            # Check if this is the 3rd Friday (monthly expiry)
+            # If not, use SPXW
+            import calendar
+            third_friday = self._get_third_friday(exp_date.year, exp_date.month)
+            if exp_date.date() != third_friday:
+                root_symbol = 'SPXW'
+        
         expiry_str = exp_date.strftime('%y%m%d')  # YYMMDD
-        ticker_padded = ticker.ljust(6)  # Pad to 6 chars with spaces
+        ticker_padded = root_symbol.ljust(6)  # Pad to 6 chars with spaces
         strike_str = f"{int(strike * 1000):08d}"  # Strike × 1000, 8 digits
         occ_symbol = f"{ticker_padded}{expiry_str}{right}{strike_str}"
         
         logging.info(f"   OCC: {occ_symbol}")
         
-        # Date range: day before expiry through expiry
-        start_date = exp_date - timedelta(days=1)
+        # Date range for data fetch
+        # For 0DTE/short-dated options, we only need the expiry day itself
+        start_date = exp_date
         end_date = exp_date
         
         try:
