@@ -12,7 +12,7 @@ if project_root not in sys.path:
 
 from services.config import Config
 from services.signal_parser import SignalParser
-from services.utils import get_data_filename
+from services.utils import get_data_filename, get_data_filename_databento
 
 class BacktestEngine:
     def __init__(self, signal_file_path, data_folder_path):
@@ -109,7 +109,14 @@ class BacktestEngine:
                 right=signal['contract_type'][0].upper()
             )
             
-            data_filename = get_data_filename(contract)
+            # Use Databento filename format
+            expiry_date = signal['expiry_date'].replace('-', '')  # Convert YYYY-MM-DD to YYYYMMDD
+            data_filename = get_data_filename_databento(
+                signal['ticker'],
+                expiry_date,
+                signal['strike'],
+                signal['contract_type'][0].upper()
+            )
             data_file = os.path.join(self.data_folder_path, data_filename)
             
             if not os.path.exists(data_file):
@@ -180,14 +187,14 @@ class BacktestEngine:
         NEW METHOD: Gets the actual entry price from historical data
         Returns the first tick price AFTER the signal timestamp
         """
-        contract = Contract(
-            symbol=signal['ticker'],
-            lastTradeDateOrContractMonth=signal['expiry_date'],
-            strike=signal['strike'],
-            right=signal['contract_type'][0].upper()
+        # Use Databento filename format
+        expiry_date = signal['expiry_date'].replace('-', '')  # Convert YYYY-MM-DD to YYYYMMDD
+        data_filename = get_data_filename_databento(
+            signal['ticker'],
+            expiry_date,
+            signal['strike'],
+            signal['contract_type'][0].upper()
         )
-        
-        data_filename = get_data_filename(contract)
         data_file = os.path.join(self.data_folder_path, data_filename)
         
         if not os.path.exists(data_file):
