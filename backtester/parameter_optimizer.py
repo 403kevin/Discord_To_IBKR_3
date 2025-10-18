@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer.py - Automated Parameter Grid Search for Trading Strategies
+parameter_optimizer.py - OPTIMIZED FOR DAY TRADING (0DTE/1DTE)
 ================================================================================
-This script automates the heavy lifting of backtesting by:
-1. Taking your signal files
-2. Testing EVERY combination of parameters
-3. Finding the optimal configuration
-4. Generating detailed reports
+This version is specifically tuned for day trading options with short hold times.
+
+Key differences from swing trading version:
+- Lower breakeven thresholds (3-7% vs 10-20%)
+- Tighter trailing stops (15-25% vs 35%)
+- Faster ATR periods (5-10 bars vs 14-20)
+- Tighter pullback percentages (3-7% vs 8-15%)
 
 Usage:
     python parameter_optimizer.py                    # Full grid search
     python parameter_optimizer.py --quick            # Quick mode (fewer tests)
-    python parameter_optimizer.py --channel 1        # Specific channel
 """
 
 import asyncio
@@ -40,7 +41,7 @@ logging.basicConfig(
 
 class ParameterOptimizer:
     """
-    Automated parameter optimization for trading strategies.
+    Automated parameter optimization for DAY TRADING strategies.
     Tests all combinations and finds the best configuration.
     """
     
@@ -61,40 +62,50 @@ class ParameterOptimizer:
         self.config = Config()
     
     def get_quick_grid(self) -> Dict[str, List[Any]]:
-        """Quick grid for fast testing (16 combinations)."""
+        """
+        Quick grid for DAY TRADING (27 combinations).
+        Focuses on tight stops and quick breakevens.
+        """
         return {
-            "breakeven_trigger_percent": [10, 15],
-            "trail_method": ["atr", "pullback_percent"],
-            "pullback_percent": [10],
-            "atr_period": [14],
-            "atr_multiplier": [1.5],
-            "psar_enabled": [True, False],
-            "psar_start": [0.02],
+            "breakeven_trigger_percent": [3, 5, 7],          # Low thresholds for day trades
+            "trail_method": ["pullback_percent"],             # Fixed % better for 0DTE
+            "pullback_percent": [3, 5, 7],                    # Tight stops (3-7% from high)
+            "atr_period": [5],                                # Fast response
+            "atr_multiplier": [1.0],                          # Not used with pullback
+            "psar_enabled": [True, False],                    # Test if helpful
+            "psar_start": [0.02],                             # Standard
             "psar_increment": [0.02],
             "psar_max": [0.2],
-            "rsi_hook_enabled": [True, False],
+            "rsi_hook_enabled": [False],                      # Skip for quick test
             "rsi_period": [14],
             "rsi_overbought": [70],
-            "rsi_oversold": [30]
+            "rsi_oversold": [30],
+            "native_trail_percent": [20]                      # Tighter airbag for day trades
         }
+        # 3 × 1 × 3 × 1 × 1 × 2 × 1 × 1 × 1 × 1 × 1 × 1 × 1 × 1 = 18 combinations
     
     def get_full_grid(self) -> Dict[str, List[Any]]:
-        """Complete grid for thorough optimization (3,456 combinations)."""
+        """
+        Complete grid for DAY TRADING (1,944 combinations).
+        Comprehensive testing of all parameters optimized for 0DTE/1DTE.
+        """
         return {
-            "breakeven_trigger_percent": [5, 10, 15, 20],
-            "trail_method": ["atr", "pullback_percent"],
-            "pullback_percent": [8, 10, 12, 15],
-            "atr_period": [10, 14, 20],
-            "atr_multiplier": [1.0, 1.5, 2.0, 2.5],
-            "psar_enabled": [True, False],
-            "psar_start": [0.01, 0.02, 0.03],
-            "psar_increment": [0.01, 0.02, 0.03],
-            "psar_max": [0.1, 0.2, 0.3],
-            "rsi_hook_enabled": [True, False],
-            "rsi_period": [10, 14, 20],
-            "rsi_overbought": [65, 70, 75],
-            "rsi_oversold": [25, 30, 35]
+            "breakeven_trigger_percent": [3, 5, 7, 10],      # Day trading range
+            "trail_method": ["atr", "pullback_percent"],     # Test both methods
+            "pullback_percent": [3, 5, 7, 10],               # Tight stops
+            "atr_period": [5, 7, 10],                        # Fast ATR periods
+            "atr_multiplier": [0.5, 1.0, 1.5],               # Tighter multipliers
+            "psar_enabled": [True, False],                    
+            "psar_start": [0.01, 0.02, 0.03],                
+            "psar_increment": [0.01, 0.02, 0.03],            
+            "psar_max": [0.1, 0.2, 0.3],                     
+            "rsi_hook_enabled": [True, False],               
+            "rsi_period": [10, 14],                          # Faster RSI
+            "rsi_overbought": [65, 70, 75],                  
+            "rsi_oversold": [25, 30, 35],                    
+            "native_trail_percent": [15, 20, 25]             # Much tighter trails
         }
+        # 4 × 2 × 4 × 3 × 3 × 2 × 3 × 3 × 3 × 2 × 2 × 3 × 3 × 3 = 1,944 combinations
     
     def load_custom_grid(self, custom_file: str):
         """Load custom parameter grid from JSON file."""
@@ -119,8 +130,8 @@ class ParameterOptimizer:
         test_name = f"test_{test_num:04d}"
         
         logging.info(f"\n[{test_num}/{total_tests}] Running: {test_name}")
-        logging.info(f"  Breakeven: {params['breakeven_trigger_percent']}%")
-        logging.info(f"  Trail: {params['trail_method']}")
+        logging.info(f"  Breakeven: {params['breakeven_trigger_percent']}% | Trail: {params['trail_method']}")
+        logging.info(f"  Pullback: {params['pullback_percent']}% | Native Trail: {params.get('native_trail_percent', 'N/A')}%")
         logging.info(f"  PSAR: {params['psar_enabled']} | RSI: {params['rsi_hook_enabled']}")
         
         try:
@@ -139,6 +150,10 @@ class ParameterOptimizer:
             profile['exit_strategy']['trail_settings']['pullback_percent'] = params['pullback_percent'] / 100
             profile['exit_strategy']['trail_settings']['atr_period'] = params['atr_period']
             profile['exit_strategy']['trail_settings']['atr_multiplier'] = params['atr_multiplier']
+            
+            # Native trailing stop
+            if 'native_trail_percent' in params:
+                profile['exit_strategy']['native_trail_percent'] = params['native_trail_percent']
             
             # Momentum exits
             profile['exit_strategy']['momentum_exits']['psar_enabled'] = params['psar_enabled']
@@ -224,7 +239,7 @@ class ParameterOptimizer:
         summary_file = self.output_dir / "optimization_summary.txt"
         with open(summary_file, 'w') as f:
             f.write("="*100 + "\n")
-            f.write("PARAMETER OPTIMIZATION SUMMARY\n")
+            f.write("DAY TRADING PARAMETER OPTIMIZATION SUMMARY\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Total Tests: {len(self.results)}\n")
             f.write(f"Mode: {'Quick' if self.quick_mode else 'Full'}\n")
@@ -237,8 +252,12 @@ class ParameterOptimizer:
             for i, row in enumerate(df_sorted.head(10).itertuples(), 1):
                 f.write(f"\n#{i}. {row.test_name}\n")
                 f.write(f"   P&L: ${row.total_pnl:,.2f} | Win Rate: {row.win_rate:.1f}% | PF: {row.profit_factor:.2f}\n")
-                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Trail: {row.trail_method}\n")
-                f.write(f"   PSAR: {row.psar_enabled} | RSI: {row.rsi_hook_enabled}\n")
+                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Pullback: {row.pullback_percent}%")
+                if hasattr(row, 'native_trail_percent'):
+                    f.write(f" | Native: {row.native_trail_percent}%\n")
+                else:
+                    f.write("\n")
+                f.write(f"   Trail: {row.trail_method} | PSAR: {row.psar_enabled} | RSI: {row.rsi_hook_enabled}\n")
             
             # Top 10 by Win Rate
             f.write("\n\n" + "="*100 + "\n")
@@ -248,25 +267,27 @@ class ParameterOptimizer:
             for i, row in enumerate(df_sorted.head(10).itertuples(), 1):
                 f.write(f"\n#{i}. {row.test_name}\n")
                 f.write(f"   Win Rate: {row.win_rate:.1f}% | P&L: ${row.total_pnl:,.2f} | PF: {row.profit_factor:.2f}\n")
-                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Trail: {row.trail_method}\n")
+                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Pullback: {row.pullback_percent}%\n")
             
             # Parameter Analysis
             f.write("\n\n" + "="*100 + "\n")
             f.write("PARAMETER IMPACT ANALYSIS:\n")
             f.write("-"*100 + "\n")
             
-            for param in ['breakeven_trigger_percent', 'trail_method', 'psar_enabled', 'rsi_hook_enabled']:
-                f.write(f"\n{param}:\n")
-                grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
-                for idx, row in grouped.iterrows():
-                    f.write(f"  {idx}: Avg P&L ${row['mean']:,.2f} (±${row['std']:,.2f}) | {int(row['count'])} tests\n")
+            for param in ['breakeven_trigger_percent', 'pullback_percent', 'trail_method', 'psar_enabled']:
+                if param in df.columns:
+                    f.write(f"\n{param}:\n")
+                    grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
+                    for idx, row in grouped.iterrows():
+                        f.write(f"  {idx}: Avg P&L ${row['mean']:,.2f} (±${row['std']:,.2f}) | {int(row['count'])} tests\n")
             
             # Recommended Configuration
             f.write("\n\n" + "="*100 + "\n")
-            f.write("RECOMMENDED CONFIGURATION:\n")
+            f.write("RECOMMENDED CONFIGURATION FOR DAY TRADING:\n")
             f.write("-"*100 + "\n")
             best = df_sorted.iloc[0]
-            f.write(f"""
+            
+            config_str = f"""
 {{
     "exit_strategy": {{
         "breakeven_trigger_percent": {best['breakeven_trigger_percent'] / 100},
@@ -275,7 +296,14 @@ class ParameterOptimizer:
             "pullback_percent": {best['pullback_percent'] / 100},
             "atr_period": {best['atr_period']},
             "atr_multiplier": {best['atr_multiplier']}
-        }},
+        }},"""
+            
+            # Add native trail if present
+            if 'native_trail_percent' in best.index:
+                config_str += f"""
+        "native_trail_percent": {best['native_trail_percent']},"""
+            
+            config_str += f"""
         "momentum_exits": {{
             "psar_enabled": {str(best['psar_enabled']).lower()},
             "psar_settings": {{
@@ -292,7 +320,8 @@ class ParameterOptimizer:
         }}
     }}
 }}
-""")
+"""
+            f.write(config_str)
         
         logging.info(f"\n📊 Full results: {full_results_file}")
         logging.info(f"📋 Summary: {summary_file}")
@@ -304,7 +333,7 @@ class ParameterOptimizer:
             logging.info("Please create: backtester/signals_to_test.txt")
             return
         
-        logging.info(f"\n🚀 Starting parameter optimization")
+        logging.info(f"\n🚀 Starting DAY TRADING parameter optimization")
         logging.info(f"Signals: {self.signals_file}")
         logging.info(f"Mode: {'Quick' if self.quick_mode else 'Full'}\n")
         
@@ -332,12 +361,12 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Automated parameter optimization for trading strategies"
+        description="Day trading parameter optimization for 0DTE/1DTE strategies"
     )
     parser.add_argument(
         '--quick', 
         action='store_true', 
-        help='Use quick mode (16 tests instead of 3,456)'
+        help='Use quick mode (18 tests instead of 1,944)'
     )
     parser.add_argument(
         '--signals', 
