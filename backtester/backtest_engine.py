@@ -433,13 +433,28 @@ class BacktestEngine:
         return None
 
     def _check_pullback_stop(self, position, current_price):
-        trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
-        pullback_percent = trail_settings.get('pullback_percent', 10)
+        """
+        CRITICAL FIX: This method now correctly handles pullback percentages.
         
-        pullback_stop = position['highest_price'] * (1 - pullback_percent / 100)
+        Config stores: pullback_percent = 0.10 (meaning 10% as a decimal)
+        This method now treats it as a decimal (0.10 = 10%)
+        
+        OLD BUG: pullback_stop = high * (1 - pullback_percent / 100)
+                 Result: 0.10 / 100 = 0.001 = 0.1% instead of 10%
+        
+        NEW FIX: pullback_stop = high * (1 - pullback_percent)
+                 Result: 1 - 0.10 = 0.90 = 90% of high = correct 10% pullback
+        """
+        trail_settings = self.config.profiles[0]['exit_strategy'].get('trail_settings', {})
+        pullback_percent = trail_settings.get('pullback_percent', 0.10)  # Already a decimal (0.10 = 10%)
+        
+        # FIXED: Removed the "/ 100" that was causing the bug
+        pullback_stop = position['highest_price'] * (1 - pullback_percent)
         
         if current_price <= pullback_stop:
-            return f"Pullback stop ({pullback_percent}% from high)"
+            # Convert back to percentage for display
+            display_percent = pullback_percent * 100
+            return f"Pullback stop ({display_percent}% from high)"
         
         return None
 
