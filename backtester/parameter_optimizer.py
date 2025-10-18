@@ -172,58 +172,40 @@ class ParameterOptimizer:
         """Analyze backtest results and generate metrics."""
         df = pd.read_csv(results_file)
         
-        if df.empty:
-            return {
-                'test_name': test_name,
-                'total_trades': 0,
-                'total_pnl': 0,
-                'win_rate': 0,
-                'profit_factor': 0,
-                'max_drawdown': 0,
-                'sharpe_ratio': 0,
-                **params
-            }
-        
-        # Calculate metrics
         total_trades = len(df)
+        winning_trades = len(df[df['pnl'] > 0])
+        losing_trades = len(df[df['pnl'] < 0])
+        
         total_pnl = df['pnl'].sum()
-        winning_trades = df[df['pnl'] > 0]
-        losing_trades = df[df['pnl'] < 0]
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
-        win_rate = (len(winning_trades) / total_trades * 100) if total_trades > 0 else 0
+        avg_win = df[df['pnl'] > 0]['pnl'].mean() if winning_trades > 0 else 0
+        avg_loss = abs(df[df['pnl'] < 0]['pnl'].mean()) if losing_trades > 0 else 0
         
-        # Profit factor
-        total_wins = winning_trades['pnl'].sum() if not winning_trades.empty else 0
-        total_losses = abs(losing_trades['pnl'].sum()) if not losing_trades.empty else 1
-        profit_factor = total_wins / total_losses if total_losses > 0 else total_wins
+        profit_factor = (avg_win * winning_trades) / (avg_loss * losing_trades) if losing_trades > 0 else float('inf')
         
-        # Max drawdown
+        # Calculate max drawdown
         cumulative_pnl = df['pnl'].cumsum()
         running_max = cumulative_pnl.expanding().max()
-        drawdown = cumulative_pnl - running_max
-        max_drawdown = abs(drawdown.min()) if not drawdown.empty else 0
+        drawdown = running_max - cumulative_pnl
+        max_drawdown = drawdown.max()
         
-        # Sharpe ratio (simplified)
+        # Sharpe ratio (annualized)
         returns = df['pnl']
-        if len(returns) > 1 and returns.std() > 0:
-            sharpe_ratio = (returns.mean() / returns.std()) * np.sqrt(252)  # Annualized
-        else:
-            sharpe_ratio = 0
+        sharpe = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
         
-        return {
+        summary = {
             'test_name': test_name,
             'total_trades': total_trades,
-            'total_pnl': total_pnl,
-            'win_rate': win_rate,
-            'profit_factor': profit_factor,
-            'max_drawdown': max_drawdown,
-            'sharpe_ratio': sharpe_ratio,
-            'avg_win': winning_trades['pnl'].mean() if not winning_trades.empty else 0,
-            'avg_loss': losing_trades['pnl'].mean() if not losing_trades.empty else 0,
-            'best_trade': df['pnl'].max(),
-            'worst_trade': df['pnl'].min(),
-            **params
+            'total_pnl': round(total_pnl, 2),
+            'win_rate': round(win_rate, 2),
+            'profit_factor': round(profit_factor, 2),
+            'max_drawdown': round(max_drawdown, 2),
+            'sharpe_ratio': round(sharpe, 2),
+            **params  # Include all parameters
         }
+        
+        return summary
     
     def generate_report(self):
         """Generate comprehensive optimization report."""
@@ -252,59 +234,71 @@ class ParameterOptimizer:
             f.write("TOP 10 PARAMETER COMBINATIONS (by Total P&L):\n")
             f.write("-"*100 + "\n")
             df_sorted = df.sort_values('total_pnl', ascending=False)
-            for i, row in df_sorted.head(10).iterrows():
-                f.write(f"\n#{i+1}. {row['test_name']} - P&L: ${row['total_pnl']:.2f}\n")
-                f.write(f"   Trades: {row['total_trades']} | Win Rate: {row['win_rate']:.1f}% | ")
-                f.write(f"Profit Factor: {row['profit_factor']:.2f}\n")
-                f.write(f"   Breakeven: {row['breakeven_trigger_percent']}% | Trail: {row['trail_method']}\n")
-                if row['trail_method'] == 'atr':
-                    f.write(f"   ATR: {row['atr_multiplier']}x | ")
-                else:
-                    f.write(f"   Pullback: {row['pullback_percent']}% | ")
-                f.write(f"PSAR: {row['psar_enabled']} | RSI Hook: {row['rsi_hook_enabled']}\n")
+            for i, row in enumerate(df_sorted.head(10).itertuples(), 1):
+                f.write(f"\n#{i}. {row.test_name}\n")
+                f.write(f"   P&L: ${row.total_pnl:,.2f} | Win Rate: {row.win_rate:.1f}% | PF: {row.profit_factor:.2f}\n")
+                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Trail: {row.trail_method}\n")
+                f.write(f"   PSAR: {row.psar_enabled} | RSI: {row.rsi_hook_enabled}\n")
             
-            # Parameter impact analysis
-            f.write("\n" + "="*100 + "\n")
-            f.write("PARAMETER ANALYSIS:\n")
+            # Top 10 by Win Rate
+            f.write("\n\n" + "="*100 + "\n")
+            f.write("TOP 10 PARAMETER COMBINATIONS (by Win Rate):\n")
+            f.write("-"*100 + "\n")
+            df_sorted = df.sort_values('win_rate', ascending=False)
+            for i, row in enumerate(df_sorted.head(10).itertuples(), 1):
+                f.write(f"\n#{i}. {row.test_name}\n")
+                f.write(f"   Win Rate: {row.win_rate:.1f}% | P&L: ${row.total_pnl:,.2f} | PF: {row.profit_factor:.2f}\n")
+                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Trail: {row.trail_method}\n")
+            
+            # Parameter Analysis
+            f.write("\n\n" + "="*100 + "\n")
+            f.write("PARAMETER IMPACT ANALYSIS:\n")
             f.write("-"*100 + "\n")
             
-            # Analyze each parameter's impact
             for param in ['breakeven_trigger_percent', 'trail_method', 'psar_enabled', 'rsi_hook_enabled']:
-                f.write(f"\n{param.replace('_', ' ').title()}:\n")
-                grouped = df.groupby(param)['total_pnl'].mean().sort_values(ascending=False)
-                for value, avg_pnl in grouped.items():
-                    f.write(f"  {value}: Avg P&L ${avg_pnl:.2f}\n")
+                f.write(f"\n{param}:\n")
+                grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
+                for idx, row in grouped.iterrows():
+                    f.write(f"  {idx}: Avg P&L ${row['mean']:,.2f} (±${row['std']:,.2f}) | {int(row['count'])} tests\n")
             
-            # Best overall configuration
-            f.write("\n" + "="*100 + "\n")
+            # Recommended Configuration
+            f.write("\n\n" + "="*100 + "\n")
             f.write("RECOMMENDED CONFIGURATION:\n")
             f.write("-"*100 + "\n")
             best = df_sorted.iloc[0]
             f.write(f"""
-"exit_strategy": {{
-    "breakeven_trigger_percent": {best['breakeven_trigger_percent']/100:.2f},
-    "trail_method": "{best['trail_method']}",
-    "trail_settings": {{
-        "pullback_percent": {best['pullback_percent']/100:.2f},
-        "atr_period": {int(best['atr_period'])},
-        "atr_multiplier": {best['atr_multiplier']}
-    }},
-    "momentum_exits": {{
-        "psar_enabled": {str(best['psar_enabled']).lower()},
-        "psar_settings": {{"start": {best['psar_start']}, "increment": {best['psar_increment']}, "max": {best['psar_max']}}},
-        "rsi_hook_enabled": {str(best['rsi_hook_enabled']).lower()},
-        "rsi_settings": {{"period": {int(best['rsi_period'])}, "overbought_level": {int(best['rsi_overbought'])}, "oversold_level": {int(best['rsi_oversold'])}}}
+{{
+    "exit_strategy": {{
+        "breakeven_trigger_percent": {best['breakeven_trigger_percent'] / 100},
+        "trail_method": "{best['trail_method']}",
+        "trail_settings": {{
+            "pullback_percent": {best['pullback_percent'] / 100},
+            "atr_period": {best['atr_period']},
+            "atr_multiplier": {best['atr_multiplier']}
+        }},
+        "momentum_exits": {{
+            "psar_enabled": {str(best['psar_enabled']).lower()},
+            "psar_settings": {{
+                "start": {best['psar_start']},
+                "increment": {best['psar_increment']},
+                "max": {best['psar_max']}
+            }},
+            "rsi_hook_enabled": {str(best['rsi_hook_enabled']).lower()},
+            "rsi_settings": {{
+                "period": {best['rsi_period']},
+                "overbought_level": {best['rsi_overbought']},
+                "oversold_level": {best['rsi_oversold']}
+            }}
+        }}
     }}
 }}
 """)
         
-        # Print to console
-        print("\n" + open(summary_file).read())
-        print(f"\n✅ Full results saved to: {full_results_file}")
-        print(f"✅ Summary saved to: {summary_file}\n")
+        logging.info(f"\n📊 Full results: {full_results_file}")
+        logging.info(f"📋 Summary: {summary_file}")
     
     async def run_optimization(self):
-        """Execute the complete optimization workflow."""
+        """Main optimization loop."""
         if not self.signals_file.exists():
             logging.error(f"Signals file not found: {self.signals_file}")
             logging.info("Please create: backtester/signals_to_test.txt")
