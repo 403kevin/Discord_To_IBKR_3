@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - FIXED VERSION WITH PROPER CLASS NAME
-Event-driven backtesting for options with realistic fills and proper trailing logic
+backtest_engine.py - FIXED VERSION 
+Fixes the phantom trade bug by only processing ticks that occur AFTER signal timestamps
 """
 
 import logging
@@ -27,10 +27,9 @@ logging.basicConfig(
 )
 
 
-class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEngine
+class BacktestEngine:
     """
-    Event-driven backtesting engine specifically designed for options trading.
-    Handles puts vs calls, realistic fills, and proper trailing logic.
+    FIXED: Event-driven backtesting engine that properly handles signal timing
     """
     
     def __init__(self, signal_file_path, data_folder_path):
@@ -55,15 +54,22 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
         self.atr_stop_prices = {}
         self.breakeven_activated = {}
         
-        logging.info("🔍 DEBUG: BacktestEngine initialized")
+        # FIXED: Track which contracts have active signals
+        self.active_contracts = {}  # contract_key -> signal_timestamp
+        
+        logging.info("🔍 DEBUG: BacktestEngine initialized (FIXED VERSION)")
         logging.info(f"🔍 DEBUG: Signal file: {signal_file_path}")
         logging.info(f"🔍 DEBUG: Data folder: {data_folder_path}")
         
     def run_simulation(self, params=None):
         """Main simulation loop with parameter support"""
         logging.info("\n" + "="*80)
-        logging.info("🔍 DEBUG: run_simulation() called")
+        logging.info("🔍 DEBUG: run_simulation() called (FIXED VERSION)")
         logging.info("="*80)
+        
+        # Apply parameters if provided
+        if params:
+            self._apply_parameters(params)
         
         # Load and parse signals
         signals = self._load_signals()
@@ -94,25 +100,52 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
         # Process events
         logging.info("🔍 DEBUG: Starting event processing loop...")
         processed_count = 0
+        signal_count = 0
+        tick_count = 0
         
         for timestamp, event_type, data in sorted(event_queue, key=lambda x: x[0]):
             processed_count += 1
             
-            if processed_count % 1000 == 0:
-                logging.debug(f"🔍 DEBUG: Processed {processed_count}/{len(event_queue)} events")
-            
             if event_type == 'SIGNAL':
+                signal_count += 1
                 self._process_signal_event(timestamp, data)
             elif event_type == 'TICK':
+                tick_count += 1
                 self._process_tick_event(timestamp, data)
+            
+            if processed_count % 1000 == 0:
+                logging.debug(f"🔍 Progress: {processed_count}/{len(event_queue)} events ({signal_count} signals, {tick_count} ticks)")
         
-        logging.info(f"✅ Processed all {processed_count} events")
+        logging.info(f"✅ Processed {processed_count} events ({signal_count} signals, {tick_count} ticks)")
         
         # Calculate and return results
         results = self._calculate_results()
         self._log_results()
         
         return results
+    
+    def _apply_parameters(self, params):
+        """Apply optimization parameters to config"""
+        if not self.config.profiles:
+            self.config.profiles = [{}]
+        
+        profile = self.config.profiles[0]
+        
+        if 'exit_strategy' not in profile:
+            profile['exit_strategy'] = {}
+        
+        # Apply all parameters
+        for key, value in params.items():
+            if key in ['breakeven_trigger_percent', 'trail_method']:
+                profile['exit_strategy'][key] = value if key != 'breakeven_trigger_percent' else value / 100
+            elif key in ['pullback_percent', 'atr_period', 'atr_multiplier']:
+                if 'trail_settings' not in profile['exit_strategy']:
+                    profile['exit_strategy']['trail_settings'] = {}
+                profile['exit_strategy']['trail_settings'][key] = value if key != 'pullback_percent' else value / 100
+            elif key in ['psar_enabled', 'rsi_hook_enabled']:
+                if 'momentum_exits' not in profile['exit_strategy']:
+                    profile['exit_strategy']['momentum_exits'] = {}
+                profile['exit_strategy']['momentum_exits'][key] = value
     
     def _load_signals(self):
         """Load and parse signals from file"""
@@ -161,7 +194,7 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
                         parsed['trader'] = trader
                         parsed['raw_signal'] = signal_text
                         signals.append(parsed)
-                        logging.info(f"  Line {line_num}: {parsed['ticker']} {parsed['strike']}{parsed['contract_type'][0]} - {parsed['expiry_date']}")
+                        logging.info(f"  Line {line_num}: {parsed['ticker']} {parsed['strike']}{parsed['contract_type'][0]} - {parsed['expiry_date']} @ {timestamp}")
                     else:
                         logging.warning(f"  Line {line_num}: Could not parse: {signal_text}")
                         
@@ -172,18 +205,16 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
         return signals
     
     def _create_event_queue(self, signals):
-        """Create chronological event queue with signals and price ticks"""
-        logging.info("🔍 DEBUG: _create_event_queue() called")
+        """FIXED: Create event queue with proper signal-tick association"""
+        logging.info("🔍 DEBUG: _create_event_queue() called (FIXED VERSION)")
         event_queue = []
         
-        # Add signal events
-        for signal in signals:
-            event_queue.append((signal['timestamp'], 'SIGNAL', signal))
+        # Find earliest signal time for filtering
+        earliest_signal_time = min(s['timestamp'] for s in signals) if signals else None
+        logging.info(f"🔍 DEBUG: Earliest signal time: {earliest_signal_time}")
         
-        logging.info(f"🔍 DEBUG: Added {len(signals)} signal events")
-        
-        # Load tick data for each unique contract
-        unique_contracts = set()
+        # Build mapping of contracts to their signal times
+        contract_signal_times = {}
         for signal in signals:
             contract_key = (
                 signal['ticker'],
@@ -191,11 +222,19 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
                 signal['strike'],
                 signal['contract_type'][0]
             )
-            unique_contracts.add(contract_key)
+            # Store the signal time for this specific contract
+            if contract_key not in contract_signal_times:
+                contract_signal_times[contract_key] = []
+            contract_signal_times[contract_key].append(signal['timestamp'])
+            
+            # Add signal event
+            event_queue.append((signal['timestamp'], 'SIGNAL', signal))
         
-        logging.info(f"🔍 DEBUG: Found {len(unique_contracts)} unique contracts")
+        logging.info(f"🔍 DEBUG: Added {len(signals)} signal events")
+        logging.info(f"🔍 DEBUG: Contract->Signal mapping: {len(contract_signal_times)} unique contracts")
         
-        for ticker, expiry, strike, ctype in unique_contracts:
+        # Load tick data ONLY for contracts that have signals
+        for (ticker, expiry, strike, ctype), signal_times in contract_signal_times.items():
             # Build filename
             expiry_clean = expiry.replace('-', '')
             filename = get_data_filename_databento(ticker, expiry_clean, strike, ctype.upper())
@@ -216,8 +255,13 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
                 
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
                 
-                # Add tick events
-                for _, row in df.iterrows():
+                # FIXED: Only add ticks that occur AFTER the signal time for THIS contract
+                earliest_signal_for_contract = min(signal_times)
+                df_filtered = df[df['timestamp'] >= earliest_signal_for_contract]
+                
+                # Add filtered tick events
+                ticks_added = 0
+                for _, row in df_filtered.iterrows():
                     event_data = {
                         'ticker': ticker,
                         'expiry': expiry,
@@ -229,16 +273,23 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
                         'volume': row.get('volume', 0)
                     }
                     event_queue.append((row['timestamp'], 'TICK', event_data))
+                    ticks_added += 1
                 
-                logging.info(f"  ✅ Added {len(df)} tick events for {ticker}_{expiry_clean}_{strike}{ctype}")
+                logging.info(f"  ✅ Added {ticks_added} tick events (out of {len(df)} total) for {ticker}_{expiry_clean}_{strike}{ctype}")
+                logging.info(f"     Filtered to ticks after {earliest_signal_for_contract}")
                 
             except Exception as e:
                 logging.error(f"  ❌ Error loading {filename}: {e}")
         
         logging.info(f"🔍 DEBUG: Total events in queue: {len(event_queue)}")
         
-        if len(event_queue) == len(signals):
-            logging.warning("⚠️ WARNING: Only signal events in queue, no tick data loaded!")
+        # Sanity check
+        signal_events = sum(1 for _, t, _ in event_queue if t == 'SIGNAL')
+        tick_events = sum(1 for _, t, _ in event_queue if t == 'TICK')
+        logging.info(f"🔍 DEBUG: Event breakdown: {signal_events} signals, {tick_events} ticks")
+        
+        if tick_events == 0:
+            logging.warning("⚠️ WARNING: No tick data loaded! Check your historical data files.")
         
         return event_queue
     
@@ -279,10 +330,31 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
         }
         self.breakeven_activated[position_id] = False
         
+        # Mark this contract as active
+        contract_key = (
+            signal['ticker'],
+            signal['expiry_date'], 
+            signal['strike'],
+            signal['contract_type'][0]
+        )
+        self.active_contracts[contract_key] = timestamp
+        
         logging.info(f"  📈 ENTRY: {position_id} @ ${entry_price:.2f} x {position_size}")
     
     def _process_tick_event(self, timestamp, tick_data):
         """Process a tick event (check for exits)"""
+        # Only process ticks for contracts we have positions in
+        contract_key = (
+            tick_data['ticker'],
+            tick_data['expiry'],
+            tick_data['strike'],
+            tick_data['contract_type']
+        )
+        
+        # Skip if this contract doesn't have an active signal
+        if contract_key not in self.active_contracts:
+            return
+        
         # Find matching open positions
         for position_id, position in list(self.portfolio['positions'].items()):
             if position['status'] != 'OPEN':
@@ -293,7 +365,8 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
             # Check if this tick matches the position
             if (tick_data['ticker'] == signal['ticker'] and
                 tick_data['strike'] == signal['strike'] and
-                tick_data['contract_type'] == signal['contract_type'][0]):
+                tick_data['contract_type'] == signal['contract_type'][0] and
+                tick_data['expiry'] == signal['expiry_date']):
                 
                 current_price = tick_data['price']
                 
@@ -317,13 +390,27 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
                 
                 if exit_price:
                     self._close_position(position_id, exit_price, exit_reason, timestamp)
+                    
+                    # Remove from active contracts if no more positions
+                    has_other_positions = any(
+                        p['signal']['ticker'] == signal['ticker'] and
+                        p['signal']['strike'] == signal['strike'] and
+                        p['signal']['contract_type'] == signal['contract_type'] and
+                        p['signal']['expiry_date'] == signal['expiry_date'] and
+                        p['status'] == 'OPEN'
+                        for pid, p in self.portfolio['positions'].items()
+                        if pid != position_id
+                    )
+                    if not has_other_positions:
+                        if contract_key in self.active_contracts:
+                            del self.active_contracts[contract_key]
     
     def _check_exit_conditions(self, position_id, position, current_price, timestamp):
         """Check if position should exit"""
         signal = position['signal']
         entry_price = position['entry_price']
         
-        # Get exit strategy from config (would come from params in optimizer)
+        # Get exit strategy from config
         profile = self.config.profiles[0] if self.config.profiles else {}
         exit_strategy = profile.get('exit_strategy', {})
         
@@ -348,20 +435,20 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
         trail_method = exit_strategy.get('trail_method', 'pullback_percent')
         
         if trail_method == 'pullback_percent':
-            pullback_pct = exit_strategy.get('trail_settings', {}).get('pullback_percent', 10)
+            pullback_pct = exit_strategy.get('trail_settings', {}).get('pullback_percent', 0.10) * 100
             
             if signal['contract_type'] == 'CALL':
                 highest = self.trailing_highs_and_lows[position_id]['high']
                 pullback_from_high = ((highest - current_price) / highest) * 100
                 
                 if pullback_from_high >= pullback_pct and pnl_pct > 0:
-                    return current_price, f"PULLBACK_{pullback_pct}%"
+                    return current_price, f"PULLBACK_{pullback_pct:.0f}%"
             else:  # PUT
                 lowest = self.trailing_highs_and_lows[position_id]['low']
                 pullback_from_low = ((current_price - lowest) / lowest) * 100
                 
                 if pullback_from_low >= pullback_pct and pnl_pct > 0:
-                    return current_price, f"PULLBACK_{pullback_pct}%"
+                    return current_price, f"PULLBACK_{pullback_pct:.0f}%"
         
         # Check time-based exit (close before market close)
         market_close = timestamp.replace(hour=15, minute=50, second=0)
@@ -516,7 +603,7 @@ class BacktestEngine:  # FIXED: Changed from OptionsBacktestEngine to BacktestEn
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
-    logging.info("🔍 DEBUG: Script started")
+    logging.info("🔍 DEBUG: Script started (FIXED VERSION)")
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     signal_file = os.path.join(script_dir, 'signals_to_test.txt')
