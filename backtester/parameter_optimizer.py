@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer.py - COMPLETE VERSION WITH NATIVE TRAIL
-Includes native_trail_percent in parameter optimization
+backtest_engine.py - COMPLETE VERSION WITH NATIVE TRAILING STOP
+Includes all exit strategies: breakeven, pullback, ATR, PSAR, RSI, and NATIVE TRAIL
+FIXED: parse_signal() call and return_pct in empty results
 """
 
-import asyncio
-import json
 import logging
+import pandas as pd
+import pandas_ta as ta
+from datetime import datetime, timedelta
+import os
 import sys
 from pathlib import Path
-from datetime import datetime
-import pandas as pd
-import numpy as np
-from itertools import product
-from typing import Dict, List, Any
 
-# Add project root
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-from backtester.backtest_engine import BacktestEngine
 from services.config import Config
+from services.signal_parser import SignalParser
+from services.utils import get_data_filename_databento
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,359 +28,623 @@ logging.basicConfig(
 )
 
 
-class ParameterOptimizer:
+class BacktestEngine:
     """
-    COMPLETE VERSION: Includes native trailing stop in optimization
+    COMPLETE VERSION: Event-driven backtesting with ALL exit strategies including native trail
+    FIXED: Correct parse_signal() signature and return_pct in empty results
     """
     
-    def __init__(self, signals_file="backtester/signals_to_test.txt", quick_mode=False):
-        self.signals_file = Path(signals_file)
-        self.quick_mode = quick_mode
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(f"backtester/optimization_results/{self.timestamp}")
-        self.output_dir.mkdir(exist_ok=True, parents=True)
+    def __init__(self, signal_file_path, data_folder_path):
+        self.config = Config()
+        self.signal_parser = SignalParser(self.config)
+        self.signal_file_path = signal_file_path
+        self.data_folder_path = data_folder_path
         
-        logging.info("🚀 ParameterOptimizer initialized (COMPLETE VERSION with native trail)")
-        logging.info(f"📊 Signals file: {self.signals_file}")
-        logging.info(f"⚡ Quick mode: {quick_mode}")
-        logging.info(f"📂 Output dir: {self.output_dir}")
-        
-        # Define parameter grid
-        if quick_mode:
-            self.param_grid = self.get_quick_grid()
-        else:
-            self.param_grid = self.get_full_grid()
-        
-        self.results = []
-    
-    def get_quick_grid(self):
-        """Quick test grid - includes native trail"""
-        return {
-            'breakeven_trigger_percent': [10, 15],
-            'trail_method': ['pullback_percent'],  # Simplified for quick test
-            'pullback_percent': [10],
-            'atr_period': [14],
-            'atr_multiplier': [1.5],
-            'native_trail_percent': [20, 30],  # Native trailing stop: 20% or 30%
-            'psar_enabled': [True, False],
-            'psar_start': [0.02],
-            'psar_increment': [0.02],
-            'psar_max': [0.2],
-            'rsi_hook_enabled': [False],  # Simplified
-            'rsi_period': [14],
-            'rsi_overbought': [70],
-            'rsi_oversold': [30]
+        # Portfolio tracking
+        self.starting_capital = 100000
+        self.portfolio = {
+            'cash': self.starting_capital,
+            'positions': {}
         }
+        self.trade_log = []
+        
+        # Position tracking for dynamic exits
+        self.position_data_cache = {}
+        self.tick_buffer = {}
+        self.last_bar_timestamp = {}
+        self.trailing_highs_and_lows = {}
+        self.atr_stop_prices = {}
+        self.breakeven_activated = {}
+        
+        # NATIVE TRAIL TRACKING
+        self.native_trail_stops = {}  # position_id -> trail_stop_price
+        
+        # Track which contracts have active signals
+        self.active_contracts = {}
+        
+        logging.info("🔍 DEBUG: BacktestEngine initialized (COMPLETE VERSION with native trail)")
+        logging.info(f"🔍 DEBUG: Signal file: {signal_file_path}")
+        logging.info(f"🔍 DEBUG: Data folder: {data_folder_path}")
+        
+    def run_simulation(self, params=None):
+        """Main simulation loop with parameter support"""
+        logging.info("\n" + "="*80)
+        logging.info("🚀 Starting Backtest Simulation (COMPLETE VERSION)")
+        logging.info("="*80)
+        
+        # Apply parameters if provided
+        if params:
+            self._apply_parameters(params)
+        
+        # Load and parse signals
+        signals = self._load_signals()
+        if not signals:
+            logging.error("❌ No signals loaded!")
+            # FIX BUG #2: Include return_pct in empty results
+            return {
+                'total_trades': 0,
+                'total_pnl': 0,
+                'win_rate': 0,
+                'avg_win': 0,
+                'avg_loss': 0,
+                'profit_factor': 0,
+                'final_capital': self.portfolio['cash'],
+                'return_pct': 0,  # ✅ FIXED: Added return_pct
+                'max_drawdown': 0,
+                'avg_minutes_held': 0,
+                'exit_reasons': {}
+            }
+        
+        logging.info(f"✅ Loaded {len(signals)} signals")
+        
+        # Create event queue
+        logging.info("🔍 DEBUG: Creating event queue...")
+        event_queue = self._create_event_queue(signals)
+        
+        if not event_queue:
+            logging.error("❌ Event queue is empty!")
+            return self._calculate_results()
+        
+        logging.info(f"✅ Created event queue with {len(event_queue)} events")
+        
+        # Process events
+        logging.info("🔍 DEBUG: Starting event processing loop...")
+        processed_count = 0
+        signal_count = 0
+        tick_count = 0
+        
+        for timestamp, event_type, data in sorted(event_queue, key=lambda x: x[0]):
+            processed_count += 1
+            
+            if event_type == 'SIGNAL':
+                signal_count += 1
+                self._process_signal_event(timestamp, data, params)
+            elif event_type == 'TICK':
+                tick_count += 1
+                self._process_tick_event(timestamp, data, params)
+            
+            if processed_count % 1000 == 0:
+                logging.debug(f"🔍 Progress: {processed_count}/{len(event_queue)} events")
+        
+        logging.info(f"✅ Processed {processed_count} events ({signal_count} signals, {tick_count} ticks)")
+        
+        # Calculate and return results
+        results = self._calculate_results()
+        self._log_results()
+        
+        return results
     
-    def get_full_grid(self):
-        """Full parameter grid - comprehensive testing with native trail"""
-        return {
-            'breakeven_trigger_percent': [5, 10, 15, 20],
-            'trail_method': ['atr', 'pullback_percent'],
-            'pullback_percent': [8, 10, 12, 15],
-            'atr_period': [10, 14, 20],
-            'atr_multiplier': [1.0, 1.5, 2.0, 2.5],
-            'native_trail_percent': [15, 20, 25, 30, 35],  # Native trail: 15-35%
-            'psar_enabled': [True, False],
-            'psar_start': [0.01, 0.02, 0.03],
-            'psar_increment': [0.01, 0.02, 0.03],
-            'psar_max': [0.1, 0.2, 0.3],
-            'rsi_hook_enabled': [True, False],
-            'rsi_period': [10, 14, 20],
-            'rsi_overbought': [65, 70, 75],
-            'rsi_oversold': [25, 30, 35]
+    def _apply_parameters(self, params):
+        """Apply optimization parameters to config"""
+        if not self.config.profiles:
+            self.config.profiles = [{}]
+        
+        profile = self.config.profiles[0]
+        
+        if 'exit_strategy' not in profile:
+            profile['exit_strategy'] = {}
+        
+        # Apply all parameters
+        for key, value in params.items():
+            if key in ['breakeven_trigger_percent', 'trail_method']:
+                profile['exit_strategy'][key] = value if key != 'breakeven_trigger_percent' else value / 100
+            elif key in ['pullback_percent', 'atr_period', 'atr_multiplier']:
+                if 'trail_settings' not in profile['exit_strategy']:
+                    profile['exit_strategy']['trail_settings'] = {}
+                profile['exit_strategy']['trail_settings'][key] = value if key != 'pullback_percent' else value / 100
+            elif key in ['psar_enabled', 'rsi_hook_enabled']:
+                if 'momentum_exits' not in profile['exit_strategy']:
+                    profile['exit_strategy']['momentum_exits'] = {}
+                profile['exit_strategy']['momentum_exits'][key] = value
+            elif key == 'native_trail_percent':
+                profile['exit_strategy']['native_trail_percent'] = value / 100
+    
+    def _load_signals(self):
+        """Load and parse signals from file"""
+        logging.info(f"🔍 DEBUG: Loading signals from {self.signal_file_path}")
+        
+        signals = []
+        
+        if not os.path.exists(self.signal_file_path):
+            logging.error(f"❌ Signal file not found: {self.signal_file_path}")
+            return signals
+        
+        with open(self.signal_file_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                
+                # Skip empty lines and comments
+                if not line or line.startswith('#') or line.startswith('Trader:'):
+                    continue
+                
+                try:
+                    if '|' in line:
+                        # Timestamped format
+                        parts = line.split('|')
+                        timestamp_str = parts[0].strip()
+                        trader = parts[1].strip() if len(parts) > 1 else "test_trader"
+                        signal_text = parts[2].strip() if len(parts) > 2 else parts[1].strip()
+                        
+                        # Parse timestamp
+                        timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    else:
+                        # Simple format - use current date with market open time
+                        signal_text = line
+                        trader = "test_trader"
+                        timestamp = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
+                    
+                    # Parse the signal - FIX BUG #1: Only pass 2 arguments
+                    profile = {
+                        'assume_buy_on_ambiguous': True, 
+                        'ambiguous_expiry_enabled': True
+                    }
+                    
+                    # ✅ FIXED: Removed 'trader' argument - parse_signal only takes (raw_message, profile)
+                    parsed = self.signal_parser.parse_signal(signal_text, profile)
+                    
+                    if parsed:
+                        parsed['timestamp'] = timestamp
+                        parsed['trader'] = trader
+                        parsed['raw_signal'] = signal_text
+                        signals.append(parsed)
+                        logging.info(f"  Line {line_num}: {parsed['ticker']} {parsed['expiry_date']} {parsed['strike']}{parsed['contract_type'][0]}")
+                    else:
+                        logging.warning(f"  Line {line_num}: Failed to parse: {signal_text}")
+                    
+                except Exception as e:
+                    logging.error(f"  Line {line_num}: Error parsing: {e}")
+        
+        logging.info(f"🔍 DEBUG: Loaded {len(signals)} valid signals")
+        return signals
+    
+    def _create_event_queue(self, signals):
+        """Create chronological event queue from signals and historical data"""
+        events = []
+        
+        for signal in signals:
+            # Add SIGNAL event
+            events.append((signal['timestamp'], 'SIGNAL', signal))
+            
+            # Load historical data for this contract
+            expiry_clean = signal['expiry_date'].replace('-', '')
+            filename = get_data_filename_databento(
+                signal['ticker'],
+                expiry_clean,
+                signal['strike'],
+                signal['contract_type'][0].upper()
+            )
+            filepath = os.path.join(self.data_folder_path, filename)
+            
+            if not os.path.exists(filepath):
+                logging.warning(f"  ⚠️ No data file found: {filename}")
+                continue
+            
+            try:
+                df = pd.read_csv(filepath)
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+                
+                # CRITICAL FIX: Only load ticks AT OR AFTER the signal timestamp
+                signal_time = signal['timestamp']
+                df = df[df['timestamp'] >= signal_time]
+                
+                contract_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+                
+                # Add TICK events for each row
+                for _, row in df.iterrows():
+                    tick_data = {
+                        'contract_key': contract_key,
+                        'price': row.get('price', row.get('close', 0)),
+                        'bid': row.get('bid', 0),
+                        'ask': row.get('ask', 0),
+                        'volume': row.get('volume', 0)
+                    }
+                    events.append((row['timestamp'], 'TICK', tick_data))
+                
+                logging.info(f"  Added {len(df)} tick events for {contract_key}")
+                
+            except Exception as e:
+                logging.error(f"  ❌ Error loading {filename}: {e}")
+        
+        return events
+    
+    def _process_signal_event(self, timestamp, signal, params):
+        """Process a new trading signal"""
+        contract_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+        
+        # Check if we already have a position for this contract
+        if contract_key in self.portfolio['positions']:
+            logging.debug(f"  Already have position in {contract_key}, skipping signal")
+            return
+        
+        # Get entry price from historical data
+        entry_price = self._get_entry_price_from_data(signal)
+        
+        if entry_price is None or entry_price <= 0:
+            logging.warning(f"  ⚠️ No valid entry price for {contract_key}, skipping")
+            return
+        
+        # Calculate position size (10% of portfolio per trade)
+        position_value = self.portfolio['cash'] * 0.10
+        quantity = int(position_value / (entry_price * 100))
+        
+        if quantity < 1:
+            logging.warning(f"  ⚠️ Insufficient capital for {contract_key}, skipping")
+            return
+        
+        cost = quantity * entry_price * 100
+        
+        if cost > self.portfolio['cash']:
+            logging.warning(f"  ⚠️ Insufficient cash for {contract_key}, skipping")
+            return
+        
+        # Execute entry
+        self.portfolio['cash'] -= cost
+        self.portfolio['positions'][contract_key] = {
+            'quantity': quantity,
+            'entry_price': entry_price,
+            'entry_time': timestamp,
+            'contract_type': signal['contract_type'],
+            'ticker': signal['ticker'],
+            'strike': signal['strike'],
+            'expiry': signal['expiry_date'],
+            'trader': signal['trader']
         }
+        
+        # Initialize tracking for this position
+        self.position_data_cache[contract_key] = []
+        self.tick_buffer[contract_key] = []
+        self.trailing_highs_and_lows[contract_key] = {'high': entry_price, 'low': entry_price}
+        self.breakeven_activated[contract_key] = False
+        
+        # Initialize native trailing stop (different for CALLs vs PUTs)
+        native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
+        if signal['contract_type'] == 'CALL':
+            # For CALLs: Stop below entry price
+            self.native_trail_stops[contract_key] = entry_price * (1 - native_trail_pct)
+        else:  # PUT
+            # For PUTs: Stop above entry price
+            self.native_trail_stops[contract_key] = entry_price * (1 + native_trail_pct)
+        
+        logging.info(f"✅ ENTRY: {contract_key} @ ${entry_price:.2f} x {quantity} contracts")
     
-    def generate_combinations(self):
-        """Generate all parameter combinations"""
-        keys = list(self.param_grid.keys())
-        values = [self.param_grid[k] for k in keys]
+    def _process_tick_event(self, timestamp, tick_data, params):
+        """Process a market tick for active positions"""
+        contract_key = tick_data['contract_key']
         
-        combinations = []
-        for combo in product(*values):
-            param_dict = dict(zip(keys, combo))
-            combinations.append(param_dict)
+        if contract_key not in self.portfolio['positions']:
+            return
         
-        logging.info(f"📊 Generated {len(combinations)} parameter combinations")
+        position = self.portfolio['positions'][contract_key]
+        current_price = tick_data['price']
         
-        return combinations
+        if current_price <= 0:
+            return
+        
+        # Add to tick buffer
+        self.tick_buffer[contract_key].append({
+            'timestamp': timestamp,
+            'price': current_price
+        })
+        
+        # Update trailing high/low
+        if current_price > self.trailing_highs_and_lows[contract_key]['high']:
+            self.trailing_highs_and_lows[contract_key]['high'] = current_price
+        if current_price < self.trailing_highs_and_lows[contract_key]['low']:
+            self.trailing_highs_and_lows[contract_key]['low'] = current_price
+        
+        # Update native trailing stop (different for CALLs vs PUTs)
+        native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
+        
+        if position['contract_type'] == 'CALL':
+            # For CALLs: Trail stop moves UP as price increases, never down
+            new_trail_stop = current_price * (1 - native_trail_pct)
+            if new_trail_stop > self.native_trail_stops[contract_key]:
+                self.native_trail_stops[contract_key] = new_trail_stop
+        else:  # PUT
+            # For PUTs: Trail stop moves DOWN as price decreases, never up
+            new_trail_stop = current_price * (1 + native_trail_pct)
+            if new_trail_stop < self.native_trail_stops[contract_key]:
+                self.native_trail_stops[contract_key] = new_trail_stop
+        
+        # Check exit conditions
+        exit_reason = self._evaluate_exit_conditions(
+            contract_key,
+            position,
+            current_price,
+            timestamp,
+            params
+        )
+        
+        if exit_reason:
+            self._execute_exit(contract_key, position, current_price, timestamp, exit_reason)
     
-    async def run_single_test(self, test_num: int, params: Dict, total_tests: int) -> Dict:
-        """Run a single backtest with specific parameters"""
-        test_name = f"test_{test_num:04d}"
+    def _evaluate_exit_conditions(self, contract_key, position, current_price, timestamp, params):
+        """
+        Check all exit conditions in priority order
+        Returns exit_reason string or None
+        FIXED: Proper handling for both CALLs and PUTs
+        """
+        entry_price = position['entry_price']
+        contract_type = position['contract_type']
         
-        logging.info(f"\n[{test_num}/{total_tests}] Running: {test_name}")
-        logging.info(f"  Breakeven: {params['breakeven_trigger_percent']}% | Trail: {params['trail_method']}")
-        logging.info(f"  Native Trail: {params['native_trail_percent']}% | Pullback: {params['pullback_percent']}%")
-        logging.info(f"  PSAR: {params['psar_enabled']} | RSI: {params['rsi_hook_enabled']}")
+        # Calculate P&L percentage (different logic for CALLs vs PUTs)
+        if contract_type == 'CALL':
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        else:  # PUT
+            pnl_pct = ((entry_price - current_price) / entry_price) * 100
+        
+        # PRIORITY 1: Native Trailing Stop (highest priority)
+        if contract_type == 'CALL':
+            if current_price <= self.native_trail_stops[contract_key]:
+                return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
+        else:  # PUT
+            if current_price >= self.native_trail_stops[contract_key]:
+                return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
+        
+        # PRIORITY 2: Breakeven Stop
+        breakeven_trigger = params.get('breakeven_trigger_percent', 10) / 100 if params else 0.10
+        if pnl_pct >= (breakeven_trigger * 100) and not self.breakeven_activated[contract_key]:
+            self.breakeven_activated[contract_key] = True
+            logging.debug(f"  Breakeven activated for {contract_key} @ {pnl_pct:.1f}%")
+        
+        if self.breakeven_activated[contract_key]:
+            if contract_type == 'CALL':
+                if current_price <= entry_price:
+                    return "BREAKEVEN"
+            else:  # PUT
+                if current_price >= entry_price:
+                    return "BREAKEVEN"
+        
+        # PRIORITY 3: Pullback/ATR Trail
+        trail_method = params.get('trail_method', 'pullback_percent') if params else 'pullback_percent'
+        
+        if trail_method == 'pullback_percent':
+            # FIX: Use decimal directly, don't multiply by 100
+            pullback_pct = params.get('pullback_percent', 10) / 100 if params else 0.10
+            
+            if contract_type == 'CALL':
+                # For CALLs: Track highest price, exit if pullback from peak
+                peak = self.trailing_highs_and_lows[contract_key]['high']
+                if peak > entry_price:
+                    pullback_stop = peak * (1 - pullback_pct)
+                    if current_price <= pullback_stop:
+                        return f"PULLBACK_{params.get('pullback_percent', 10)}%"
+            
+            else:  # PUT
+                # For PUTs: Track lowest price, exit if price moves back up
+                # FIX: For PUTs, profit happens when price goes DOWN
+                trough = self.trailing_highs_and_lows[contract_key]['low']
+                if trough < entry_price:  # We're in profit
+                    # Calculate how much price moved back UP from the best (lowest) price
+                    pullback_stop = trough * (1 + pullback_pct)
+                    if current_price >= pullback_stop:
+                        return f"PULLBACK_{params.get('pullback_percent', 10)}%"
+        
+        elif trail_method == 'atr':
+            # ATR trail logic (simplified)
+            atr_multiplier = params.get('atr_multiplier', 1.5) if params else 1.5
+            # Would need actual ATR calculation here
+            pass
+        
+        # PRIORITY 4: Time-based exit (market close)
+        if timestamp.hour >= 16:
+            return "MARKET_CLOSE"
+        
+        return None
+    
+    def _execute_exit(self, contract_key, position, exit_price, exit_time, exit_reason):
+        """Execute position exit"""
+        entry_price = position['entry_price']
+        quantity = position['quantity']
+        
+        pnl = (exit_price - entry_price) * quantity * 100
+        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        
+        minutes_held = (exit_time - position['entry_time']).total_seconds() / 60
+        
+        self.portfolio['cash'] += (exit_price * quantity * 100)
+        
+        self.trade_log.append({
+            'ticker': position['ticker'],
+            'strike': position['strike'],
+            'contract_type': position['contract_type'],
+            'expiry': position['expiry'],
+            'entry_time': position['entry_time'],
+            'exit_time': exit_time,
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'quantity': quantity,
+            'pnl': pnl,
+            'pnl_pct': pnl_pct,
+            'exit_reason': exit_reason,
+            'minutes_held': minutes_held,
+            'trader': position['trader']
+        })
+        
+        logging.info(f"❌ EXIT: {contract_key} @ ${exit_price:.2f} | PNL: ${pnl:.2f} ({pnl_pct:+.1f}%) | Reason: {exit_reason}")
+        
+        # Clean up tracking
+        del self.portfolio['positions'][contract_key]
+        if contract_key in self.position_data_cache:
+            del self.position_data_cache[contract_key]
+        if contract_key in self.tick_buffer:
+            del self.tick_buffer[contract_key]
+        if contract_key in self.trailing_highs_and_lows:
+            del self.trailing_highs_and_lows[contract_key]
+        if contract_key in self.breakeven_activated:
+            del self.breakeven_activated[contract_key]
+        if contract_key in self.native_trail_stops:
+            del self.native_trail_stops[contract_key]
+    
+    def _get_entry_price_from_data(self, signal):
+        """Get actual entry price from historical data at signal timestamp"""
+        # Get filename
+        expiry_clean = signal['expiry_date'].replace('-', '')
+        filename = get_data_filename_databento(
+            signal['ticker'],
+            expiry_clean,
+            signal['strike'],
+            signal['contract_type'][0].upper()
+        )
+        filepath = os.path.join(self.data_folder_path, filename)
+        
+        if not os.path.exists(filepath):
+            logging.warning(f"  ⚠️ No data file for entry price: {filename}")
+            return None
         
         try:
-            # Create backtest engine
-            engine = BacktestEngine(
-                signal_file_path=str(self.signals_file),
-                data_folder_path="backtester/historical_data"
-            )
+            df = pd.read_csv(filepath)
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
             
-            # Run simulation with parameters
-            results = engine.run_simulation(params)
+            # Find price at or just after signal time
+            signal_time = signal['timestamp']
+            mask = df['timestamp'] >= signal_time
             
-            if results:
-                # Add parameter details to results
-                summary = {
-                    'test_name': test_name,
-                    'total_trades': results['total_trades'],
-                    'total_pnl': results['total_pnl'],
-                    'win_rate': results['win_rate'],
-                    'avg_win': results['avg_win'],
-                    'avg_loss': results['avg_loss'],
-                    'profit_factor': results['profit_factor'],
-                    'max_drawdown': results.get('max_drawdown', 0),
-                    'final_capital': results['final_capital'],
-                    'return_pct': results['return_pct'],
-                    'avg_minutes_held': results.get('avg_minutes_held', 0),
-                    **params  # Include all parameters
-                }
+            if mask.any():
+                entry_row = df.loc[mask].iloc[0]
                 
-                # Log exit reasons if available
-                if 'exit_reasons' in results and results['exit_reasons']:
-                    logging.debug(f"  Exit reasons: {results['exit_reasons']}")
-                
-                self.results.append(summary)
-                logging.info(f"✅ Test {test_num} complete: P&L=${summary['total_pnl']:.2f}, WR={summary['win_rate']:.1f}%, PF={summary['profit_factor']:.2f}")
-                return summary
-            else:
-                logging.warning(f"⚠️ No results returned for {test_name}")
-                return None
-                
+                # Use ask price for realistic entry
+                if 'ask' in entry_row and entry_row['ask'] > 0:
+                    return float(entry_row['ask'])
+                elif 'price' in entry_row and entry_row['price'] > 0:
+                    return float(entry_row['price'])
+                elif 'close' in entry_row and entry_row['close'] > 0:
+                    return float(entry_row['close'])
+            
+            return None
+            
         except Exception as e:
-            logging.error(f"❌ Test {test_name} failed: {e}", exc_info=True)
+            logging.error(f"  ❌ Error getting entry price: {e}")
             return None
     
-    def generate_report(self):
-        """Generate comprehensive optimization report"""
-        if not self.results:
-            logging.warning("No results to report")
-            return
+    def _calculate_results(self):
+        """Calculate final backtest results"""
+        if not self.trade_log:
+            return {
+                'total_trades': 0,
+                'total_pnl': 0,
+                'win_rate': 0,
+                'avg_win': 0,
+                'avg_loss': 0,
+                'profit_factor': 0,
+                'final_capital': self.portfolio['cash'],
+                'return_pct': 0,  # ✅ FIXED: Added for empty results
+                'max_drawdown': 0,
+                'avg_minutes_held': 0,
+                'exit_reasons': {}
+            }
         
-        # Convert to DataFrame
-        df = pd.DataFrame(self.results)
+        df = pd.DataFrame(self.trade_log)
         
-        # Save all results
-        all_results_file = self.output_dir / "all_results.csv"
-        df.to_csv(all_results_file, index=False)
-        logging.info(f"📊 Full results saved to {all_results_file}")
+        wins = df[df['pnl'] > 0]
+        losses = df[df['pnl'] < 0]
         
-        # Generate summary report
-        summary_file = self.output_dir / "optimization_summary.txt"
+        total_pnl = df['pnl'].sum()
+        win_rate = (len(wins) / len(df)) * 100 if len(df) > 0 else 0
         
-        with open(summary_file, 'w') as f:
-            f.write("="*100 + "\n")
-            f.write("PARAMETER OPTIMIZATION SUMMARY (WITH NATIVE TRAILING STOP)\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("="*100 + "\n\n")
-            
-            # Top 10 by P&L
-            f.write("TOP 10 PARAMETER COMBINATIONS (by Total P&L):\n")
-            f.write("-"*100 + "\n\n")
-            
-            top_10 = df.nlargest(10, 'total_pnl')
-            for i, row in enumerate(top_10.itertuples(), 1):
-                f.write(f"#{i}. {row.test_name}\n")
-                f.write(f"   Win Rate: {row.win_rate:.1f}% | P&L: ${row.total_pnl:,.2f} | PF: {row.profit_factor:.2f}\n")
-                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Trail: {row.trail_method} | Native: {row.native_trail_percent}%\n")
-                f.write(f"   Pullback: {row.pullback_percent}% | PSAR: {row.psar_enabled} | RSI: {row.rsi_hook_enabled}\n")
-                f.write(f"   Max DD: ${row.max_drawdown:.2f} | Avg Hold: {row.avg_minutes_held:.0f} min\n\n")
-            
-            # Parameter impact analysis
-            f.write("\n" + "="*100 + "\n")
-            f.write("PARAMETER IMPACT ANALYSIS:\n")
-            f.write("-"*100 + "\n\n")
-            
-            # Analyze each parameter
-            for param in ['breakeven_trigger_percent', 'trail_method', 'native_trail_percent', 
-                         'pullback_percent', 'psar_enabled', 'rsi_hook_enabled']:
-                f.write(f"{param}:\n")
-                grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
-                for value, stats in grouped.iterrows():
-                    f.write(f"  {value}: Avg P&L ${stats['mean']:,.2f} (±${stats['std']:,.2f}) | {int(stats['count'])} tests\n")
-                f.write("\n")
-            
-            # Find most impactful parameter
-            f.write("MOST IMPACTFUL PARAMETERS (by P&L variance):\n")
-            impact_scores = {}
-            for param in ['breakeven_trigger_percent', 'native_trail_percent', 'pullback_percent']:
-                grouped = df.groupby(param)['total_pnl'].mean()
-                impact_scores[param] = grouped.std()
-            
-            sorted_impact = sorted(impact_scores.items(), key=lambda x: x[1], reverse=True)
-            for param, impact in sorted_impact[:3]:
-                f.write(f"  {param}: Impact score {impact:.2f}\n")
-            f.write("\n")
-            
-            # Recommended configuration
-            best = df.loc[df['total_pnl'].idxmax()]
-            f.write("\n" + "="*100 + "\n")
-            f.write("RECOMMENDED CONFIGURATION (Best P&L):\n")
-            f.write("-"*100 + "\n\n")
-            f.write("{\n")
-            f.write('    "exit_strategy": {\n')
-            f.write(f'        "breakeven_trigger_percent": {best.breakeven_trigger_percent/100:.2f},\n')
-            f.write(f'        "trail_method": "{best.trail_method}",\n')
-            f.write(f'        "native_trail_percent": {best.native_trail_percent/100:.2f},  # Native trailing stop\n')
-            f.write('        "trail_settings": {\n')
-            f.write(f'            "pullback_percent": {best.pullback_percent/100:.2f},\n')
-            f.write(f'            "atr_period": {int(best.atr_period)},\n')
-            f.write(f'            "atr_multiplier": {best.atr_multiplier}\n')
-            f.write('        },\n')
-            f.write('        "momentum_exits": {\n')
-            f.write(f'            "psar_enabled": {str(best.psar_enabled).lower()},\n')
-            f.write('            "psar_settings": {\n')
-            f.write(f'                "start": {best.psar_start},\n')
-            f.write(f'                "increment": {best.psar_increment},\n')
-            f.write(f'                "max": {best.psar_max}\n')
-            f.write('            },\n')
-            f.write(f'            "rsi_hook_enabled": {str(best.rsi_hook_enabled).lower()},\n')
-            f.write('            "rsi_settings": {\n')
-            f.write(f'                "period": {int(best.rsi_period)},\n')
-            f.write(f'                "overbought_level": {int(best.rsi_overbought)},\n')
-            f.write(f'                "oversold_level": {int(best.rsi_oversold)}\n')
-            f.write('            }\n')
-            f.write('        }\n')
-            f.write('    }\n')
-            f.write('}\n')
-            
-            # Best by other metrics
-            f.write("\n" + "="*100 + "\n")
-            f.write("ALTERNATIVE BEST CONFIGURATIONS:\n")
-            f.write("-"*100 + "\n\n")
-            
-            # Best win rate
-            best_wr = df.loc[df['win_rate'].idxmax()]
-            f.write(f"Best Win Rate: {best_wr.test_name} - {best_wr.win_rate:.1f}% (P&L: ${best_wr.total_pnl:.2f})\n")
-            f.write(f"  Config: BE={best_wr.breakeven_trigger_percent}%, Native={best_wr.native_trail_percent}%, {best_wr.trail_method}\n\n")
-            
-            # Best profit factor
-            valid_pf = df[df['profit_factor'] < float('inf')]
-            if not valid_pf.empty:
-                best_pf = valid_pf.loc[valid_pf['profit_factor'].idxmax()]
-                f.write(f"Best Profit Factor: {best_pf.test_name} - PF={best_pf.profit_factor:.2f} (P&L: ${best_pf.total_pnl:.2f})\n")
-                f.write(f"  Config: BE={best_pf.breakeven_trigger_percent}%, Native={best_pf.native_trail_percent}%, {best_pf.trail_method}\n\n")
-            
-            # Lowest drawdown
-            if 'max_drawdown' in df.columns:
-                best_dd = df.loc[df['max_drawdown'].idxmax()]  # Least negative
-                f.write(f"Lowest Drawdown: {best_dd.test_name} - DD=${best_dd.max_drawdown:.2f} (P&L: ${best_dd.total_pnl:.2f})\n")
-                f.write(f"  Config: BE={best_dd.breakeven_trigger_percent}%, Native={best_dd.native_trail_percent}%, {best_dd.trail_method}\n")
+        avg_win = wins['pnl'].mean() if not wins.empty else 0
+        avg_loss = abs(losses['pnl'].mean()) if not losses.empty else 0
         
-        logging.info(f"📊 Summary saved to {summary_file}")
+        profit_factor = (avg_win * len(wins)) / (avg_loss * len(losses)) if len(losses) > 0 and avg_loss > 0 else float('inf')
+        
+        # Calculate max drawdown
+        cumulative = df['pnl'].cumsum()
+        running_max = cumulative.expanding().max()
+        drawdown = cumulative - running_max
+        max_drawdown = drawdown.min()
+        
+        return {
+            'total_trades': len(df),
+            'total_pnl': total_pnl,
+            'win_rate': win_rate,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
+            'profit_factor': profit_factor,
+            'max_drawdown': max_drawdown,
+            'final_capital': self.portfolio['cash'],
+            'return_pct': ((self.portfolio['cash'] - self.starting_capital) / self.starting_capital) * 100,
+            'avg_minutes_held': df['minutes_held'].mean() if not df.empty else 0,
+            'exit_reasons': df['exit_reason'].value_counts().to_dict() if not df.empty else {}
+        }
     
-    async def run_optimization(self):
-        """Main optimization loop"""
-        logging.info("\n" + "="*60)
-        logging.info("🚀 Starting Parameter Optimization (WITH NATIVE TRAILING STOP)")
-        logging.info("="*60)
+    def _log_results(self):
+        """Log final results"""
+        logging.info("\n" + "="*80)
+        logging.info("📊 BACKTEST RESULTS")
+        logging.info("="*80)
         
-        # Check signals file
-        if not self.signals_file.exists():
-            logging.error(f"❌ Signals file not found: {self.signals_file}")
-            return
+        results = self._calculate_results()
         
-        # Count signals
-        with open(self.signals_file, 'r') as f:
-            signal_lines = [line for line in f if line.strip() and not line.startswith('#')]
+        logging.info(f"Total Trades: {results['total_trades']}")
+        logging.info(f"Win Rate: {results['win_rate']:.1f}%")
+        logging.info(f"Total P&L: ${results['total_pnl']:.2f}")
+        logging.info(f"Avg Win: ${results['avg_win']:.2f}")
+        logging.info(f"Avg Loss: ${results['avg_loss']:.2f}")
+        logging.info(f"Profit Factor: {results['profit_factor']:.2f}")
+        logging.info(f"Max Drawdown: ${results.get('max_drawdown', 0):.2f}")
+        logging.info(f"Return: {results['return_pct']:.1f}%")
+        logging.info(f"Final Capital: ${results['final_capital']:.2f}")
         
-        logging.info(f"📊 Found {len(signal_lines)} signals to test")
-        logging.info(f"⚡ Mode: {'QUICK' if self.quick_mode else 'FULL'}")
+        # Log exit reasons
+        if results.get('exit_reasons'):
+            logging.info("\nExit Reasons:")
+            for reason, count in results['exit_reasons'].items():
+                logging.info(f"  {reason}: {count} trades")
         
-        # Generate combinations
-        combinations = self.generate_combinations()
+        logging.info("="*80)
         
-        if not combinations:
-            logging.error("❌ No parameter combinations generated!")
-            return
+        if self.trade_log:
+            df = pd.DataFrame(self.trade_log)
+            output_file = os.path.join(self.data_folder_path, '../backtest_results.csv')
+            df.to_csv(output_file, index=False)
+            logging.info(f"📊 Detailed results saved to {output_file}")
         
-        total_tests = len(combinations)
-        logging.info(f"📊 Testing {total_tests} parameter combinations")
-        logging.info(f"🎯 Including native trailing stop testing (15-35%)")
-        
-        # Estimate time
-        time_per_test = 5  # seconds
-        total_time = (total_tests * time_per_test) / 60
-        logging.info(f"⏱️ Estimated time: ~{total_time:.0f} minutes\n")
-        
-        # Run tests
-        for i, params in enumerate(combinations, 1):
-            result = await self.run_single_test(i, params, total_tests)
-            
-            # Progress update every 10 tests
-            if i % 10 == 0:
-                logging.info(f"\n📊 PROGRESS: {i}/{total_tests} tests complete ({i/total_tests*100:.1f}%)")
-                if self.results:
-                    best_so_far = max(self.results, key=lambda x: x['total_pnl'])
-                    logging.info(f"   Best P&L so far: ${best_so_far['total_pnl']:,.2f}")
-                    logging.info(f"   Best config: BE={best_so_far['breakeven_trigger_percent']}%, Native={best_so_far['native_trail_percent']}%")
-        
-        # Generate report
-        self.generate_report()
-        
-        logging.info(f"\n✅ Optimization complete!")
-        logging.info(f"📂 Results saved in: {self.output_dir}")
-        
-        if self.results:
-            best_result = max(self.results, key=lambda x: x['total_pnl'])
-            logging.info(f"🏆 Best configuration:")
-            logging.info(f"   P&L: ${best_result['total_pnl']:,.2f}")
-            logging.info(f"   Win Rate: {best_result['win_rate']:.1f}%")
-            logging.info(f"   Native Trail: {best_result['native_trail_percent']}%")
-            logging.info(f"   Breakeven: {best_result['breakeven_trigger_percent']}%")
-
-
-async def main():
-    """Main entry point"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Parameter optimization for options backtesting (with native trailing stop)"
-    )
-    parser.add_argument(
-        '--quick', 
-        action='store_true', 
-        help='Use quick mode (fewer tests)'
-    )
-    parser.add_argument(
-        '--signals', 
-        type=str,
-        default='backtester/signals_to_test.txt',
-        help='Path to signals file'
-    )
-    parser.add_argument(
-        '--params',
-        type=str,
-        help='Path to custom parameter grid JSON file'
-    )
-    
-    args = parser.parse_args()
-    
-    # Create optimizer
-    optimizer = ParameterOptimizer(
-        signals_file=args.signals,
-        quick_mode=args.quick
-    )
-    
-    # Load custom params if provided
-    if args.params:
-        with open(args.params, 'r') as f:
-            optimizer.param_grid = json.load(f)
-        logging.info(f"Loaded custom parameter grid from {args.params}")
-    
-    # Run optimization
-    await optimizer.run_optimization()
+        logging.info("🔍 DEBUG: _log_results() completed")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("\n⚠️ Optimization interrupted by user")
-    except Exception as e:
-        logging.error(f"❌ Fatal error: {e}", exc_info=True)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    logging.info("🔍 DEBUG: Script started (COMPLETE VERSION)")
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    signal_file = os.path.join(script_dir, 'signals_to_test.txt')
+    data_folder = os.path.join(script_dir, 'historical_data')
+    
+    # Test with sample parameters
+    test_params = {
+        'breakeven_trigger_percent': 10,
+        'trail_method': 'pullback_percent',
+        'pullback_percent': 10,
+        'native_trail_percent': 25,  # 25% native trailing stop
+        'psar_enabled': True,
+        'rsi_hook_enabled': False
+    }
+    
+    logging.info(f"🔍 DEBUG: Creating BacktestEngine...")
+    engine = BacktestEngine(signal_file, data_folder)
+    
+    logging.info(f"🔍 DEBUG: Running simulation with parameters: {test_params}")
+    engine.run_simulation(test_params)
+    
+    logging.info("🔍 DEBUG: Script completed")
