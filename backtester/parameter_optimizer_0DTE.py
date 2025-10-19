@@ -55,43 +55,43 @@ class ParameterOptimizer0DTE:
         
         self.results = []
     
-def get_quick_grid(self):
-    """Quick test grid for 0DTE - Based on proven winners"""
-    return {
-        'breakeven_trigger_percent': [7, 10],  # 7% was best
-        'trail_method': ['pullback_percent'],
-        'pullback_percent': [10, 12],  # 10% was best
-        'atr_period': [14],
-        'atr_multiplier': [1.5],
-        'native_trail_percent': [20, 25],  # 20% was best
-        'psar_enabled': [False],
-        'psar_start': [0.02],
-        'psar_increment': [0.02],
-        'psar_max': [0.2],
-        'rsi_hook_enabled': [False],
-        'rsi_period': [14],
-        'rsi_overbought': [70],
-        'rsi_oversold': [30]
-    }
+    def get_quick_grid(self):
+        """Quick test grid for 0DTE - Based on proven winners"""
+        return {
+            'breakeven_trigger_percent': [7, 10],  # 7% was best
+            'trail_method': ['pullback_percent'],
+            'pullback_percent': [10, 12],  # 10% was best
+            'atr_period': [14],
+            'atr_multiplier': [1.5],
+            'native_trail_percent': [20, 25],  # 20% was best
+            'psar_enabled': [False],
+            'psar_start': [0.02],
+            'psar_increment': [0.02],
+            'psar_max': [0.2],
+            'rsi_hook_enabled': [False],
+            'rsi_period': [14],
+            'rsi_overbought': [70],
+            'rsi_oversold': [30]
+        }
 
-def get_full_grid(self):
-    """Full test grid for 0DTE - REVISED based on test results"""
-    return {
-        'breakeven_trigger_percent': [5, 7, 10, 12, 15],  # Focus on 7%+ which worked
-        'trail_method': ['pullback_percent'],
-        'pullback_percent': [8, 10, 12, 15, 20],  # 10% was best, test wider
-        'atr_period': [14],
-        'atr_multiplier': [1.5],
-        'native_trail_percent': [15, 20, 25, 30],  # 20% was optimal
-        'psar_enabled': [False],
-        'psar_start': [0.02],
-        'psar_increment': [0.02],
-        'psar_max': [0.2],
-        'rsi_hook_enabled': [False],
-        'rsi_period': [14],
-        'rsi_overbought': [70],
-        'rsi_oversold': [30]
-    }
+    def get_full_grid(self):
+        """Full test grid for 0DTE - REVISED based on test results"""
+        return {
+            'breakeven_trigger_percent': [5, 7, 10, 12, 15],  # Focus on 7%+ which worked
+            'trail_method': ['pullback_percent'],
+            'pullback_percent': [8, 10, 12, 15, 20],  # 10% was best, test wider
+            'atr_period': [14],
+            'atr_multiplier': [1.5],
+            'native_trail_percent': [15, 20, 25, 30],  # 20% was optimal
+            'psar_enabled': [False],
+            'psar_start': [0.02],
+            'psar_increment': [0.02],
+            'psar_max': [0.2],
+            'rsi_hook_enabled': [False],
+            'rsi_period': [14],
+            'rsi_overbought': [70],
+            'rsi_oversold': [30]
+        }
     
     async def run_optimization(self):
         """Run parameter optimization"""
@@ -195,28 +195,24 @@ def get_full_grid(self):
                 return None
                 
         except Exception as e:
-            logging.error(f"❌ Test {test_name} failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logging.error(f"  ❌ Error in {test_name}: {str(e)}")
             return None
     
     def generate_reports(self):
-        """Generate optimization summary reports"""
+        """Generate 0DTE-specific summary reports"""
         if not self.results:
-            logging.warning("No results to report")
+            logging.warning("No results to report!")
             return
         
-        # Save all results to CSV
+        # Create DataFrame
         df = pd.DataFrame(self.results)
-        csv_path = self.output_dir / "all_results.csv"
-        df.to_csv(csv_path, index=False)
-        logging.info(f"📊 Saved detailed results to {csv_path}")
+        
+        # Save all results
+        all_results_path = self.output_dir / "all_results.csv"
+        df.to_csv(all_results_path, index=False)
+        logging.info(f"📊 Saved all results to {all_results_path}")
         
         # Generate summary report
-        self.generate_summary_report(df)
-    
-    def generate_summary_report(self, df):
-        """Generate human-readable summary"""
         summary_path = self.output_dir / "optimization_summary.txt"
         
         with open(summary_path, 'w') as f:
@@ -226,39 +222,49 @@ def get_full_grid(self):
             f.write("Optimized for ultra-short-term 0DTE scalping (15-60 minute holds)\n")
             f.write("="*100 + "\n\n")
             
-            # Top 10 by P&L
+            # Top 10 configurations
             f.write("TOP 10 PARAMETER COMBINATIONS (by Total P&L):\n")
             f.write("-"*100 + "\n\n")
             
-            top_10_pnl = df.nlargest(10, 'total_pnl')
-            for idx, row in enumerate(top_10_pnl.itertuples(), 1):
-                f.write(f"#{idx}. {row.test_name}\n")
-                f.write(f"   Win Rate: {row.win_rate:.1f}% | P&L: ${row.total_pnl:.2f} | PF: {row.profit_factor:.2f}\n")
-                f.write(f"   Breakeven: {row.breakeven_trigger_percent}% | Pullback: {row.pullback_percent}% | Native: {row.native_trail_percent}%\n")
-                f.write(f"   Max DD: ${row.max_drawdown:.2f} | Avg Hold: {row.avg_minutes_held:.0f} min\n\n")
+            top_10 = df.nlargest(10, 'total_pnl')
+            for idx, row in enumerate(top_10.index):
+                r = top_10.loc[row]
+                f.write(f"#{idx+1}. {r['test_name']}\n")
+                f.write(f"   Win Rate: {r['win_rate']:.1f}% | ")
+                f.write(f"P&L: ${r['total_pnl']:.2f} | ")
+                f.write(f"PF: {r['profit_factor']:.2f}\n")
+                f.write(f"   Breakeven: {r['breakeven_trigger_percent']}% | ")
+                f.write(f"Pullback: {r['pullback_percent']}% | ")
+                f.write(f"Native: {r['native_trail_percent']}%\n")
+                f.write(f"   Max DD: ${r.get('max_drawdown', 0):.2f} | ")
+                f.write(f"Avg Hold: {r.get('avg_minutes_held', 0):.0f} min\n\n")
             
             # Parameter impact analysis
             f.write("\n" + "="*100 + "\n")
             f.write("PARAMETER IMPACT ANALYSIS:\n")
             f.write("-"*100 + "\n\n")
             
+            # Analyze each parameter
+            param_impact = {}
             for param in ['breakeven_trigger_percent', 'native_trail_percent', 'pullback_percent']:
                 if param in df.columns:
-                    f.write(f"{param}:\n")
                     grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
+                    if len(grouped) > 1:
+                        param_impact[param] = grouped.std().mean()
+                    else:
+                        param_impact[param] = 0
+                    
+                    f.write(f"{param}:\n")
                     for value, stats in grouped.iterrows():
-                        f.write(f"  {value}%: Avg P&L ${stats['mean']:.2f} (±${stats['std']:.2f}) | {stats['count']:.0f} tests\n")
+                        param_str = f"{int(value)}%" if isinstance(value, (int, float)) else str(value)
+                        f.write(f"  {param_str}: Avg P&L ${stats['mean']:.2f} (±${stats['std']:.2f}) | {int(stats['count'])} tests\n")
                     f.write("\n")
             
             # Most impactful parameters
             f.write("MOST IMPACTFUL PARAMETERS (by P&L variance):\n")
-            impact_scores = {}
-            for param in ['breakeven_trigger_percent', 'native_trail_percent', 'pullback_percent']:
-                if param in df.columns:
-                    impact_scores[param] = df.groupby(param)['total_pnl'].std().mean()
-            
-            for param, score in sorted(impact_scores.items(), key=lambda x: x[1], reverse=True):
-                f.write(f"  {param}: Impact score {score:.2f}\n")
+            sorted_impact = sorted(param_impact.items(), key=lambda x: x[1], reverse=True)
+            for param, impact in sorted_impact[:3]:
+                f.write(f"  {param}: Impact score {impact:.2f}\n")
             
             # Recommended configuration
             f.write("\n\n" + "="*100 + "\n")
@@ -269,11 +275,11 @@ def get_full_grid(self):
             
             f.write("{\n")
             f.write('    "exit_strategy": {\n')
-            f.write(f'        "breakeven_trigger_percent": {best["breakeven_trigger_percent"]/100:.3f},  # {best["breakeven_trigger_percent"]}%\n')
-            f.write(f'        "trail_method": "pullback_percent",  # Best for 0DTE\n')
-            f.write(f'        "native_trail_percent": {best["native_trail_percent"]/100:.2f},  # {best["native_trail_percent"]}% safety net\n')
+            f.write(f'        "breakeven_trigger_percent": {best["breakeven_trigger_percent"] / 100:.3f},  # {best["breakeven_trigger_percent"]}%\n')
+            f.write(f'        "trail_method": "{best["trail_method"]}",  # Best for 0DTE\n')
+            f.write(f'        "native_trail_percent": {best["native_trail_percent"] / 100:.2f},  # {best["native_trail_percent"]}% safety net\n')
             f.write('        "trail_settings": {\n')
-            f.write(f'            "pullback_percent": {best["pullback_percent"]/100:.3f}  # {best["pullback_percent"]}% pullback\n')
+            f.write(f'            "pullback_percent": {best["pullback_percent"] / 100:.3f}  # {best["pullback_percent"]}% pullback\n')
             f.write('        },\n')
             f.write('        "momentum_exits": {\n')
             f.write('            "psar_enabled": false,  # Not useful for 0DTE\n')
@@ -281,31 +287,6 @@ def get_full_grid(self):
             f.write('        }\n')
             f.write('    }\n')
             f.write('}\n')
-            
-            f.write("\n💡 KEY INSIGHTS FOR 0DTE TRADING:\n")
-            f.write("-"*100 + "\n")
-            f.write(f"• Average hold time: {df['avg_minutes_held'].mean():.0f} minutes\n")
-            f.write(f"• Best win rate: {df['win_rate'].max():.1f}%\n")
-            f.write(f"• Best profit factor: {df['profit_factor'].max():.2f}\n")
-            f.write(f"• Lowest drawdown: ${df['max_drawdown'].min():.2f}\n")
-            f.write("\n")
-            
-            # Alternative best configs
-            f.write("\n" + "="*100 + "\n")
-            f.write("ALTERNATIVE BEST CONFIGURATIONS:\n")
-            f.write("-"*100 + "\n\n")
-            
-            best_wr = df.loc[df['win_rate'].idxmax()]
-            f.write(f"Best Win Rate: {best_wr['test_name']} - {best_wr['win_rate']:.1f}% (P&L: ${best_wr['total_pnl']:.2f})\n")
-            f.write(f"  Config: BE={best_wr['breakeven_trigger_percent']}%, Pullback={best_wr['pullback_percent']}%, Native={best_wr['native_trail_percent']}%\n\n")
-            
-            best_pf = df.loc[df['profit_factor'].idxmax()]
-            f.write(f"Best Profit Factor: {best_pf['test_name']} - PF={best_pf['profit_factor']:.2f} (P&L: ${best_pf['total_pnl']:.2f})\n")
-            f.write(f"  Config: BE={best_pf['breakeven_trigger_percent']}%, Pullback={best_pf['pullback_percent']}%, Native={best_pf['native_trail_percent']}%\n\n")
-            
-            best_dd = df.loc[df['max_drawdown'].idxmin()]
-            f.write(f"Lowest Drawdown: {best_dd['test_name']} - DD=${best_dd['max_drawdown']:.2f} (P&L: ${best_dd['total_pnl']:.2f})\n")
-            f.write(f"  Config: BE={best_dd['breakeven_trigger_percent']}%, Pullback={best_dd['pullback_percent']}%, Native={best_dd['native_trail_percent']}%\n")
         
         logging.info(f"📋 Saved 0DTE summary report to {summary_path}")
 
