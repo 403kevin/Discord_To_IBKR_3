@@ -194,25 +194,26 @@ class DatabentoHarvester:
             # ============================================
             logging.info(f"   Fetching BID/ASK quotes...")
             
-            # Try MBP-1 first (Market By Price - includes bid/ask)
+            # Use CMBP-1 (Consolidated Market By Price) for OPRA options
+            # This includes bid/ask quotes with depth
             try:
                 quote_data = self.client.timeseries.get_range(
                     dataset='OPRA.pillar',
                     symbols=[occ_symbol],
                     start=start_date.strftime('%Y-%m-%d'),
                     end=end_date.strftime('%Y-%m-%d'),
-                    schema='mbp-1',  # Market By Price - includes bid/ask/trades
+                    schema='cmbp-1',  # Consolidated Market By Price for OPTIONS
                     stype_in='raw_symbol'
                 )
             except Exception as e:
-                # If MBP-1 fails, try TBBO (Top Book Bid/Offer)
-                logging.info(f"   MBP-1 failed, trying TBBO schema...")
+                # If CMBP-1 fails, try TCBBO (Top Consolidated Best Bid/Offer)
+                logging.info(f"   CMBP-1 failed, trying TCBBO schema...")
                 quote_data = self.client.timeseries.get_range(
                     dataset='OPRA.pillar',
                     symbols=[occ_symbol],
                     start=start_date.strftime('%Y-%m-%d'),
                     end=end_date.strftime('%Y-%m-%d'),
-                    schema='tbbo',  # Top Book Bid/Offer
+                    schema='tcbbo',  # Top Consolidated BBO for OPTIONS
                     stype_in='raw_symbol'
                 )
             
@@ -239,22 +240,30 @@ class DatabentoHarvester:
             if not quotes_df.empty:
                 quotes_df = quotes_df.reset_index()
                 
-                # Handle different schema column names
-                if 'bid_px_01' in quotes_df.columns:  # MBP-1 schema
+                # Handle different schema column names for OPTIONS data
+                if 'bid_px_01' in quotes_df.columns:  # CMBP-1 schema for options
                     quotes_df = quotes_df.rename(columns={
                         'ts_event': 'timestamp',
-                        'bid_px_01': 'bid',
-                        'ask_px_01': 'ask',
+                        'bid_px_01': 'bid',    # Best bid price
+                        'ask_px_01': 'ask',    # Best ask price
                         'bid_sz_01': 'bid_size',
                         'ask_sz_01': 'ask_size'
                     })
-                elif 'bid_px_00' in quotes_df.columns:  # TBBO schema
+                elif 'bid_px_00' in quotes_df.columns:  # TCBBO schema for options
                     quotes_df = quotes_df.rename(columns={
                         'ts_event': 'timestamp',
                         'bid_px_00': 'bid',
                         'ask_px_00': 'ask',
                         'bid_sz_00': 'bid_size',
                         'ask_sz_00': 'ask_size'
+                    })
+                elif 'bid_px' in quotes_df.columns:  # Simple BBO format
+                    quotes_df = quotes_df.rename(columns={
+                        'ts_event': 'timestamp',
+                        'bid_px': 'bid',
+                        'ask_px': 'ask',
+                        'bid_sz': 'bid_size',
+                        'ask_sz': 'ask_size'
                     })
                 else:
                     logging.warning("   ⚠️ Unknown quote schema columns")
