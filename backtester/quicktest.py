@@ -1,8 +1,14 @@
-import pandas as pd
-df = pd.read_csv('backtester/historical_data/SPX_20250929_6650_P_databento.csv')
-print("First 20 rows:")
-print(df.head(20))
-print("\nColumn names:")
-print(df.columns.tolist())
-print("\nData types:")
-print(df.dtypes)
+import os
+import glob
+
+# List all CSV files in historical_data
+files = glob.glob('backtester/historical_data/*.csv')
+print(f"Found {len(files)} CSV files:\n")
+for f in files:
+    print(os.path.basename(f))
+
+# If you want to see SPX files specifically:
+spx_files = [f for f in files if 'SPX' in f]
+print(f"\nSPX files ({len(spx_files)}):")
+for f in spx_files:
+    print(os.path.basename(f))
