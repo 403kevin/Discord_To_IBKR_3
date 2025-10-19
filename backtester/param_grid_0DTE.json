@@ -1,0 +1,20 @@
+{
+  "_comment": "Custom parameter grid for 0DTE OPTIONS (SPX/SPY/QQQ same-day expiry)",
+  "_comment2": "Use with: python backtester/parameter_optimizer_0DTE.py --params param_grid_0DTE.json",
+  "_comment3": "Parameters are MUCH TIGHTER than regular options (3-7% vs 10-15%)",
+  
+  "breakeven_trigger_percent": [3, 5, 7],
+  "trail_method": ["pullback_percent"],
+  "pullback_percent": [5, 7, 10],
+  "atr_period": [14],
+  "atr_multiplier": [1.5],
+  "native_trail_percent": [15, 20, 25],
+  "psar_enabled": [false],
+  "psar_start": [0.02],
+  "psar_increment": [0.02],
+  "psar_max": [0.2],
+  "rsi_hook_enabled": [false],
+  "rsi_period": [14],
+  "rsi_overbought": [70],
+  "rsi_oversold": [30]
+}
