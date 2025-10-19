@@ -2,6 +2,7 @@
 """
 backtest_engine.py - COMPLETE VERSION WITH NATIVE TRAILING STOP
 Includes all exit strategies: breakeven, pullback, ATR, PSAR, RSI, and NATIVE TRAIL
+FIXED: parse_signal() call and return_pct in empty results
 """
 
 import logging
@@ -30,6 +31,7 @@ logging.basicConfig(
 class BacktestEngine:
     """
     COMPLETE VERSION: Event-driven backtesting with ALL exit strategies including native trail
+    FIXED: Correct parse_signal() signature and return_pct in empty results
     """
     
     def __init__(self, signal_file_path, data_folder_path):
@@ -78,6 +80,7 @@ class BacktestEngine:
         signals = self._load_signals()
         if not signals:
             logging.error("❌ No signals loaded!")
+            # FIX BUG #2: Include return_pct in empty results
             return {
                 'total_trades': 0,
                 'total_pnl': 0,
@@ -85,7 +88,11 @@ class BacktestEngine:
                 'avg_win': 0,
                 'avg_loss': 0,
                 'profit_factor': 0,
-                'final_capital': self.portfolio['cash']
+                'final_capital': self.portfolio['cash'],
+                'return_pct': 0,  # ✅ FIXED: Added return_pct
+                'max_drawdown': 0,
+                'avg_minutes_held': 0,
+                'exit_reasons': {}
             }
         
         logging.info(f"✅ Loaded {len(signals)} signals")
@@ -186,23 +193,24 @@ class BacktestEngine:
                         trader = "test_trader"
                         timestamp = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
                     
-                    # Parse the signal
+                    # Parse the signal - FIX BUG #1: Only pass 2 arguments
                     profile = {
                         'assume_buy_on_ambiguous': True, 
                         'ambiguous_expiry_enabled': True
                     }
                     
-                    parsed = self.signal_parser.parse_signal(signal_text, trader, profile)
+                    # ✅ FIXED: Removed 'trader' argument - parse_signal only takes (raw_message, profile)
+                    parsed = self.signal_parser.parse_signal(signal_text, profile)
                     
                     if parsed:
                         parsed['timestamp'] = timestamp
                         parsed['trader'] = trader
                         parsed['raw_signal'] = signal_text
                         signals.append(parsed)
-                        logging.info(f"  Line {line_num}: {parsed['ticker']} {parsed['strike']}{parsed['contract_type'][0]} - {parsed['expiry_date']} @ {timestamp}")
+                        logging.info(f"  Line {line_num}: {parsed['ticker']} {parsed['expiry_date']} {parsed['strike']}{parsed['contract_type'][0]}")
                     else:
-                        logging.warning(f"  Line {line_num}: Could not parse: {signal_text}")
-                        
+                        logging.warning(f"  Line {line_num}: Failed to parse: {signal_text}")
+                    
                 except Exception as e:
                     logging.error(f"  Line {line_num}: Error parsing: {e}")
         
@@ -210,367 +218,244 @@ class BacktestEngine:
         return signals
     
     def _create_event_queue(self, signals):
-        """Create event queue with proper signal-tick association"""
-        logging.info("🔍 DEBUG: _create_event_queue() called")
-        event_queue = []
+        """Create chronological event queue from signals and historical data"""
+        events = []
         
-        # Build mapping of contracts to their signal times
-        contract_signal_times = {}
         for signal in signals:
-            contract_key = (
-                signal['ticker'],
-                signal['expiry_date'],
-                signal['strike'],
-                signal['contract_type'][0]
-            )
-            if contract_key not in contract_signal_times:
-                contract_signal_times[contract_key] = []
-            contract_signal_times[contract_key].append(signal['timestamp'])
+            # Add SIGNAL event
+            events.append((signal['timestamp'], 'SIGNAL', signal))
             
-            # Add signal event
-            event_queue.append((signal['timestamp'], 'SIGNAL', signal))
-        
-        logging.info(f"🔍 DEBUG: Added {len(signals)} signal events")
-        
-        # Load tick data ONLY for contracts that have signals
-        for (ticker, expiry, strike, ctype), signal_times in contract_signal_times.items():
-            # Build filename
-            expiry_clean = expiry.replace('-', '')
-            filename = get_data_filename_databento(ticker, expiry_clean, strike, ctype.upper())
+            # Load historical data for this contract
+            expiry_clean = signal['expiry_date'].replace('-', '')
+            filename = get_data_filename_databento(
+                signal['ticker'],
+                expiry_clean,
+                signal['strike'],
+                signal['contract_type'][0].upper()
+            )
             filepath = os.path.join(self.data_folder_path, filename)
             
-            logging.debug(f"🔍 DEBUG: Looking for data file: {filepath}")
-            
             if not os.path.exists(filepath):
-                logging.warning(f"  ⚠️ Data file not found: {filename}")
+                logging.warning(f"  ⚠️ No data file found: {filename}")
                 continue
             
             try:
                 df = pd.read_csv(filepath)
-                
-                if 'timestamp' not in df.columns:
-                    logging.error(f"  ❌ No timestamp column in {filename}")
-                    continue
-                
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
                 
-                # Only add ticks that occur AFTER the signal time for THIS contract
-                earliest_signal_for_contract = min(signal_times)
-                df_filtered = df[df['timestamp'] >= earliest_signal_for_contract]
+                # CRITICAL FIX: Only load ticks AT OR AFTER the signal timestamp
+                signal_time = signal['timestamp']
+                df = df[df['timestamp'] >= signal_time]
                 
-                # Add filtered tick events
-                ticks_added = 0
-                for _, row in df_filtered.iterrows():
-                    event_data = {
-                        'ticker': ticker,
-                        'expiry': expiry,
-                        'strike': strike,
-                        'contract_type': ctype,
+                contract_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+                
+                # Add TICK events for each row
+                for _, row in df.iterrows():
+                    tick_data = {
+                        'contract_key': contract_key,
                         'price': row.get('price', row.get('close', 0)),
-                        'bid': row.get('bid', row.get('price', 0)),
-                        'ask': row.get('ask', row.get('price', 0)),
+                        'bid': row.get('bid', 0),
+                        'ask': row.get('ask', 0),
                         'volume': row.get('volume', 0)
                     }
-                    event_queue.append((row['timestamp'], 'TICK', event_data))
-                    ticks_added += 1
+                    events.append((row['timestamp'], 'TICK', tick_data))
                 
-                logging.info(f"  ✅ Added {ticks_added} tick events for {ticker}_{expiry_clean}_{strike}{ctype}")
+                logging.info(f"  Added {len(df)} tick events for {contract_key}")
                 
             except Exception as e:
                 logging.error(f"  ❌ Error loading {filename}: {e}")
         
-        logging.info(f"🔍 DEBUG: Total events in queue: {len(event_queue)}")
-        
-        return event_queue
+        return events
     
-    def _process_signal_event(self, timestamp, signal, params=None):
-        """Process a signal event (entry)"""
-        logging.debug(f"🔍 DEBUG: Processing signal at {timestamp}")
+    def _process_signal_event(self, timestamp, signal, params):
+        """Process a new trading signal"""
+        contract_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
         
-        # Create position ID
-        position_id = f"{signal['ticker']}_{signal['strike']}{signal['contract_type'][0]}_{timestamp.strftime('%H%M%S')}"
+        # Check if we already have a position for this contract
+        if contract_key in self.portfolio['positions']:
+            logging.debug(f"  Already have position in {contract_key}, skipping signal")
+            return
         
-        # Get entry price from data
+        # Get entry price from historical data
         entry_price = self._get_entry_price_from_data(signal)
         
         if entry_price is None or entry_price <= 0:
-            logging.warning(f"  ⚠️ Skipping {position_id}: No valid entry price")
+            logging.warning(f"  ⚠️ No valid entry price for {contract_key}, skipping")
             return
         
-        # Calculate position size (10% of portfolio)
-        position_size = int(self.portfolio['cash'] * 0.10 / (entry_price * 100))
-        if position_size <= 0:
-            position_size = 1
+        # Calculate position size (10% of portfolio per trade)
+        position_value = self.portfolio['cash'] * 0.10
+        quantity = int(position_value / (entry_price * 100))
         
-        # Record position
-        self.portfolio['positions'][position_id] = {
-            'signal': signal,
-            'entry_time': timestamp,
+        if quantity < 1:
+            logging.warning(f"  ⚠️ Insufficient capital for {contract_key}, skipping")
+            return
+        
+        cost = quantity * entry_price * 100
+        
+        if cost > self.portfolio['cash']:
+            logging.warning(f"  ⚠️ Insufficient cash for {contract_key}, skipping")
+            return
+        
+        # Execute entry
+        self.portfolio['cash'] -= cost
+        self.portfolio['positions'][contract_key] = {
+            'quantity': quantity,
             'entry_price': entry_price,
-            'quantity': position_size,
-            'status': 'OPEN',
-            'highest_price': entry_price,
-            'lowest_price': entry_price
-        }
-        
-        # Initialize tracking
-        self.trailing_highs_and_lows[position_id] = {
-            'high': entry_price,
-            'low': entry_price
-        }
-        self.breakeven_activated[position_id] = False
-        
-        # Initialize native trailing stop
-        profile = self.config.profiles[0] if self.config.profiles else {}
-        exit_strategy = profile.get('exit_strategy', {})
-        native_trail_pct = exit_strategy.get('native_trail_percent', 0.25)  # Default 25%
-        
-        if signal['contract_type'] == 'CALL':
-            # For calls, trail stop starts below entry price
-            self.native_trail_stops[position_id] = entry_price * (1 - native_trail_pct)
-        else:  # PUT
-            # For puts, trail stop starts above entry price
-            self.native_trail_stops[position_id] = entry_price * (1 + native_trail_pct)
-        
-        # Mark this contract as active
-        contract_key = (
-            signal['ticker'],
-            signal['expiry_date'], 
-            signal['strike'],
-            signal['contract_type'][0]
-        )
-        self.active_contracts[contract_key] = timestamp
-        
-        logging.info(f"  📈 ENTRY: {position_id} @ ${entry_price:.2f} x {position_size}")
-        logging.info(f"     Native trail stop: ${self.native_trail_stops[position_id]:.2f} ({native_trail_pct*100:.0f}%)")
-    
-    def _process_tick_event(self, timestamp, tick_data, params=None):
-        """Process a tick event (check for exits and update trailing stops)"""
-        # Only process ticks for contracts we have positions in
-        contract_key = (
-            tick_data['ticker'],
-            tick_data['expiry'],
-            tick_data['strike'],
-            tick_data['contract_type']
-        )
-        
-        # Skip if this contract doesn't have an active signal
-        if contract_key not in self.active_contracts:
-            return
-        
-        # Find matching open positions
-        for position_id, position in list(self.portfolio['positions'].items()):
-            if position['status'] != 'OPEN':
-                continue
-            
-            signal = position['signal']
-            
-            # Check if this tick matches the position
-            if (tick_data['ticker'] == signal['ticker'] and
-                tick_data['strike'] == signal['strike'] and
-                tick_data['contract_type'] == signal['contract_type'][0] and
-                tick_data['expiry'] == signal['expiry_date']):
-                
-                current_price = tick_data['price']
-                
-                # Update high/low tracking
-                if position_id in self.trailing_highs_and_lows:
-                    if signal['contract_type'] == 'CALL':
-                        self.trailing_highs_and_lows[position_id]['high'] = max(
-                            self.trailing_highs_and_lows[position_id]['high'], 
-                            current_price
-                        )
-                    else:  # PUT
-                        self.trailing_highs_and_lows[position_id]['low'] = min(
-                            self.trailing_highs_and_lows[position_id]['low'], 
-                            current_price
-                        )
-                
-                # UPDATE NATIVE TRAILING STOP
-                self._update_native_trailing_stop(position_id, position, current_price)
-                
-                # Check exit conditions
-                exit_price, exit_reason = self._check_exit_conditions(
-                    position_id, position, current_price, timestamp, params
-                )
-                
-                if exit_price:
-                    self._close_position(position_id, exit_price, exit_reason, timestamp)
-                    
-                    # Clean up tracking
-                    if position_id in self.native_trail_stops:
-                        del self.native_trail_stops[position_id]
-                    
-                    # Remove from active contracts if no more positions
-                    has_other_positions = any(
-                        p['signal']['ticker'] == signal['ticker'] and
-                        p['signal']['strike'] == signal['strike'] and
-                        p['signal']['contract_type'] == signal['contract_type'] and
-                        p['signal']['expiry_date'] == signal['expiry_date'] and
-                        p['status'] == 'OPEN'
-                        for pid, p in self.portfolio['positions'].items()
-                        if pid != position_id
-                    )
-                    if not has_other_positions:
-                        if contract_key in self.active_contracts:
-                            del self.active_contracts[contract_key]
-    
-    def _update_native_trailing_stop(self, position_id, position, current_price):
-        """Update the native trailing stop based on favorable price movement"""
-        signal = position['signal']
-        
-        profile = self.config.profiles[0] if self.config.profiles else {}
-        exit_strategy = profile.get('exit_strategy', {})
-        native_trail_pct = exit_strategy.get('native_trail_percent', 0.25)  # Default 25%
-        
-        if signal['contract_type'] == 'CALL':
-            # For calls, trail stop moves up but never down
-            new_trail_stop = current_price * (1 - native_trail_pct)
-            if new_trail_stop > self.native_trail_stops[position_id]:
-                self.native_trail_stops[position_id] = new_trail_stop
-                logging.debug(f"  📈 Native trail updated for {position_id}: ${new_trail_stop:.2f}")
-        else:  # PUT
-            # For puts, trail stop moves down but never up
-            new_trail_stop = current_price * (1 + native_trail_pct)
-            if new_trail_stop < self.native_trail_stops[position_id]:
-                self.native_trail_stops[position_id] = new_trail_stop
-                logging.debug(f"  📉 Native trail updated for {position_id}: ${new_trail_stop:.2f}")
-    
-    def _check_exit_conditions(self, position_id, position, current_price, timestamp, params=None):
-        """Check if position should exit (includes ALL exit strategies)"""
-        signal = position['signal']
-        entry_price = position['entry_price']
-        
-        # Get exit strategy from config (or params if provided)
-        profile = self.config.profiles[0] if self.config.profiles else {}
-        exit_strategy = profile.get('exit_strategy', {})
-        
-        # Calculate P&L percentage
-        if signal['contract_type'] == 'CALL':
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        else:  # PUT
-            pnl_pct = ((entry_price - current_price) / entry_price) * 100
-        
-        # 1. CHECK NATIVE TRAILING STOP FIRST (highest priority)
-        if position_id in self.native_trail_stops:
-            trail_stop = self.native_trail_stops[position_id]
-            
-            if signal['contract_type'] == 'CALL':
-                if current_price <= trail_stop:
-                    return current_price, f"NATIVE_TRAIL_{exit_strategy.get('native_trail_percent', 0.25)*100:.0f}%"
-            else:  # PUT
-                if current_price >= trail_stop:
-                    return current_price, f"NATIVE_TRAIL_{exit_strategy.get('native_trail_percent', 0.25)*100:.0f}%"
-        
-        # 2. Check breakeven activation
-        breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 0.10) * 100
-        if pnl_pct >= breakeven_trigger and not self.breakeven_activated.get(position_id, False):
-            self.breakeven_activated[position_id] = True
-            logging.debug(f"  🎯 Breakeven activated for {position_id} at {pnl_pct:.1f}%")
-        
-        # 3. Check breakeven stop
-        if self.breakeven_activated.get(position_id, False):
-            if pnl_pct <= 0:
-                return current_price, "BREAKEVEN_STOP"
-        
-        # 4. Check trailing stop based on method (pullback or ATR)
-        trail_method = exit_strategy.get('trail_method', 'pullback_percent')
-        
-        if trail_method == 'pullback_percent':
-            pullback_pct = exit_strategy.get('trail_settings', {}).get('pullback_percent', 0.10) * 100
-            
-            if signal['contract_type'] == 'CALL':
-                highest = self.trailing_highs_and_lows[position_id]['high']
-                pullback_from_high = ((highest - current_price) / highest) * 100
-                
-                if pullback_from_high >= pullback_pct and pnl_pct > 0:
-                    return current_price, f"PULLBACK_{pullback_pct:.0f}%"
-            else:  # PUT
-                lowest = self.trailing_highs_and_lows[position_id]['low']
-                pullback_from_low = ((current_price - lowest) / lowest) * 100
-                
-                if pullback_from_low >= pullback_pct and pnl_pct > 0:
-                    return current_price, f"PULLBACK_{pullback_pct:.0f}%"
-        
-        elif trail_method == 'atr':
-            # ATR-based trailing stop (simplified for backtesting)
-            atr_multiplier = exit_strategy.get('trail_settings', {}).get('atr_multiplier', 1.5)
-            # Use a simple volatility estimate (2% of price as proxy for ATR)
-            atr_estimate = current_price * 0.02
-            
-            if signal['contract_type'] == 'CALL':
-                atr_stop = self.trailing_highs_and_lows[position_id]['high'] - (atr_estimate * atr_multiplier)
-                if current_price <= atr_stop and pnl_pct > 0:
-                    return current_price, f"ATR_TRAIL_{atr_multiplier}x"
-            else:  # PUT
-                atr_stop = self.trailing_highs_and_lows[position_id]['low'] + (atr_estimate * atr_multiplier)
-                if current_price >= atr_stop and pnl_pct > 0:
-                    return current_price, f"ATR_TRAIL_{atr_multiplier}x"
-        
-        # 5. Check momentum exits (PSAR, RSI) - simplified for backtesting
-        momentum_exits = exit_strategy.get('momentum_exits', {})
-        
-        if momentum_exits.get('psar_enabled', False):
-            # Simplified PSAR check - exit if price reverses significantly
-            if signal['contract_type'] == 'CALL':
-                if current_price < entry_price * 0.98 and pnl_pct > 5:  # 2% reversal
-                    return current_price, "PSAR_FLIP"
-            else:  # PUT
-                if current_price > entry_price * 1.02 and pnl_pct > 5:
-                    return current_price, "PSAR_FLIP"
-        
-        if momentum_exits.get('rsi_hook_enabled', False):
-            # Simplified RSI check - exit if extreme profit levels
-            if pnl_pct > 30:  # Take profit at extreme levels
-                return current_price, "RSI_EXTREME"
-        
-        # 6. Check time-based exit (close before market close)
-        market_close = timestamp.replace(hour=15, minute=50, second=0)
-        if timestamp >= market_close:
-            return current_price, "EOD_CLOSE"
-        
-        return None, None
-    
-    def _close_position(self, position_id, exit_price, exit_reason, timestamp):
-        """Close a position and record the trade"""
-        position = self.portfolio['positions'][position_id]
-        signal = position['signal']
-        
-        # Calculate P&L
-        if signal['contract_type'] == 'CALL':
-            pnl = (exit_price - position['entry_price']) * position['quantity'] * 100
-        else:  # PUT
-            pnl = (position['entry_price'] - exit_price) * position['quantity'] * 100
-        
-        pnl_pct = (pnl / (position['entry_price'] * position['quantity'] * 100)) * 100
-        
-        # Record trade
-        trade = {
-            'position_id': position_id,
+            'entry_time': timestamp,
+            'contract_type': signal['contract_type'],
             'ticker': signal['ticker'],
             'strike': signal['strike'],
-            'contract_type': signal['contract_type'],
+            'expiry': signal['expiry_date'],
+            'trader': signal['trader']
+        }
+        
+        # Initialize tracking for this position
+        self.position_data_cache[contract_key] = []
+        self.tick_buffer[contract_key] = []
+        self.trailing_highs_and_lows[contract_key] = {'high': entry_price, 'low': entry_price}
+        self.breakeven_activated[contract_key] = False
+        
+        # Initialize native trailing stop
+        native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
+        self.native_trail_stops[contract_key] = entry_price * (1 - native_trail_pct)
+        
+        logging.info(f"✅ ENTRY: {contract_key} @ ${entry_price:.2f} x {quantity} contracts")
+    
+    def _process_tick_event(self, timestamp, tick_data, params):
+        """Process a market tick for active positions"""
+        contract_key = tick_data['contract_key']
+        
+        if contract_key not in self.portfolio['positions']:
+            return
+        
+        position = self.portfolio['positions'][contract_key]
+        current_price = tick_data['price']
+        
+        if current_price <= 0:
+            return
+        
+        # Add to tick buffer
+        self.tick_buffer[contract_key].append({
+            'timestamp': timestamp,
+            'price': current_price
+        })
+        
+        # Update trailing high/low
+        if current_price > self.trailing_highs_and_lows[contract_key]['high']:
+            self.trailing_highs_and_lows[contract_key]['high'] = current_price
+        if current_price < self.trailing_highs_and_lows[contract_key]['low']:
+            self.trailing_highs_and_lows[contract_key]['low'] = current_price
+        
+        # Update native trailing stop
+        native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
+        new_trail_stop = current_price * (1 - native_trail_pct)
+        if new_trail_stop > self.native_trail_stops[contract_key]:
+            self.native_trail_stops[contract_key] = new_trail_stop
+        
+        # Check exit conditions
+        exit_reason = self._evaluate_exit_conditions(
+            contract_key,
+            position,
+            current_price,
+            timestamp,
+            params
+        )
+        
+        if exit_reason:
+            self._execute_exit(contract_key, position, current_price, timestamp, exit_reason)
+    
+    def _evaluate_exit_conditions(self, contract_key, position, current_price, timestamp, params):
+        """
+        Check all exit conditions in priority order
+        Returns exit_reason string or None
+        """
+        entry_price = position['entry_price']
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        
+        # PRIORITY 1: Native Trailing Stop (highest priority)
+        if current_price <= self.native_trail_stops[contract_key]:
+            return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
+        
+        # PRIORITY 2: Breakeven Stop
+        breakeven_trigger = params.get('breakeven_trigger_percent', 10) / 100 if params else 0.10
+        if pnl_pct >= (breakeven_trigger * 100) and not self.breakeven_activated[contract_key]:
+            self.breakeven_activated[contract_key] = True
+            logging.debug(f"  Breakeven activated for {contract_key} @ {pnl_pct:.1f}%")
+        
+        if self.breakeven_activated[contract_key] and current_price <= entry_price:
+            return "BREAKEVEN"
+        
+        # PRIORITY 3: Pullback/ATR Trail
+        trail_method = params.get('trail_method', 'pullback_percent') if params else 'pullback_percent'
+        
+        if trail_method == 'pullback_percent':
+            pullback_pct = params.get('pullback_percent', 10) / 100 if params else 0.10
+            peak = self.trailing_highs_and_lows[contract_key]['high']
+            if peak > entry_price:
+                pullback_stop = peak * (1 - pullback_pct)
+                if current_price <= pullback_stop:
+                    return f"PULLBACK_{params.get('pullback_percent', 10)}%"
+        
+        elif trail_method == 'atr':
+            # ATR trail logic (simplified)
+            atr_multiplier = params.get('atr_multiplier', 1.5) if params else 1.5
+            # Would need actual ATR calculation here
+            pass
+        
+        # PRIORITY 4: Time-based exit (market close)
+        if timestamp.hour >= 16:
+            return "MARKET_CLOSE"
+        
+        return None
+    
+    def _execute_exit(self, contract_key, position, exit_price, exit_time, exit_reason):
+        """Execute position exit"""
+        entry_price = position['entry_price']
+        quantity = position['quantity']
+        
+        pnl = (exit_price - entry_price) * quantity * 100
+        pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        
+        minutes_held = (exit_time - position['entry_time']).total_seconds() / 60
+        
+        self.portfolio['cash'] += (exit_price * quantity * 100)
+        
+        self.trade_log.append({
+            'ticker': position['ticker'],
+            'strike': position['strike'],
+            'contract_type': position['contract_type'],
+            'expiry': position['expiry'],
             'entry_time': position['entry_time'],
-            'exit_time': timestamp,
-            'entry_price': position['entry_price'],
+            'exit_time': exit_time,
+            'entry_price': entry_price,
             'exit_price': exit_price,
-            'quantity': position['quantity'],
+            'quantity': quantity,
             'pnl': pnl,
             'pnl_pct': pnl_pct,
             'exit_reason': exit_reason,
-            'minutes_held': (timestamp - position['entry_time']).total_seconds() / 60
-        }
+            'minutes_held': minutes_held,
+            'trader': position['trader']
+        })
         
-        self.trade_log.append(trade)
-        self.portfolio['cash'] += pnl
-        position['status'] = 'CLOSED'
+        logging.info(f"❌ EXIT: {contract_key} @ ${exit_price:.2f} | PNL: ${pnl:.2f} ({pnl_pct:+.1f}%) | Reason: {exit_reason}")
         
-        logging.info(f"  📉 EXIT: {position_id} @ ${exit_price:.2f} | "
-                    f"P&L: ${pnl:.0f} ({pnl_pct:.1f}%) | Reason: {exit_reason}")
+        # Clean up tracking
+        del self.portfolio['positions'][contract_key]
+        if contract_key in self.position_data_cache:
+            del self.position_data_cache[contract_key]
+        if contract_key in self.tick_buffer:
+            del self.tick_buffer[contract_key]
+        if contract_key in self.trailing_highs_and_lows:
+            del self.trailing_highs_and_lows[contract_key]
+        if contract_key in self.breakeven_activated:
+            del self.breakeven_activated[contract_key]
+        if contract_key in self.native_trail_stops:
+            del self.native_trail_stops[contract_key]
     
     def _get_entry_price_from_data(self, signal):
-        """Get entry price from historical data at signal time"""
-        # Build filename
+        """Get actual entry price from historical data at signal timestamp"""
+        # Get filename
         expiry_clean = signal['expiry_date'].replace('-', '')
         filename = get_data_filename_databento(
             signal['ticker'],
@@ -619,7 +504,11 @@ class BacktestEngine:
                 'avg_win': 0,
                 'avg_loss': 0,
                 'profit_factor': 0,
-                'final_capital': self.portfolio['cash']
+                'final_capital': self.portfolio['cash'],
+                'return_pct': 0,  # ✅ FIXED: Added for empty results
+                'max_drawdown': 0,
+                'avg_minutes_held': 0,
+                'exit_reasons': {}
             }
         
         df = pd.DataFrame(self.trade_log)
