@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - FIXED VERSION WITH DEBUG LOGGING
-This version includes fixes for the event queue issue and comprehensive debugging
+backtest_engine.py - OPTIMIZED VERSION
+Only processes ticks AFTER the signal timestamp to dramatically reduce processing time
 """
 
 import logging
@@ -37,75 +37,48 @@ class BacktestEngine:
         self.atr_stop_prices = {}
         self.breakeven_activated = {}
         
-        logging.info("🔍 DEBUG: Backtest Engine initialized.")
-        logging.info(f"🔍 DEBUG: Signal file: {signal_file_path}")
-        logging.info(f"🔍 DEBUG: Data folder: {data_folder_path}")
+        logging.info("Backtest Engine initialized (OPTIMIZED VERSION).")
 
     def run_simulation(self):
-        """FIXED VERSION with proper event queue handling and debug logging"""
+        """Run the backtest simulation"""
         logging.info("--- 🚀 Starting Backtest Simulation 🚀 ---")
-        logging.info("🔍 DEBUG: run_simulation() called")
         
-        # Load signals
-        logging.info("🔍 DEBUG: About to load signals...")
         signals = self._load_signals()
-        
         if not signals:
-            logging.error("❌ No signals loaded - check signals_to_test.txt")
+            logging.error("No signals loaded - check signals_to_test.txt")
             return
-        
-        logging.info(f"🔍 DEBUG: Loaded {len(signals)} signals successfully")
-        
-        # Create event queue
-        logging.info("🔍 DEBUG: About to create event queue...")
+
         event_queue = self._create_event_queue(signals)
-        
-        # FIXED: Proper event queue validation
-        if event_queue is None:
-            logging.error("❌ Failed to create event queue (returned None)")
+        if not event_queue:
+            logging.warning("Event queue is empty - no events to process")
             return
         
-        if len(event_queue) == 0:
-            logging.warning("⚠️ Event queue is empty - no events to process")
-            logging.warning("🔍 DEBUG: This usually means no historical data files were found")
-            return
-        
-        logging.info(f"🔍 DEBUG: Event queue created with {len(event_queue)} events")
+        logging.info(f"Processing {len(event_queue)} events...")
         
         # Process events
-        logging.info("🔍 DEBUG: Starting event processing loop...")
         events_processed = 0
-        
         for timestamp, event_type, data in sorted(event_queue, key=lambda x: x[0]):
             events_processed += 1
             
-            if events_processed % 1000 == 0:
-                logging.info(f"🔍 DEBUG: Processed {events_processed}/{len(event_queue)} events...")
+            # Progress indicator every 10,000 events
+            if events_processed % 10000 == 0:
+                logging.info(f"Progress: {events_processed}/{len(event_queue)} events processed...")
             
             if event_type == 'SIGNAL':
-                logging.debug(f"🔍 DEBUG: Processing SIGNAL event at {timestamp}")
                 self._process_signal_event(timestamp, data)
             elif event_type == 'TICK':
-                # Don't log every tick (too verbose), but count them
                 self._process_tick_event(timestamp, data)
         
-        logging.info(f"🔍 DEBUG: Finished processing all {events_processed} events")
-        
-        # Log results
         self._log_results()
         logging.info("--- 🏁 Backtest Simulation Complete 🏁 ---")
 
     def _load_signals(self):
-        """Load signals with debug logging"""
+        """Load signals from file"""
         signals = []
         
-        logging.info(f"🔍 DEBUG: Looking for signals file at: {self.signal_file_path}")
-        
         if not os.path.exists(self.signal_file_path):
-            logging.error(f"❌ FATAL: signals_to_test.txt not found at '{self.signal_file_path}'")
+            logging.error(f"FATAL: signals_to_test.txt not found at '{self.signal_file_path}'")
             return []
-        
-        logging.info("🔍 DEBUG: Signal file exists, opening...")
         
         default_profile = self.config.profiles[0] if self.config.profiles else {
             'assume_buy_on_ambiguous': True,
@@ -113,16 +86,10 @@ class BacktestEngine:
         }
         
         with open(self.signal_file_path, 'r') as f:
-            lines = f.readlines()
-            logging.info(f"🔍 DEBUG: Read {len(lines)} lines from signal file")
-            
-            for line_num, line in enumerate(lines, 1):
+            for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                
                 if not line or line.startswith('#'):
                     continue
-                
-                logging.debug(f"🔍 DEBUG: Processing line {line_num}: {line}")
                 
                 if '|' in line:
                     parts = line.split('|')
@@ -138,47 +105,32 @@ class BacktestEngine:
                             )
                             parsed_signal['channel'] = channel
                             signals.append(parsed_signal)
-                            logging.info(f"✅ Loaded timestamped signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]} at {timestamp_str}")
-                        else:
-                            logging.warning(f"⚠️ Could not parse signal on line {line_num}: {signal_text}")
+                            logging.info(f"Loaded timestamped signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]} at {timestamp_str}")
                     else:
-                        logging.warning(f"⚠️ Malformed timestamped line #{line_num}: '{line}'")
+                        logging.warning(f"Malformed timestamped line #{line_num}: '{line}'")
                 else:
-                    # Simple format
                     parsed_signal = self.signal_parser.parse_signal(line, default_profile)
                     if parsed_signal:
                         parsed_signal['signal_timestamp'] = datetime.now().replace(hour=9, minute=30, second=0)
                         parsed_signal['channel'] = 'default'
                         signals.append(parsed_signal)
-                        logging.info(f"✅ Loaded simple signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}")
-                    else:
-                        logging.warning(f"⚠️ Could not parse signal on line {line_num}: {line}")
+                        logging.info(f"Loaded simple signal: {parsed_signal['ticker']} {parsed_signal['strike']}{parsed_signal['contract_type'][0]}")
         
-        logging.info(f"🔍 DEBUG: Successfully loaded {len(signals)} signals for backtesting")
+        logging.info(f"Successfully loaded {len(signals)} signals for backtesting")
         return signals
 
     def _create_event_queue(self, signals):
-        """Create event queue with debug logging"""
+        """Create event queue - OPTIMIZED to only use post-signal data"""
         event_queue = []
+        total_ticks_loaded = 0
         
-        logging.info(f"🔍 DEBUG: Creating event queue for {len(signals)} signals")
-        
-        for signal_num, signal in enumerate(signals, 1):
-            logging.info(f"🔍 DEBUG: Processing signal {signal_num}/{len(signals)}: {signal['ticker']} {signal['strike']}{signal['contract_type'][0]}")
-            
+        for signal in signals:
             # Add signal event
-            event_queue.append((signal['signal_timestamp'], 'SIGNAL', signal))
+            signal_timestamp = signal['signal_timestamp']
+            event_queue.append((signal_timestamp, 'SIGNAL', signal))
             
-            # Create contract for data lookup
-            contract = Contract(
-                symbol=signal['ticker'],
-                lastTradeDateOrContractMonth=signal['expiry_date'],
-                strike=signal['strike'],
-                right=signal['contract_type'][0].upper()
-            )
-            
-            # Use Databento filename format
-            expiry_date = signal['expiry_date'].replace('-', '')  # Convert YYYY-MM-DD to YYYYMMDD
+            # Get data file
+            expiry_date = signal['expiry_date'].replace('-', '')
             data_filename = get_data_filename_databento(
                 signal['ticker'],
                 expiry_date,
@@ -187,22 +139,37 @@ class BacktestEngine:
             )
             data_file = os.path.join(self.data_folder_path, data_filename)
             
-            logging.info(f"🔍 DEBUG: Looking for data file: {data_file}")
-            
             if not os.path.exists(data_file):
-                logging.warning(f"⚠️ No data file found for {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} at {data_file}")
+                logging.warning(f"No data file found for {signal['ticker']} {signal['strike']}{signal['contract_type'][0]}")
                 continue
             
             try:
+                # Read CSV
                 df = pd.read_csv(data_file)
-                logging.info(f"🔍 DEBUG: Loaded {len(df)} rows from {data_filename}")
-                
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
                 
+                # OPTIMIZATION: Only use data AFTER signal timestamp
+                # Add a 1-second buffer to ensure we get the entry price
+                signal_time_buffer = signal_timestamp - timedelta(seconds=1)
+                df_filtered = df[df['timestamp'] >= signal_time_buffer]
+                
+                if df_filtered.empty:
+                    logging.warning(f"No data after signal time for {signal['ticker']}")
+                    continue
+                
+                # Further optimization: Sample data if too many ticks
+                # For 0DTE, we don't need every single tick - sample every 5 seconds worth
+                if len(df_filtered) > 5000:  # If more than 5000 ticks
+                    # Keep every 5th row to reduce data volume
+                    df_filtered = df_filtered.iloc[::5]
+                    logging.info(f"Sampled data for {signal['ticker']}: {len(df_filtered)} ticks (from {len(df)})")
+                else:
+                    logging.info(f"Using {len(df_filtered)} ticks for {signal['ticker']} (filtered from {len(df)} total)")
+                
                 # Add tick events
-                tick_count = 0
-                for _, row in df.iterrows():
-                    position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+                position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
+                
+                for _, row in df_filtered.iterrows():
                     tick_data = {
                         'position_key': position_key,
                         'signal': signal,
@@ -212,35 +179,32 @@ class BacktestEngine:
                         'low': row.get('low', row['close'])
                     }
                     event_queue.append((row['timestamp'], 'TICK', tick_data))
-                    tick_count += 1
                 
-                logging.info(f"✅ Added {tick_count} tick events for {position_key}")
+                total_ticks_loaded += len(df_filtered)
                 
             except Exception as e:
-                logging.error(f"❌ Error loading data for {signal}: {e}")
+                logging.error(f"Error loading data for {signal}: {e}")
         
-        logging.info(f"🔍 DEBUG: Created event queue with {len(event_queue)} total events")
+        logging.info(f"Created event queue with {len(event_queue)} total events ({total_ticks_loaded} ticks)")
         return event_queue
 
     def _process_signal_event(self, timestamp, signal):
-        """Process signal event with debug logging"""
+        """Process signal event - open position"""
         position_key = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}{signal['contract_type'][0]}"
-        
-        logging.debug(f"🔍 DEBUG: Processing signal event for {position_key} at {timestamp}")
         
         # Get actual entry price from historical data
         entry_price = self._get_entry_price_from_data(signal, timestamp)
         
         if entry_price is None:
-            logging.warning(f"⚠️ Could not find entry price for {position_key} at {timestamp}, skipping")
+            logging.warning(f"Could not find entry price for {position_key} at {timestamp}, skipping")
             return
         
-        # Use realistic position sizing (10% of portfolio per trade)
+        # Realistic position sizing (10% of portfolio per trade)
         position_size = self.portfolio['cash'] * 0.10
-        quantity = int(position_size / (entry_price * 100))  # Divide by 100 for contract multiplier
+        quantity = int(position_size / (entry_price * 100))
         
         if quantity == 0:
-            logging.warning(f"⚠️ Position size too small for {position_key}, skipping")
+            logging.warning(f"Position size too small for {position_key}, skipping")
             return
         
         self.portfolio['positions'][position_key] = {
@@ -256,12 +220,11 @@ class BacktestEngine:
         
         self.portfolio['cash'] -= (entry_price * quantity * 100)
         
-        logging.info(f"📈 [{timestamp}] OPENED {position_key} | Qty: {quantity} | Entry: ${entry_price:.2f}")
+        logging.info(f"[{timestamp}] OPENED {position_key} | Qty: {quantity} | Entry: ${entry_price:.2f}")
 
     def _get_entry_price_from_data(self, signal, signal_timestamp):
         """Get actual entry price from historical data"""
-        # Use Databento filename format
-        expiry_date = signal['expiry_date'].replace('-', '')  # Convert YYYY-MM-DD to YYYYMMDD
+        expiry_date = signal['expiry_date'].replace('-', '')
         data_filename = get_data_filename_databento(
             signal['ticker'],
             expiry_date,
@@ -286,7 +249,6 @@ class BacktestEngine:
                 return None
             
             entry_price = future_ticks.iloc[0]['close']
-            logging.debug(f"🔍 DEBUG: Found real entry price ${entry_price:.2f} for {signal['ticker']} at {future_ticks.iloc[0]['timestamp']}")
             return entry_price
             
         except Exception as e:
@@ -360,23 +322,20 @@ class BacktestEngine:
         profile = self.config.profiles[0] if self.config.profiles else {}
         exit_strategy = profile.get('exit_strategy', {})
         
+        # Check time-based exit for 0DTE (close at 3:55 PM)
+        if timestamp.hour == 15 and timestamp.minute >= 55:
+            return "Time exit (3:55 PM)"
+        
         # 1. Breakeven logic
         breakeven_trigger = exit_strategy.get('breakeven_trigger_percent', 10)
         if not position['breakeven_activated'] and pnl_percent >= breakeven_trigger:
             position['breakeven_activated'] = True
-            logging.info(f"🔔 [{timestamp}] BREAKEVEN activated for {position['signal']['ticker']}")
+            logging.debug(f"BREAKEVEN activated at {timestamp}")
         
         if position['breakeven_activated'] and current_price <= entry_price:
             return "Breakeven stop hit"
         
-        # 2. Native trailing stop
-        native_trail_percent = exit_strategy.get('native_trail_percent')
-        if native_trail_percent:
-            native_exit = self._check_native_trail(position, current_price, native_trail_percent)
-            if native_exit:
-                return native_exit
-        
-        # 3. Dynamic exits (ATR, pullback, PSAR, RSI)
+        # 2. Trail stops
         trail_method = exit_strategy.get('trail_method', 'pullback_percent')
         
         if trail_method == 'pullback_percent':
@@ -390,13 +349,13 @@ class BacktestEngine:
             if atr_exit:
                 return atr_exit
         
-        # 4. PSAR exit
+        # 3. PSAR exit
         if exit_strategy.get('momentum_exits', {}).get('psar_enabled', False):
             psar_exit = self._check_psar_exit(position, current_price)
             if psar_exit:
                 return psar_exit
         
-        # 5. RSI hook exit
+        # 4. RSI hook exit
         if exit_strategy.get('momentum_exits', {}).get('rsi_hook_enabled', False):
             rsi_exit = self._check_rsi_exit(position, current_price)
             if rsi_exit:
@@ -404,19 +363,11 @@ class BacktestEngine:
         
         return None
 
-    def _check_native_trail(self, position, current_price, trail_percent):
-        """Check native trailing stop"""
-        trail_price = position['highest_price'] * (1 - trail_percent / 100)
-        if current_price <= trail_price:
-            return f"Native trail stop hit ({trail_percent}%)"
-        return None
-
     def _check_atr_exit(self, position, current_price, timestamp):
         """Check ATR-based exit"""
-        if len(position['bars']) < 14:  # Need enough bars for ATR
+        if len(position['bars']) < 14:
             return None
         
-        # Calculate ATR
         df = pd.DataFrame(position['bars'])
         atr = ta.atr(df['high'], df['low'], df['close'], length=14)
         
@@ -441,7 +392,7 @@ class BacktestEngine:
         psar = ta.psar(df['high'], df['low'])
         
         if psar is not None and not psar.empty:
-            current_psar = psar['PSARl_0.02_0.2'].iloc[-1]  # Long PSAR
+            current_psar = psar['PSARl_0.02_0.2'].iloc[-1]
             if current_psar and current_price <= current_psar:
                 return "PSAR stop hit"
         
@@ -457,7 +408,7 @@ class BacktestEngine:
         
         if rsi is not None and not rsi.empty:
             current_rsi = rsi.iloc[-1]
-            if current_rsi > 70:  # Overbought
+            if current_rsi > 70:
                 return "RSI overbought exit"
         
         return None
@@ -485,7 +436,7 @@ class BacktestEngine:
         
         self.trade_log.append(trade_record)
         
-        logging.info(f"📉 [{timestamp}] CLOSED {position_key} | Exit: ${exit_price:.2f} | P&L: ${pnl:.2f} | Reason: {reason}")
+        logging.info(f"[{timestamp}] CLOSED {position_key} | Exit: ${exit_price:.2f} | P&L: ${pnl:.2f} | Reason: {reason}")
         
         del self.portfolio['positions'][position_key]
 
@@ -510,23 +461,14 @@ class BacktestEngine:
             df = pd.DataFrame(self.trade_log)
             output_file = os.path.join(self.data_folder_path, '../backtest_results.csv')
             df.to_csv(output_file, index=False)
-            logging.info(f"📊 Detailed results saved to {output_file}")
-        
-        logging.info("🔍 DEBUG: _log_results() completed")
+            logging.info(f"Detailed results saved to {output_file}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    
-    logging.info("🔍 DEBUG: Script started")
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     signal_file = os.path.join(script_dir, 'signals_to_test.txt')
     data_folder = os.path.join(script_dir, 'historical_data')
     
-    logging.info(f"🔍 DEBUG: Creating BacktestEngine...")
     engine = BacktestEngine(signal_file, data_folder)
-    
-    logging.info(f"🔍 DEBUG: Calling run_simulation()...")
     engine.run_simulation()
-    
-    logging.info("🔍 DEBUG: Script completed")
