@@ -316,9 +316,14 @@ class BacktestEngine:
         self.trailing_highs_and_lows[contract_key] = {'high': entry_price, 'low': entry_price}
         self.breakeven_activated[contract_key] = False
         
-        # Initialize native trailing stop
+        # Initialize native trailing stop (different for CALLs vs PUTs)
         native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
-        self.native_trail_stops[contract_key] = entry_price * (1 - native_trail_pct)
+        if signal['contract_type'] == 'CALL':
+            # For CALLs: Stop below entry price
+            self.native_trail_stops[contract_key] = entry_price * (1 - native_trail_pct)
+        else:  # PUT
+            # For PUTs: Stop above entry price
+            self.native_trail_stops[contract_key] = entry_price * (1 + native_trail_pct)
         
         logging.info(f"✅ ENTRY: {contract_key} @ ${entry_price:.2f} x {quantity} contracts")
     
@@ -347,11 +352,19 @@ class BacktestEngine:
         if current_price < self.trailing_highs_and_lows[contract_key]['low']:
             self.trailing_highs_and_lows[contract_key]['low'] = current_price
         
-        # Update native trailing stop
+        # Update native trailing stop (different for CALLs vs PUTs)
         native_trail_pct = params.get('native_trail_percent', 25) / 100 if params else 0.25
-        new_trail_stop = current_price * (1 - native_trail_pct)
-        if new_trail_stop > self.native_trail_stops[contract_key]:
-            self.native_trail_stops[contract_key] = new_trail_stop
+        
+        if position['contract_type'] == 'CALL':
+            # For CALLs: Trail stop moves UP as price increases, never down
+            new_trail_stop = current_price * (1 - native_trail_pct)
+            if new_trail_stop > self.native_trail_stops[contract_key]:
+                self.native_trail_stops[contract_key] = new_trail_stop
+        else:  # PUT
+            # For PUTs: Trail stop moves DOWN as price decreases, never up
+            new_trail_stop = current_price * (1 + native_trail_pct)
+            if new_trail_stop < self.native_trail_stops[contract_key]:
+                self.native_trail_stops[contract_key] = new_trail_stop
         
         # Check exit conditions
         exit_reason = self._evaluate_exit_conditions(
@@ -369,13 +382,24 @@ class BacktestEngine:
         """
         Check all exit conditions in priority order
         Returns exit_reason string or None
+        FIXED: Proper handling for both CALLs and PUTs
         """
         entry_price = position['entry_price']
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        contract_type = position['contract_type']
+        
+        # Calculate P&L percentage (different logic for CALLs vs PUTs)
+        if contract_type == 'CALL':
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        else:  # PUT
+            pnl_pct = ((entry_price - current_price) / entry_price) * 100
         
         # PRIORITY 1: Native Trailing Stop (highest priority)
-        if current_price <= self.native_trail_stops[contract_key]:
-            return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
+        if contract_type == 'CALL':
+            if current_price <= self.native_trail_stops[contract_key]:
+                return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
+        else:  # PUT
+            if current_price >= self.native_trail_stops[contract_key]:
+                return f"NATIVE_TRAIL_{params.get('native_trail_percent', 25)}%"
         
         # PRIORITY 2: Breakeven Stop
         breakeven_trigger = params.get('breakeven_trigger_percent', 10) / 100 if params else 0.10
@@ -383,19 +407,38 @@ class BacktestEngine:
             self.breakeven_activated[contract_key] = True
             logging.debug(f"  Breakeven activated for {contract_key} @ {pnl_pct:.1f}%")
         
-        if self.breakeven_activated[contract_key] and current_price <= entry_price:
-            return "BREAKEVEN"
+        if self.breakeven_activated[contract_key]:
+            if contract_type == 'CALL':
+                if current_price <= entry_price:
+                    return "BREAKEVEN"
+            else:  # PUT
+                if current_price >= entry_price:
+                    return "BREAKEVEN"
         
         # PRIORITY 3: Pullback/ATR Trail
         trail_method = params.get('trail_method', 'pullback_percent') if params else 'pullback_percent'
         
         if trail_method == 'pullback_percent':
+            # FIX: Use decimal directly, don't multiply by 100
             pullback_pct = params.get('pullback_percent', 10) / 100 if params else 0.10
-            peak = self.trailing_highs_and_lows[contract_key]['high']
-            if peak > entry_price:
-                pullback_stop = peak * (1 - pullback_pct)
-                if current_price <= pullback_stop:
-                    return f"PULLBACK_{params.get('pullback_percent', 10)}%"
+            
+            if contract_type == 'CALL':
+                # For CALLs: Track highest price, exit if pullback from peak
+                peak = self.trailing_highs_and_lows[contract_key]['high']
+                if peak > entry_price:
+                    pullback_stop = peak * (1 - pullback_pct)
+                    if current_price <= pullback_stop:
+                        return f"PULLBACK_{params.get('pullback_percent', 10)}%"
+            
+            else:  # PUT
+                # For PUTs: Track lowest price, exit if price moves back up
+                # FIX: For PUTs, profit happens when price goes DOWN
+                trough = self.trailing_highs_and_lows[contract_key]['low']
+                if trough < entry_price:  # We're in profit
+                    # Calculate how much price moved back UP from the best (lowest) price
+                    pullback_stop = trough * (1 + pullback_pct)
+                    if current_price >= pullback_stop:
+                        return f"PULLBACK_{params.get('pullback_percent', 10)}%"
         
         elif trail_method == 'atr':
             # ATR trail logic (simplified)
