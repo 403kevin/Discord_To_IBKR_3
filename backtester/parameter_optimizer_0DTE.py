@@ -55,43 +55,43 @@ class ParameterOptimizer0DTE:
         
         self.results = []
     
-    def get_quick_grid(self):
-        """Quick test grid for 0DTE - TIGHT parameters"""
-        return {
-            'breakeven_trigger_percent': [3, 5],  # Much lower for 0DTE
-            'trail_method': ['pullback_percent'],  # ATR not useful for 0DTE
-            'pullback_percent': [5, 7],  # Tighter stops
-            'atr_period': [14],  # Not really used
-            'atr_multiplier': [1.5],  # Not really used
-            'native_trail_percent': [15, 20],  # Tighter safety net
-            'psar_enabled': [False],  # Not useful for 0DTE
-            'psar_start': [0.02],
-            'psar_increment': [0.02],
-            'psar_max': [0.2],
-            'rsi_hook_enabled': [False],  # Not useful for 0DTE
-            'rsi_period': [14],
-            'rsi_overbought': [70],
-            'rsi_oversold': [30]
-        }
-    
-    def get_full_grid(self):
-        """Full test grid for 0DTE - comprehensive but focused"""
-        return {
-            'breakeven_trigger_percent': [3, 5, 7, 10],  # 0DTE appropriate
-            'trail_method': ['pullback_percent'],  # Skip ATR
-            'pullback_percent': [3, 5, 7, 10, 12],  # Tight to loose
-            'atr_period': [14],  # Not used
-            'atr_multiplier': [1.5],  # Not used
-            'native_trail_percent': [12, 15, 20, 25],  # 0DTE safety nets
-            'psar_enabled': [False],  # Not useful
-            'psar_start': [0.02],
-            'psar_increment': [0.02],
-            'psar_max': [0.2],
-            'rsi_hook_enabled': [False],  # Not useful
-            'rsi_period': [14],
-            'rsi_overbought': [70],
-            'rsi_oversold': [30]
-        }
+def get_quick_grid(self):
+    """Quick test grid for 0DTE - Based on proven winners"""
+    return {
+        'breakeven_trigger_percent': [7, 10],  # 7% was best
+        'trail_method': ['pullback_percent'],
+        'pullback_percent': [10, 12],  # 10% was best
+        'atr_period': [14],
+        'atr_multiplier': [1.5],
+        'native_trail_percent': [20, 25],  # 20% was best
+        'psar_enabled': [False],
+        'psar_start': [0.02],
+        'psar_increment': [0.02],
+        'psar_max': [0.2],
+        'rsi_hook_enabled': [False],
+        'rsi_period': [14],
+        'rsi_overbought': [70],
+        'rsi_oversold': [30]
+    }
+
+def get_full_grid(self):
+    """Full test grid for 0DTE - REVISED based on test results"""
+    return {
+        'breakeven_trigger_percent': [5, 7, 10, 12, 15],  # Focus on 7%+ which worked
+        'trail_method': ['pullback_percent'],
+        'pullback_percent': [8, 10, 12, 15, 20],  # 10% was best, test wider
+        'atr_period': [14],
+        'atr_multiplier': [1.5],
+        'native_trail_percent': [15, 20, 25, 30],  # 20% was optimal
+        'psar_enabled': [False],
+        'psar_start': [0.02],
+        'psar_increment': [0.02],
+        'psar_max': [0.2],
+        'rsi_hook_enabled': [False],
+        'rsi_period': [14],
+        'rsi_overbought': [70],
+        'rsi_oversold': [30]
+    }
     
     async def run_optimization(self):
         """Run parameter optimization"""
