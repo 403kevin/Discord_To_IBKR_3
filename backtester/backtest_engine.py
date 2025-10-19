@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - COMPLETE FIXED VERSION
+backtest_engine.py - COMPLETE FIXED VERSION WITH PROPER ENTRY PRICE HANDLING
+BUG FIX #4: Skip NaN bid/ask values and find first valid price
 BUG FIX #3: Corrects year calculation for historical signals
 BUG FIX #2: Returns return_pct in empty results  
 BUG FIX #1: Correct parse_signal() signature (2 args, not 4)
@@ -32,7 +33,7 @@ logging.basicConfig(
 class BacktestEngine:
     """
     Event-driven backtesting with ALL exit strategies including native trail.
-    FIXED: parse_signal signature, return_pct, and YEAR CALCULATION for historical signals.
+    FIXED: NaN handling, parse_signal signature, return_pct, and YEAR CALCULATION.
     """
     
     def __init__(self, signal_file_path, data_folder_path):
@@ -498,7 +499,10 @@ class BacktestEngine:
             del self.native_trail_stops[contract_key]
     
     def _get_entry_price_from_data(self, signal):
-        """Get actual entry price from historical data at signal timestamp"""
+        """
+        Get actual entry price from historical data at signal timestamp
+        FIX BUG #4: Skip NaN values and find first valid bid/ask price
+        """
         # Get filename
         expiry_clean = signal['expiry_date'].replace('-', '')
         filename = get_data_filename_databento(
@@ -517,21 +521,31 @@ class BacktestEngine:
             df = pd.read_csv(filepath)
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
             
-            # Find price at or just after signal time
+            # Find first VALID price at or after signal time
             signal_time = signal['timestamp']
-            mask = df['timestamp'] >= signal_time
+            df = df[df['timestamp'] >= signal_time]
             
-            if mask.any():
-                entry_row = df.loc[mask].iloc[0]
-                
-                # Use ask price for realistic entry
-                if 'ask' in entry_row and entry_row['ask'] > 0:
-                    return float(entry_row['ask'])
-                elif 'price' in entry_row and entry_row['price'] > 0:
-                    return float(entry_row['price'])
-                elif 'close' in entry_row and entry_row['close'] > 0:
-                    return float(entry_row['close'])
+            if df.empty:
+                logging.warning(f"  ⚠️ No data after signal time for {filename}")
+                return None
             
+            # Look for first row with valid bid/ask
+            for idx, row in df.iterrows():
+                # Try ask first (realistic entry for buying)
+                if pd.notna(row.get('ask', None)) and row['ask'] > 0:
+                    logging.info(f"  Using ask price ${row['ask']:.2f} at {row['timestamp']}")
+                    return float(row['ask'])
+                # Then try bid
+                elif pd.notna(row.get('bid', None)) and row['bid'] > 0:
+                    logging.info(f"  Using bid price ${row['bid']:.2f} at {row['timestamp']}")
+                    return float(row['bid'])
+                # Finally try close/price
+                elif pd.notna(row.get('close', None)) and row['close'] > 0:
+                    logging.info(f"  Using close price ${row['close']:.2f} at {row['timestamp']}")
+                    return float(row['close'])
+            
+            # If we get here, no valid prices found
+            logging.warning(f"  ⚠️ No valid prices found in {filename} after checking {len(df)} rows")
             return None
             
         except Exception as e:
