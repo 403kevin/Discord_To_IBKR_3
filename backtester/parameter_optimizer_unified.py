@@ -93,7 +93,7 @@ class UnifiedParameterOptimizer:
         logging.info(f"✅ Found {len(self.signals_regular)} regular option signals")
         logging.info("="*80)
     
-    def get_0dte_grid(self, quick_mode):
+def get_0dte_grid(self, quick_mode):
         """Parameter grid for 0DTE options (ultra-short holds)"""
         if quick_mode:
             return {
@@ -113,13 +113,14 @@ class UnifiedParameterOptimizer:
                 'rsi_oversold': [30]
             }
         else:
+            # FOCUSED FULL GRID for 0DTE (50 combinations vs 100)
             return {
-                'breakeven_trigger_percent': [5, 7, 10, 12, 15],
+                'breakeven_trigger_percent': [5, 7, 10, 15],
                 'trail_method': ['pullback_percent'],
-                'pullback_percent': [8, 10, 12, 15, 20],
+                'pullback_percent': [10, 15, 20],
                 'atr_period': [14],
                 'atr_multiplier': [1.5],
-                'native_trail_percent': [15, 20, 25, 30],
+                'native_trail_percent': [20, 25, 30],
                 'psar_enabled': [False],
                 'psar_start': [0.02],
                 'psar_increment': [0.02],
@@ -129,6 +130,7 @@ class UnifiedParameterOptimizer:
                 'rsi_overbought': [70],
                 'rsi_oversold': [30]
             }
+            # 4 (breakeven) × 3 (pullback) × 3 (native) = 36 tests
     
     def get_regular_grid(self, quick_mode):
         """Parameter grid for regular options (multi-hour holds)"""
@@ -150,22 +152,24 @@ class UnifiedParameterOptimizer:
                 'rsi_oversold': [30]
             }
         else:
+            # FOCUSED FULL GRID for regular (180 combinations vs 2,880)
             return {
                 'breakeven_trigger_percent': [5, 7, 10, 12, 15],
                 'trail_method': ['pullback_percent', 'atr'],
-                'pullback_percent': [7, 10, 12, 15],
-                'atr_period': [10, 14, 20],
-                'atr_multiplier': [1.0, 1.5, 2.0],
-                'native_trail_percent': [20, 25, 30, 35],
-                'psar_enabled': [True, False],
+                'pullback_percent': [8, 10, 12],
+                'atr_period': [14],
+                'atr_multiplier': [1.5, 2.0],
+                'native_trail_percent': [25, 30, 35],
+                'psar_enabled': [False],
                 'psar_start': [0.02],
                 'psar_increment': [0.02],
                 'psar_max': [0.2],
-                'rsi_hook_enabled': [True, False],
+                'rsi_hook_enabled': [False],
                 'rsi_period': [14],
                 'rsi_overbought': [70],
                 'rsi_oversold': [30]
             }
+            # 5 (breakeven) × 2 (trail_method) × 3 (pullback) × 2 (atr_multi) × 3 (native) = 180 tests
     
     def load_custom_params(self, params_file):
         """Load custom parameter grids from JSON file"""
