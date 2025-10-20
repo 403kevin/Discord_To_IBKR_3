@@ -27,10 +27,20 @@ def get_data_filename_databento(ticker, expiry, strike, right):
     Args:
         ticker: Stock symbol
         expiry: Expiry date string (YYYYMMDD format)
-        strike: Strike price
+        strike: Strike price (int or float)
         right: 'C' or 'P'
     
     Returns:
         Standardized filename
     """
-    return f"{ticker}_{expiry}_{strike}{right}_databento.csv"
+    # Convert strike to float, then check if it's a whole number
+    strike_float = float(strike)
+    
+    # If it's a whole number (like 205.0), convert to int to remove .0
+    # If it's a decimal (like 10.5), keep the decimal
+    if strike_float == int(strike_float):
+        strike_str = str(int(strike_float))
+    else:
+        strike_str = str(strike_float)
+    
+    return f"{ticker}_{expiry}_{strike_str}{right}_databento.csv"
