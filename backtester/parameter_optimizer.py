@@ -73,20 +73,20 @@ class ParameterOptimizer:
             'rsi_oversold': [30]
         }
     
-    def get_full_grid(self):
-        """Full test grid - comprehensive for scalps/day trades"""
+def get_full_grid(self):
+        """Full test grid - FOCUSED but comprehensive (180 combinations vs 2,880)"""
         return {
             'breakeven_trigger_percent': [5, 7, 10, 12, 15],
-            'trail_method': ['pullback_percent', 'atr'],  # Test ATR for longer holds
-            'pullback_percent': [7, 10, 12, 15],  # Slightly tighter than 0DTE
-            'atr_period': [10, 14, 20],  # Different ATR speeds
-            'atr_multiplier': [1.0, 1.5, 2.0],  # ATR multipliers
-            'native_trail_percent': [20, 25, 30, 35],  # Wider for longer holds
-            'psar_enabled': [True, False],  # Both
+            'trail_method': ['pullback_percent', 'atr'],
+            'pullback_percent': [8, 10, 12],
+            'atr_period': [14],
+            'atr_multiplier': [1.5, 2.0],
+            'native_trail_percent': [25, 30, 35],
+            'psar_enabled': [False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
             'psar_max': [0.2],
-            'rsi_hook_enabled': [True, False],  # Test RSI for longer holds
+            'rsi_hook_enabled': [False],
             'rsi_period': [14],
             'rsi_overbought': [70],
             'rsi_oversold': [30]
