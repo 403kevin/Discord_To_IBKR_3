@@ -73,7 +73,7 @@ class ParameterOptimizer:
             'rsi_oversold': [30]
         }
     
-def get_full_grid(self):
+    def get_full_grid(self):
         """Full test grid - FOCUSED but comprehensive (180 combinations vs 2,880)"""
         return {
             'breakeven_trigger_percent': [5, 7, 10, 12, 15],
