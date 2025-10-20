@@ -1,0 +1,41 @@
+{
+  "_comment": "Unified parameter grid - separate configs for 0DTE and Regular signals",
+  "_comment2": "Use with: python backtester/parameter_optimizer_unified.py --params param_grid_unified.json",
+  "_comment3": "The optimizer auto-detects signal type and applies the correct grid",
+  
+  "0dte_params": {
+    "_comment": "Parameters for SPX/SPY 0DTE signals (ultra-short 15-60 min holds)",
+    "breakeven_trigger_percent": [7, 10],
+    "trail_method": ["pullback_percent"],
+    "pullback_percent": [10, 15, 20],
+    "atr_period": [14],
+    "atr_multiplier": [1.5],
+    "native_trail_percent": [20, 25],
+    "psar_enabled": [false],
+    "psar_start": [0.02],
+    "psar_increment": [0.02],
+    "psar_max": [0.2],
+    "rsi_hook_enabled": [false],
+    "rsi_period": [14],
+    "rsi_overbought": [70],
+    "rsi_oversold": [30]
+  },
+  
+  "regular_params": {
+    "_comment": "Parameters for regular stock options (multi-hour holds)",
+    "breakeven_trigger_percent": [7, 10, 12],
+    "trail_method": ["pullback_percent", "atr"],
+    "pullback_percent": [8, 10, 12],
+    "atr_period": [10, 14, 20],
+    "atr_multiplier": [1.0, 1.5, 2.0],
+    "native_trail_percent": [25, 30],
+    "psar_enabled": [true, false],
+    "psar_start": [0.02],
+    "psar_increment": [0.02],
+    "psar_max": [0.2],
+    "rsi_hook_enabled": [false],
+    "rsi_period": [14],
+    "rsi_overbought": [70],
+    "rsi_oversold": [30]
+  }
+}
