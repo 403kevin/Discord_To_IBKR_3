@@ -93,7 +93,7 @@ class UnifiedParameterOptimizer:
         logging.info(f"✅ Found {len(self.signals_regular)} regular option signals")
         logging.info("="*80)
     
-def get_0dte_grid(self, quick_mode):
+    def get_0dte_grid(self, quick_mode):
         """Parameter grid for 0DTE options (ultra-short holds)"""
         if quick_mode:
             return {
