@@ -33,4 +33,4 @@ def get_data_filename_databento(ticker, expiry, strike, right):
     Returns:
         Standardized filename
     """
-    return f"{ticker}_{expiry}_{int(strike)}{right}_databento.csv"
+return f"{ticker}_{expiry}_{strike}{right}_databento.csv"
