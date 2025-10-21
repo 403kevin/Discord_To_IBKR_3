@@ -178,6 +178,15 @@ class ParameterOptimizerUnified:
         config = Config()
         parser = SignalParser(config)
         
+        # Create default profile for parsing
+        default_profile = config.profiles[0] if config.profiles else {
+            'assume_buy_on_ambiguous': True,
+            'ambiguous_expiry_enabled': True,
+            'buzzwords_buy': [],
+            'buzzwords_sell': [],
+            'channel_id': 'optimizer'
+        }
+        
         classified = {'0dte': [], 'regular': []}
         
         if not self.signals_file.exists():
@@ -201,7 +210,8 @@ class ParameterOptimizerUnified:
                     channel = 'test_server'
                     signal_text = line
                 
-                parsed = parser.parse_signal(signal_text, channel)
+                # ✅ FIXED: Pass profile object, not channel string
+                parsed = parser.parse_signal(signal_text, default_profile)
                 
                 if parsed:
                     parsed['timestamp'] = timestamp_str
