@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Databento Options Data Harvester - DAY TRADING VERSION
+Databento Options Data Harvester - WINDOWS COMPATIBLE VERSION
 FIXED: Uses signal date, not expiry date
+FIXED: Windows file path handling
 
 Since you day trade and exit all positions before market close,
 this harvester fetches data for the SIGNAL DATE, not the expiry date.
@@ -13,6 +14,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 import logging
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -24,8 +26,19 @@ def parse_signal_file(filepath):
     """
     Parse signals file to extract option details.
     Format: YYYY-MM-DD HH:MM:SS | Trader | TICKER STRIKEP/C MM/DD
+    
+    WINDOWS FIX: Use pathlib for cross-platform compatibility
     """
     signals = []
+    
+    # Convert to Path object for Windows compatibility
+    filepath = Path(filepath)
+    
+    if not filepath.exists():
+        logging.error(f"❌ File not found: {filepath}")
+        logging.error(f"   Current directory: {Path.cwd()}")
+        logging.error(f"   Looking for: {filepath.absolute()}")
+        return []
     
     with open(filepath, 'r') as f:
         for line in f:
@@ -37,6 +50,7 @@ def parse_signal_file(filepath):
                 # Parse: "2025-10-07 07:46:43 | Expo | MSFT 515P 10/10"
                 parts = line.split('|')
                 if len(parts) != 3:
+                    logging.warning(f"Skipping malformed line: {line}")
                     continue
                 
                 timestamp_str = parts[0].strip()
@@ -57,6 +71,7 @@ def parse_signal_file(filepath):
                     strike = float(strike_str[:-1])
                     right = strike_str[-1]
                 else:
+                    logging.warning(f"Invalid strike/right format: {strike_str}")
                     continue
                 
                 # Parse expiry date
@@ -86,7 +101,7 @@ def parse_signal_file(filepath):
                 logging.error(f"Error parsing signal '{line}': {e}")
                 continue
     
-    logging.info(f"Parsed {len(signals)} signals from {filepath}")
+    logging.info(f"✅ Parsed {len(signals)} signals from {filepath.name}")
     return signals
 
 def get_option_symbol(ticker, expiry_date, strike, right):
@@ -197,6 +212,7 @@ def fetch_databento_data(signal, client):
 def save_data(df, signal, output_dir):
     """
     Save data to CSV file using standard naming convention.
+    WINDOWS FIX: Use pathlib for path handling
     """
     ticker = signal['ticker']
     strike = signal['strike']
@@ -213,7 +229,10 @@ def save_data(df, signal, output_dir):
         strike_str = str(strike)
     
     filename = f"{ticker}_{expiry_str}_{strike_str}{right}_databento.csv"
-    filepath = os.path.join(output_dir, filename)
+    
+    # Use Path for Windows compatibility
+    output_path = Path(output_dir)
+    filepath = output_path / filename
     
     # Save to CSV
     df.to_csv(filepath, index=False)
@@ -222,27 +241,60 @@ def save_data(df, signal, output_dir):
     logging.info(f"      Data date: {signal['signal_date']} (signal date)")
     logging.info(f"      Rows: {len(df)}")
     
-    return filepath
+    return str(filepath)
 
 def main():
     """
     Main execution function.
+    WINDOWS FIX: Better path handling and error messages
     """
-    # Configuration
-    signals_file = "backtester/signals_to_test.txt"
-    output_dir = "backtester/historical_data"
+    # Get script directory for relative paths
+    script_dir = Path(__file__).parent
+    
+    # Configuration - use Path objects
+    signals_file = script_dir / "signals_to_test.txt"
+    output_dir = script_dir / "historical_data"
     
     # Create output directory if needed
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.info("=" * 60)
+    logging.info("DATABENTO OPTIONS DATA HARVESTER")
+    logging.info("=" * 60)
+    logging.info(f"Script directory: {script_dir}")
+    logging.info(f"Signals file: {signals_file}")
+    logging.info(f"Output directory: {output_dir}")
+    logging.info("=" * 60)
+    
+    # Check if signals file exists
+    if not signals_file.exists():
+        logging.error(f"❌ FATAL: signals_to_test.txt not found!")
+        logging.error(f"   Expected location: {signals_file.absolute()}")
+        logging.error(f"   Current directory: {Path.cwd()}")
+        logging.error("")
+        logging.error("📝 CREATE THE FILE:")
+        logging.error(f"   1. Navigate to: {script_dir}")
+        logging.error(f"   2. Create file: signals_to_test.txt")
+        logging.error(f"   3. Add your signals (one per line):")
+        logging.error(f"      2025-10-07 07:46:43 | Expo | MSFT 515P 10/10")
+        return
     
     # Parse signals
     signals = parse_signal_file(signals_file)
     
     if not signals:
-        logging.error("No signals found to process")
+        logging.error("❌ No signals found to process")
+        logging.error(f"   Check the format in: {signals_file}")
         return
     
     # Initialize Databento client
+    if API_KEY == "YOUR_DATABENTO_API_KEY_HERE":
+        logging.error("❌ FATAL: Please set your Databento API key!")
+        logging.error("   Edit this script and replace:")
+        logging.error('   API_KEY = "YOUR_DATABENTO_API_KEY_HERE"')
+        logging.error("   with your actual API key")
+        return
+    
     client = db.Historical(API_KEY)
     
     # Process each signal
@@ -269,6 +321,7 @@ def main():
     logging.info(f"✅ Success: {success_count}")
     logging.info(f"❌ Failed: {fail_count}")
     logging.info(f"📁 Output: {output_dir}")
+    logging.info(f"{'='*60}")
 
 if __name__ == "__main__":
     main()
