@@ -125,7 +125,7 @@ class DatabentoHarvester:
             data = self.client.timeseries.get_range(
                 dataset='OPRA.pillar',
                 symbols=[occ_symbol],
-                schema='mbp-1',
+                schema='cmbp-1',  # ✅ FIXED: Use cmbp-1 (consolidated MBP) for OPRA
                 start=start_date,
                 end=end_date,
                 stype_in='raw_symbol'
