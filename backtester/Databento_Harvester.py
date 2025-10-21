@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Databento Options Data Harvester - WORKING VERSION
-Uses environment variable from .env file
-Windows compatible with Path objects
+EMERGENCY FIX - Run this to replace your broken Databento_Harvester.py
+Save this as: backtester/Databento_Harvester.py
 """
 
 import databento as db
 import pandas as pd
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta  # ✅✅✅ THIS IS THE FIX ✅✅✅
 from pathlib import Path
 import logging
 from dotenv import load_dotenv
@@ -28,39 +27,25 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 class DatabentoHarvester:
     def __init__(self, api_key):
         self.client = db.Historical(api_key)
-        
-        # Use Path for Windows compatibility
         self.signals_path = Path(__file__).parent / "signals_to_test.txt"
         self.output_dir = Path(__file__).parent / "historical_data"
         self.output_dir.mkdir(exist_ok=True, parents=True)
-        
         self.config = Config()
         self.signal_parser = SignalParser(self.config)
         
     def run(self):
-        """Main execution"""
         logging.info(f"Using signals file: {self.signals_path}")
         logging.info("Starting Databento data download...")
-        
         signals = self._parse_signals()
-        
         if not signals:
             logging.error("No valid signals found")
             return
-            
         logging.info(f"Found {len(signals)} valid signals")
-        
         for signal in signals:
             self._download_signal_data(signal)
     
     def _parse_signals(self):
-        """Parse signals from file"""
         signals = []
-        default_profile = self.config.profiles[0] if self.config.profiles else {
-            'assume_buy_on_ambiguous': True,
-            'ambiguous_expiry_enabled': True
-        }
-        
         if not self.signals_path.exists():
             logging.error(f"Signals file not found: {self.signals_path}")
             return []
@@ -68,124 +53,109 @@ class DatabentoHarvester:
         with open(self.signals_path, 'r') as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith('#'):
+                if not line or line.startswith('#') or line.startswith('Trader:') or line.startswith('Format:'):
                     continue
                 
-                # Handle both formats:
-                # 1. Simple: TICKER STRIKEP/C MM/DD
-                # 2. Full: YYYY-MM-DD HH:MM:SS | channel | TICKER STRIKEP/C MM/DD
                 if '|' in line:
                     parts = line.split('|')
-                    if len(parts) >= 3:
-                        signal_text = parts[2].strip()
-                    else:
-                        continue
+                    timestamp_str = parts[0].strip()
+                    channel = parts[1].strip()
+                    signal_text = parts[2].strip()
                 else:
+                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    channel = 'test_server'
                     signal_text = line
                 
-                parsed = self.signal_parser.parse_signal(signal_text, default_profile)
+                parsed = self.signal_parser.parse_signal(signal_text, channel)
                 if parsed:
+                    parsed['timestamp'] = timestamp_str
                     signals.append(parsed)
-                    # Use correct keys from signal parser
-                    right = parsed['contract_type'][0]
-                    expiry = parsed.get('expiry', parsed.get('expiry_date', 'unknown'))
-                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{right} {expiry}")
-        
+                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{parsed['right']} {parsed['expiry']}")
         return signals
     
     def _download_signal_data(self, signal):
-        """Download data for a single signal"""
         ticker = signal['ticker']
         strike = signal['strike']
-        right = signal['contract_type'][0]  # 'CALL' -> 'C', 'PUT' -> 'P'
+        right = signal['right']
+        expiry = signal['expiry']
+        signal_timestamp = signal['timestamp']
         
-        # Signal parser returns 'expiry_date' (YYYYMMDD string)
-        expiry = signal.get('expiry_date', signal.get('expiry', ''))
-        
-        logging.info(f"📥 {ticker} {strike}{right} exp {expiry}")
+        logging.info(f"\n📥 {ticker} {strike}{right} exp {expiry}")
         
         try:
-            # Parse expiry date
+            signal_date = datetime.strptime(signal_timestamp, '%Y-%m-%d %H:%M:%S').date()
             exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
-            # Create OCC symbol (YYMMDD format for Databento)
+            start_date = signal_date
+            end_date = exp_date + timedelta(days=1)  # ✅✅✅ USES TIMEDELTA ✅✅✅
+            
             expiry_str = exp_date.strftime('%y%m%d')
             strike_str = f"{int(strike * 1000):08d}"
-            occ_symbol = f"{ticker}{expiry_str}{right}{strike_str}"
             
+            root_symbol = ticker.upper()
+            if root_symbol == 'SPX':
+                root_symbol = 'SPXW'
+            elif root_symbol == 'NDX':
+                root_symbol = 'NDXP'
+            
+            occ_symbol = f"{root_symbol.ljust(6)}{expiry_str}{right}{strike_str}"
             logging.info(f"   OCC: {occ_symbol}")
             
-            # Fetch data - use trading day range
-            # For day trading: get data from 2 days before expiry through expiry
-            start_date = exp_date - timedelta(days=2)
-            end_date = exp_date + timedelta(days=1)
-            
-            logging.info(f"   Fetching: {start_date} to {end_date}")
-            
             data = self.client.timeseries.get_range(
-                dataset='OPRA.PILLAR',
+                dataset='OPRA.pillar',
                 symbols=[occ_symbol],
-                schema='trades',
+                schema='mbp-1',
                 start=start_date,
                 end=end_date,
                 stype_in='raw_symbol'
             )
             
             df = data.to_df()
-            
             if df.empty:
-                logging.error(f"   ❌ No data returned")
+                logging.warning(f"   ⚠️ No data found")
                 return
             
-            # Rename columns for backtest engine compatibility
-            df = df.rename(columns={
-                'ts_event': 'timestamp',
-                'price': 'close'
-            })
+            df['mid'] = (df['bid_px_00'] + df['ask_px_00']) / 2
+            df['spread'] = df['ask_px_00'] - df['bid_px_00']
+            df = df.rename(columns={'ts_event': 'timestamp', 'bid_px_00': 'bid', 'ask_px_00': 'ask'})
             
-            # Add high/low if not present
+            if 'close' not in df.columns:
+                df['close'] = df['mid']
             if 'high' not in df.columns:
-                df['high'] = df['close']
+                df['high'] = df['mid']
             if 'low' not in df.columns:
-                df['low'] = df['close']
+                df['low'] = df['mid']
             if 'volume' not in df.columns:
-                df['volume'] = df.get('size', 0)
+                df['volume'] = 0
             
-            # Save to CSV
+            columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
+            df = df[columns]
+            
             filename = get_data_filename_databento(ticker, expiry, strike, right)
             filepath = self.output_dir / filename
+            df.to_csv(filepath, index=False)
             
-            df[['timestamp', 'close', 'high', 'low', 'volume']].to_csv(filepath, index=False)
-            
-            price_range = f"${df['close'].min():.2f}-${df['close'].max():.2f}"
-            logging.info(f"   ✅ Saved {len(df):,} ticks | Range: {price_range}")
+            logging.info(f"   ✅ Saved {len(df):,} ticks → {filename}")
             
         except Exception as e:
             logging.error(f"   ❌ Failed: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    
-    # Load .env file
     load_dotenv()
     
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api-key', help='Databento API key (or use DATABENTO_API_KEY in .env)')
+    parser.add_argument('--api-key', help='Databento API key')
     args = parser.parse_args()
     
-    # Get API key from args or environment
     api_key = args.api_key or os.getenv('DATABENTO_API_KEY')
-    
     if not api_key:
         print("=" * 60)
-        print("ERROR: API key required")
-        print("=" * 60)
-        print("Option 1: Add to .env file:")
-        print("   DATABENTO_API_KEY=your_key_here")
-        print("")
-        print("Option 2: Pass as argument:")
-        print("   python Databento_Harvester.py --api-key YOUR_KEY")
+        print("ERROR: DATABENTO_API_KEY not found!")
+        print("Add to .env file: DATABENTO_API_KEY=your_key_here")
         print("=" * 60)
         sys.exit(1)
     
