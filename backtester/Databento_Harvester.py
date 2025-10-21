@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Databento Harvester - COMPLETE WORKING VERSION
-Fixed: timedelta import + proper profile object handling
+Databento Harvester - ACTUALLY FINAL VERSION
+Uses correct signal parser keys: contract_type, expiry_date
 """
 
 import databento as db
 import pandas as pd
 import os
 import sys
-from datetime import datetime, timedelta  # ✅ FIXED
+from datetime import datetime, timedelta
 from pathlib import Path
 import logging
 from dotenv import load_dotenv
@@ -45,7 +45,7 @@ class DatabentoHarvester:
             self._download_signal_data(signal)
     
     def _parse_signals(self):
-        """Parse signals with proper profile object handling"""
+        """Parse signals with correct key mapping"""
         signals = []
         
         # Create default profile for parsing
@@ -75,19 +75,27 @@ class DatabentoHarvester:
                     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     signal_text = line
                 
-                # ✅ FIXED: Pass profile object, not channel string
                 parsed = self.signal_parser.parse_signal(signal_text, default_profile)
                 if parsed:
+                    # Add timestamp to parsed signal
                     parsed['timestamp'] = timestamp_str
+                    
+                    # Map parser keys to harvester keys for consistency
+                    # Parser returns: contract_type="CALL"/"PUT", expiry_date="YYYYMMDD"
+                    parsed['right'] = 'C' if parsed['contract_type'] == 'CALL' else 'P'
+                    parsed['expiry'] = parsed['expiry_date']
+                    
                     signals.append(parsed)
                     logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{parsed['right']} {parsed['expiry']}")
+        
         return signals
     
     def _download_signal_data(self, signal):
+        """Download data for a single signal"""
         ticker = signal['ticker']
         strike = signal['strike']
-        right = signal['right']
-        expiry = signal['expiry']
+        right = signal['right']  # Already converted to 'C' or 'P'
+        expiry = signal['expiry']  # Already in YYYYMMDD format
         signal_timestamp = signal['timestamp']
         
         logging.info(f"\n📥 {ticker} {strike}{right} exp {expiry}")
@@ -97,11 +105,13 @@ class DatabentoHarvester:
             exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
             start_date = signal_date
-            end_date = exp_date + timedelta(days=1)  # ✅ USES timedelta
+            end_date = exp_date + timedelta(days=1)
             
+            # Build OCC symbol - YYMMDD format
             expiry_str = exp_date.strftime('%y%m%d')
             strike_str = f"{int(strike * 1000):08d}"
             
+            # Convert SPX → SPXW, NDX → NDXP
             root_symbol = ticker.upper()
             if root_symbol == 'SPX':
                 root_symbol = 'SPXW'
@@ -111,6 +121,7 @@ class DatabentoHarvester:
             occ_symbol = f"{root_symbol.ljust(6)}{expiry_str}{right}{strike_str}"
             logging.info(f"   OCC: {occ_symbol}")
             
+            # Download from Databento
             data = self.client.timeseries.get_range(
                 dataset='OPRA.pillar',
                 symbols=[occ_symbol],
@@ -125,10 +136,18 @@ class DatabentoHarvester:
                 logging.warning(f"   ⚠️ No data found")
                 return
             
+            # Calculate derived columns
             df['mid'] = (df['bid_px_00'] + df['ask_px_00']) / 2
             df['spread'] = df['ask_px_00'] - df['bid_px_00']
-            df = df.rename(columns={'ts_event': 'timestamp', 'bid_px_00': 'bid', 'ask_px_00': 'ask'})
             
+            # Rename to match expected format
+            df = df.rename(columns={
+                'ts_event': 'timestamp',
+                'bid_px_00': 'bid',
+                'ask_px_00': 'ask'
+            })
+            
+            # Add OHLCV if not present
             if 'close' not in df.columns:
                 df['close'] = df['mid']
             if 'high' not in df.columns:
@@ -138,9 +157,11 @@ class DatabentoHarvester:
             if 'volume' not in df.columns:
                 df['volume'] = 0
             
+            # Select final columns
             columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
             df = df[columns]
             
+            # Save to CSV
             filename = get_data_filename_databento(ticker, expiry, strike, right)
             filepath = self.output_dir / filename
             df.to_csv(filepath, index=False)
