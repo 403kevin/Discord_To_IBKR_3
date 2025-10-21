@@ -104,8 +104,11 @@ class DatabentoHarvester:
             signal_date = datetime.strptime(signal_timestamp, '%Y-%m-%d %H:%M:%S').date()
             exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
+            # ✅ CRITICAL FIX: Day trader - ONLY download signal date!
             start_date = signal_date
-            end_date = exp_date + timedelta(days=1)
+            end_date = signal_date + timedelta(days=1)  # Just one day
+            
+            logging.info(f"   Date: {signal_date} (signal day only)")
             
             # Build OCC symbol - YYMMDD format
             expiry_str = exp_date.strftime('%y%m%d')
