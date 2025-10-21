@@ -1,424 +1,236 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer_unified.py - SUPER OPTIMIZER
-Intelligently tests BOTH 0DTE and regular option parameters in one run
-Detects signal type and applies appropriate parameter ranges
+Databento Options Data Harvester - FINAL WORKING VERSION
+Fetches data from SIGNAL DATE through EXPIRY DATE
+Uses environment variable from .env file
+Column output: timestamp (not ts_event) - backtest engine handles both
 """
 
-import asyncio
-import json
-import logging
-import sys
-from pathlib import Path
-from datetime import datetime
+import databento as db
 import pandas as pd
-import numpy as np
-from itertools import product
-from typing import Dict, List, Any
+import os
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+import logging
+from dotenv import load_dotenv
 
-# Add project root
+# Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from backtester.backtest_engine import BacktestEngine
+from services.signal_parser import SignalParser
 from services.config import Config
+from services.utils import get_data_filename_databento
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-
-class UnifiedParameterOptimizer:
-    """
-    SUPER OPTIMIZER - Tests both 0DTE and regular option parameter ranges
-    Automatically detects signal type and applies appropriate parameters
-    """
-    
-    def __init__(self, signals_file="backtester/signals_to_test.txt", quick_mode=False):
-        self.signals_file = Path(signals_file)
-        self.quick_mode = quick_mode
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(f"backtester/optimization_results/{self.timestamp}")
+class DatabentoHarvester:
+    def __init__(self, api_key):
+        self.client = db.Historical(api_key)
+        
+        # Use Path for Windows compatibility
+        self.signals_path = Path(__file__).parent / "signals_to_test.txt"
+        self.output_dir = Path(__file__).parent / "historical_data"
         self.output_dir.mkdir(exist_ok=True, parents=True)
         
-        logging.info("🚀 UNIFIED SUPER OPTIMIZER initialized")
-        logging.info(f"📊 Signals file: {self.signals_file}")
-        logging.info(f"⚡ Quick mode: {quick_mode}")
-        logging.info(f"📂 Output dir: {self.output_dir}")
+        self.config = Config()
+        self.signal_parser = SignalParser(self.config)
         
-        # Load and categorize signals
-        self.signals_0dte = []
-        self.signals_regular = []
-        self._categorize_signals()
+    def run(self):
+        """Main execution"""
+        logging.info(f"Using signals file: {self.signals_path}")
+        logging.info("Starting Databento data download...")
         
-        # Define parameter grids for each type
-        self.param_grid_0dte = self.get_0dte_grid(quick_mode)
-        self.param_grid_regular = self.get_regular_grid(quick_mode)
+        signals = self._parse_signals()
         
-        self.results = []
-    
-    def _categorize_signals(self):
-        """Separate signals into 0DTE and regular based on ticker"""
-        logging.info("\n" + "="*80)
-        logging.info("📋 CATEGORIZING SIGNALS BY TYPE")
-        logging.info("="*80)
-        
-        if not self.signals_file.exists():
-            logging.error(f"❌ Signals file not found: {self.signals_file}")
+        if not signals:
+            logging.error("No valid signals found")
             return
+            
+        logging.info(f"Found {len(signals)} valid signals")
         
-        with open(self.signals_file, 'r') as f:
+        for signal in signals:
+            self._download_signal_data(signal)
+    
+    def _parse_signals(self):
+        """Parse signals from file"""
+        signals = []
+        default_profile = self.config.profiles[0] if self.config.profiles else {
+            'assume_buy_on_ambiguous': True,
+            'ambiguous_expiry_enabled': True
+        }
+        
+        if not self.signals_path.exists():
+            logging.error(f"Signals file not found: {self.signals_path}")
+            return []
+        
+        with open(self.signals_path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
                 
-                # Parse signal to get ticker
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    signal_text = parts[2].strip()
+                # Handle both formats:
+                # 1. Simple: TICKER STRIKEP/C MM/DD
+                # 2. Full: YYYY-MM-DD HH:MM:SS | channel | TICKER STRIKEP/C MM/DD
+                timestamp_str = None
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) >= 3:
+                        timestamp_str = parts[0].strip()
+                        signal_text = parts[2].strip()
+                    else:
+                        continue
                 else:
                     signal_text = line
                 
-                # Check if it's SPX/SPY (0DTE indicators)
-                ticker_upper = signal_text.split()[0].upper()
-                
-                if ticker_upper in ['SPX', 'SPY', 'SPXW']:
-                    self.signals_0dte.append(line)
-                else:
-                    self.signals_regular.append(line)
+                parsed = self.signal_parser.parse_signal(signal_text, default_profile)
+                if parsed:
+                    # Add signal timestamp if available
+                    if timestamp_str:
+                        parsed['signal_timestamp'] = timestamp_str
+                    
+                    signals.append(parsed)
+                    
+                    # Use correct keys from signal parser
+                    right = parsed['contract_type'][0]
+                    expiry = parsed.get('expiry_date', 'unknown')
+                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{right} {expiry}")
         
-        logging.info(f"✅ Found {len(self.signals_0dte)} 0DTE signals (SPX/SPY)")
-        logging.info(f"✅ Found {len(self.signals_regular)} regular option signals")
-        logging.info("="*80)
+        return signals
     
-    def get_0dte_grid(self, quick_mode):
-        """Parameter grid for 0DTE options (ultra-short holds)"""
-        if quick_mode:
-            return {
-                'breakeven_trigger_percent': [7, 10],
-                'trail_method': ['pullback_percent'],
-                'pullback_percent': [10, 15],
-                'atr_period': [14],
-                'atr_multiplier': [1.5],
-                'native_trail_percent': [20, 25],
-                'psar_enabled': [False],
-                'psar_start': [0.02],
-                'psar_increment': [0.02],
-                'psar_max': [0.2],
-                'rsi_hook_enabled': [False],
-                'rsi_period': [14],
-                'rsi_overbought': [70],
-                'rsi_oversold': [30]
-            }
-        else:
-            # FOCUSED FULL GRID for 0DTE (50 combinations vs 100)
-            return {
-                'breakeven_trigger_percent': [5, 7, 10, 15],
-                'trail_method': ['pullback_percent'],
-                'pullback_percent': [10, 15, 20],
-                'atr_period': [14],
-                'atr_multiplier': [1.5],
-                'native_trail_percent': [20, 25, 30],
-                'psar_enabled': [False],
-                'psar_start': [0.02],
-                'psar_increment': [0.02],
-                'psar_max': [0.2],
-                'rsi_hook_enabled': [False],
-                'rsi_period': [14],
-                'rsi_overbought': [70],
-                'rsi_oversold': [30]
-            }
-            # 4 (breakeven) × 3 (pullback) × 3 (native) = 36 tests
-    
-    def get_regular_grid(self, quick_mode):
-        """Parameter grid for regular options (multi-hour holds)"""
-        if quick_mode:
-            return {
-                'breakeven_trigger_percent': [7, 10, 12],
-                'trail_method': ['pullback_percent', 'atr'],
-                'pullback_percent': [8, 10],
-                'atr_period': [14],
-                'atr_multiplier': [1.5],
-                'native_trail_percent': [25, 30],
-                'psar_enabled': [True, False],
-                'psar_start': [0.02],
-                'psar_increment': [0.02],
-                'psar_max': [0.2],
-                'rsi_hook_enabled': [False],
-                'rsi_period': [14],
-                'rsi_overbought': [70],
-                'rsi_oversold': [30]
-            }
-        else:
-            # FOCUSED FULL GRID for regular (180 combinations vs 2,880)
-            return {
-                'breakeven_trigger_percent': [5, 7, 10, 12, 15],
-                'trail_method': ['pullback_percent', 'atr'],
-                'pullback_percent': [8, 10, 12],
-                'atr_period': [14],
-                'atr_multiplier': [1.5, 2.0],
-                'native_trail_percent': [25, 30, 35],
-                'psar_enabled': [False],
-                'psar_start': [0.02],
-                'psar_increment': [0.02],
-                'psar_max': [0.2],
-                'rsi_hook_enabled': [False],
-                'rsi_period': [14],
-                'rsi_overbought': [70],
-                'rsi_oversold': [30]
-            }
-            # 5 (breakeven) × 2 (trail_method) × 3 (pullback) × 2 (atr_multi) × 3 (native) = 180 tests
-    
-    def load_custom_params(self, params_file):
-        """Load custom parameter grids from JSON file"""
-        logging.info(f"📋 Loading custom parameters from {params_file}")
+    def _download_signal_data(self, signal):
+        """Download data for a single signal from SIGNAL DATE to EXPIRY"""
+        ticker = signal['ticker']
+        strike = signal['strike']
+        right = signal['contract_type'][0]  # 'CALL' -> 'C', 'PUT' -> 'P'
         
-        with open(params_file, 'r') as f:
-            custom_grids = json.load(f)
+        # Signal parser returns 'expiry_date' (YYYYMMDD string)
+        expiry = signal.get('expiry_date', '')
         
-        if '0dte_params' in custom_grids:
-            self.param_grid_0dte = custom_grids['0dte_params']
-            logging.info("✅ Loaded custom 0DTE parameters")
+        logging.info(f"📥 {ticker} {strike}{right} exp {expiry}")
         
-        if 'regular_params' in custom_grids:
-            self.param_grid_regular = custom_grids['regular_params']
-            logging.info("✅ Loaded custom regular parameters")
-    
-    async def run_optimization(self):
-        """Run optimization for both signal types"""
-        logging.info("\n" + "="*100)
-        logging.info("🚀 STARTING UNIFIED OPTIMIZATION")
-        logging.info("="*100)
-        
-        all_results = []
-        
-        # Test 0DTE signals if we have any
-        if self.signals_0dte:
-            logging.info("\n" + "🎯"*40)
-            logging.info("TESTING 0DTE SIGNALS (SPX/SPY)")
-            logging.info("🎯"*40)
+        try:
+            # Parse expiry date
+            exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
-            results_0dte = await self._optimize_signal_set(
-                self.signals_0dte,
-                self.param_grid_0dte,
-                signal_type="0DTE"
-            )
-            all_results.extend(results_0dte)
-        
-        # Test regular signals if we have any
-        if self.signals_regular:
-            logging.info("\n" + "📈"*40)
-            logging.info("TESTING REGULAR OPTION SIGNALS")
-            logging.info("📈"*40)
-            
-            results_regular = await self._optimize_signal_set(
-                self.signals_regular,
-                self.param_grid_regular,
-                signal_type="REGULAR"
-            )
-            all_results.extend(results_regular)
-        
-        # Save combined results
-        self._save_unified_results(all_results)
-        
-        logging.info("\n" + "="*100)
-        logging.info("✅ UNIFIED OPTIMIZATION COMPLETE")
-        logging.info("="*100)
-    
-    async def _optimize_signal_set(self, signals: List[str], param_grid: Dict, signal_type: str):
-        """Optimize a specific set of signals with their appropriate parameter grid"""
-        
-        # Create temporary signals file
-        temp_signals_file = self.output_dir / f"temp_signals_{signal_type.lower()}.txt"
-        with open(temp_signals_file, 'w') as f:
-            for signal in signals:
-                f.write(signal + '\n')
-        
-        # Generate parameter combinations
-        param_keys = list(param_grid.keys())
-        param_values = [param_grid[key] for key in param_keys]
-        combinations = list(product(*param_values))
-        
-        total_tests = len(combinations)
-        logging.info(f"\n📊 Testing {total_tests} parameter combinations for {signal_type}")
-        logging.info(f"⏱️  Estimated time: {total_tests * 5 / 60:.1f} minutes")
-        
-        results = []
-        
-        for test_num, combo in enumerate(combinations, 1):
-            params = dict(zip(param_keys, combo))
-            test_name = f"{signal_type}_test_{test_num:04d}"
-            
-            logging.info(f"\n{'='*100}")
-            logging.info(f"[{test_num}/{total_tests}] Running: {test_name}")
-            logging.info(f"{'='*100}")
-            
-            # Log parameters
-            logging.info(f"Breakeven: {params['breakeven_trigger_percent']}%")
-            logging.info(f"Trail: {params['trail_method']}")
-            if params['trail_method'] == 'pullback_percent':
-                logging.info(f"Pullback: {params['pullback_percent']}%")
+            # Parse signal date if available, otherwise use 2 days before expiry
+            if 'signal_timestamp' in signal:
+                signal_date = datetime.strptime(signal['signal_timestamp'], '%Y-%m-%d %H:%M:%S').date()
             else:
-                logging.info(f"ATR: {params['atr_period']}p × {params['atr_multiplier']}")
-            logging.info(f"Native: {params['native_trail_percent']}%")
-            logging.info(f"PSAR: {params['psar_enabled']} | RSI: {params['rsi_hook_enabled']}")
+                signal_date = exp_date - timedelta(days=2)
             
-            # Run backtest
-            engine = BacktestEngine(
-                str(temp_signals_file),
-                "backtester/historical_data"
+            # Create OCC symbol (YYMMDD format for Databento)
+            expiry_str = exp_date.strftime('%y%m%d')
+            strike_str = f"{int(strike * 1000):08d}"
+            
+            # Handle special index tickers
+            if ticker == "SPX":
+                ticker_formatted = "SPXW  "  # SPXW for SPX
+            elif ticker == "NDX":
+                ticker_formatted = "NDXP  "  # NDXP for NDX
+            else:
+                ticker_formatted = ticker.ljust(6)[:6]
+            
+            occ_symbol = f"{ticker_formatted}{expiry_str}{right}{strike_str}"
+            
+            logging.info(f"   OCC: {occ_symbol}")
+            logging.info(f"   Fetching: {signal_date} to {exp_date}")
+            
+            # Fetch data from signal date through expiry (inclusive)
+            data = self.client.timeseries.get_range(
+                dataset='OPRA.PILLAR',
+                symbols=[occ_symbol],
+                schema='trades',
+                start=signal_date,
+                end=exp_date + timedelta(days=1),  # End is exclusive, so add 1 day
+                stype_in='raw_symbol'
             )
             
-            backtest_results = engine.run_simulation(params)
+            df = data.to_df()
             
-            # Store results
-            result = {
-                'test_name': test_name,
-                'signal_type': signal_type,
-                **backtest_results,
-                **params
-            }
-            results.append(result)
+            if df.empty:
+                logging.error(f"   ❌ No data returned for {occ_symbol}")
+                return
             
-            # Log quick summary
-            logging.info(f"✅ P&L: ${backtest_results['total_pnl']:.2f} | "
-                        f"Win Rate: {backtest_results['win_rate']:.1f}% | "
-                        f"PF: {backtest_results['profit_factor']:.2f}")
-        
-        # Clean up temp file
-        temp_signals_file.unlink()
-        
-        return results
-    
-    def _save_unified_results(self, all_results: List[Dict]):
-        """Save combined results for both signal types"""
-        
-        if not all_results:
-            logging.warning("⚠️  No results to save")
-            return
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(all_results)
-        
-        # Save detailed CSV
-        csv_path = self.output_dir / "unified_results.csv"
-        df.to_csv(csv_path, index=False)
-        logging.info(f"\n📊 Saved detailed results to {csv_path}")
-        
-        # Create summary report
-        self._create_unified_summary(df)
-    
-    def _create_unified_summary(self, df: pd.DataFrame):
-        """Create comprehensive summary comparing both signal types"""
-        
-        summary_path = self.output_dir / "unified_optimization_summary.txt"
-        
-        with open(summary_path, 'w') as f:
-            f.write("="*100 + "\n")
-            f.write("UNIFIED PARAMETER OPTIMIZATION SUMMARY\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("Tests both 0DTE and Regular option parameters\n")
-            f.write("="*100 + "\n\n")
+            # Rename columns for backtest engine compatibility
+            # Keep as 'timestamp' - the backtest engine fix handles both timestamp and ts_event
+            df = df.rename(columns={
+                'ts_event': 'timestamp',
+                'price': 'close'
+            })
             
-            # Overall statistics
-            f.write("OVERALL PERFORMANCE:\n")
-            f.write("-"*100 + "\n")
-            f.write(f"Total Tests: {len(df)}\n")
-            f.write(f"Profitable Configs: {len(df[df['total_pnl'] > 0])} ({len(df[df['total_pnl'] > 0])/len(df)*100:.1f}%)\n")
-            f.write(f"Average P&L: ${df['total_pnl'].mean():.2f}\n")
-            f.write(f"Best P&L: ${df['total_pnl'].max():.2f}\n")
-            f.write(f"Worst P&L: ${df['total_pnl'].min():.2f}\n\n")
+            # Add high/low if not present
+            if 'high' not in df.columns:
+                df['high'] = df['close']
+            if 'low' not in df.columns:
+                df['low'] = df['close']
+            if 'volume' not in df.columns:
+                df['volume'] = df.get('size', 0)
             
-            # Breakdown by signal type
-            for signal_type in df['signal_type'].unique():
-                df_type = df[df['signal_type'] == signal_type]
-                
-                f.write(f"\n{signal_type} SIGNALS BREAKDOWN:\n")
-                f.write("-"*100 + "\n")
-                f.write(f"Tests Run: {len(df_type)}\n")
-                f.write(f"Profitable: {len(df_type[df_type['total_pnl'] > 0])} ({len(df_type[df_type['total_pnl'] > 0])/len(df_type)*100:.1f}%)\n")
-                f.write(f"Average P&L: ${df_type['total_pnl'].mean():.2f}\n")
-                f.write(f"Average Win Rate: {df_type['win_rate'].mean():.1f}%\n")
-                f.write(f"Average Profit Factor: {df_type['profit_factor'].mean():.2f}\n\n")
-                
-                # Top 5 for this type
-                top_5 = df_type.nlargest(5, 'total_pnl')
-                f.write(f"TOP 5 {signal_type} CONFIGURATIONS:\n")
-                for i, (idx, row) in enumerate(top_5.iterrows(), 1):
-                    f.write(f"\n#{i}. {row['test_name']}\n")
-                    f.write(f"   Win Rate: {row['win_rate']:.1f}% | P&L: ${row['total_pnl']:.2f} | PF: {row['profit_factor']:.2f}\n")
-                    f.write(f"   Breakeven: {row['breakeven_trigger_percent']}% | ")
-                    if row['trail_method'] == 'pullback_percent':
-                        f.write(f"Pullback: {row['pullback_percent']}% | ")
-                    else:
-                        f.write(f"ATR: {row['atr_period']}p×{row['atr_multiplier']} | ")
-                    f.write(f"Native: {row['native_trail_percent']}%\n")
+            # Add bid/ask/mid/spread if not present (from trades data)
+            if 'bid' not in df.columns:
+                df['bid'] = df['close'] * 0.995  # Approximate
+            if 'ask' not in df.columns:
+                df['ask'] = df['close'] * 1.005  # Approximate
+            if 'mid' not in df.columns:
+                df['mid'] = df['close']
+            if 'spread' not in df.columns:
+                df['spread'] = df['ask'] - df['bid']
             
-            # Overall top 10
-            f.write("\n" + "="*100 + "\n")
-            f.write("TOP 10 OVERALL CONFIGURATIONS (All Signal Types):\n")
-            f.write("="*100 + "\n\n")
+            # Save to CSV with all columns
+            filename = get_data_filename_databento(ticker, expiry, strike, right)
+            filepath = self.output_dir / filename
             
-            top_10 = df.nlargest(10, 'total_pnl')
-            for i, (idx, row) in enumerate(top_10.iterrows(), 1):
-                f.write(f"#{i}. {row['test_name']} [{row['signal_type']}]\n")
-                f.write(f"   Win Rate: {row['win_rate']:.1f}% | P&L: ${row['total_pnl']:.2f} | PF: {row['profit_factor']:.2f}\n")
-                f.write(f"   Breakeven: {row['breakeven_trigger_percent']}% | ")
-                if row['trail_method'] == 'pullback_percent':
-                    f.write(f"Pullback: {row['pullback_percent']}% | ")
-                else:
-                    f.write(f"ATR: {row['atr_period']}p×{row['atr_multiplier']} | ")
-                f.write(f"Native: {row['native_trail_percent']}%\n\n")
-        
-        logging.info(f"📋 Saved unified summary to {summary_path}")
-
-
-async def main():
-    """Main entry point"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Unified parameter optimization for both 0DTE and regular options"
-    )
-    parser.add_argument(
-        '--quick', 
-        action='store_true', 
-        help='Use quick mode (fewer tests)'
-    )
-    parser.add_argument(
-        '--signals', 
-        type=str,
-        default='backtester/signals_to_test.txt',
-        help='Path to signals file (will auto-categorize)'
-    )
-    parser.add_argument(
-        '--params',
-        type=str,
-        help='Path to custom unified parameter grid JSON file'
-    )
-    
-    args = parser.parse_args()
-    
-    # Create optimizer
-    optimizer = UnifiedParameterOptimizer(
-        signals_file=args.signals,
-        quick_mode=args.quick
-    )
-    
-    # Load custom params if provided
-    if args.params:
-        optimizer.load_custom_params(args.params)
-    
-    # Run optimization
-    await optimizer.run_optimization()
-
+            # Save with proper column order
+            columns_to_save = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
+            df[columns_to_save].to_csv(filepath, index=False)
+            
+            # Log statistics
+            date_range = f"{df['timestamp'].min()} to {df['timestamp'].max()}"
+            price_range = f"${df['close'].min():.2f}-${df['close'].max():.2f}"
+            logging.info(f"   ✅ Saved {len(df):,} ticks")
+            logging.info(f"   📅 Date range: {signal_date} to {exp_date}")
+            logging.info(f"   💰 Price range: {price_range}")
+            
+        except Exception as e:
+            logging.error(f"   ❌ Failed: {e}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("\n⚠️ Optimization interrupted by user")
-    except Exception as e:
-        logging.error(f"❌ Fatal error: {e}", exc_info=True)
+    # Load .env file
+    load_dotenv()
+    
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--api-key', help='Databento API key (or use DATABENTO_API_KEY in .env)')
+    args = parser.parse_args()
+    
+    # Get API key from args or environment
+    api_key = args.api_key or os.getenv('DATABENTO_API_KEY')
+    
+    if not api_key:
+        print("=" * 60)
+        print("ERROR: API key required")
+        print("=" * 60)
+        print("Option 1: Add to .env file:")
+        print("   DATABENTO_API_KEY=your_key_here")
+        print("")
+        print("Option 2: Pass as argument:")
+        print("   python Databento_Harvester.py --api-key YOUR_KEY")
+        print("=" * 60)
+        sys.exit(1)
+    
+    print("=" * 60)
+    print("DATABENTO DATA HARVESTER")
+    print("=" * 60)
+    
+    harvester = DatabentoHarvester(api_key)
+    harvester.run()
+    
+    print("\n" + "=" * 60)
+    print("COMPLETE")
+    print("=" * 60)
