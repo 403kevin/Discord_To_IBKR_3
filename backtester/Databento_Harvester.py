@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-EMERGENCY FIX - Run this to replace your broken Databento_Harvester.py
-Save this as: backtester/Databento_Harvester.py
+Databento Harvester - COMPLETE WORKING VERSION
+Fixed: timedelta import + proper profile object handling
 """
 
 import databento as db
 import pandas as pd
 import os
 import sys
-from datetime import datetime, timedelta  # ✅✅✅ THIS IS THE FIX ✅✅✅
+from datetime import datetime, timedelta  # ✅ FIXED
 from pathlib import Path
 import logging
 from dotenv import load_dotenv
@@ -45,7 +45,18 @@ class DatabentoHarvester:
             self._download_signal_data(signal)
     
     def _parse_signals(self):
+        """Parse signals with proper profile object handling"""
         signals = []
+        
+        # Create default profile for parsing
+        default_profile = self.config.profiles[0] if self.config.profiles else {
+            'assume_buy_on_ambiguous': True,
+            'ambiguous_expiry_enabled': True,
+            'buzzwords_buy': [],
+            'buzzwords_sell': [],
+            'channel_id': 'harvester'
+        }
+        
         if not self.signals_path.exists():
             logging.error(f"Signals file not found: {self.signals_path}")
             return []
@@ -59,14 +70,13 @@ class DatabentoHarvester:
                 if '|' in line:
                     parts = line.split('|')
                     timestamp_str = parts[0].strip()
-                    channel = parts[1].strip()
                     signal_text = parts[2].strip()
                 else:
                     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    channel = 'test_server'
                     signal_text = line
                 
-                parsed = self.signal_parser.parse_signal(signal_text, channel)
+                # ✅ FIXED: Pass profile object, not channel string
+                parsed = self.signal_parser.parse_signal(signal_text, default_profile)
                 if parsed:
                     parsed['timestamp'] = timestamp_str
                     signals.append(parsed)
@@ -87,7 +97,7 @@ class DatabentoHarvester:
             exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
             start_date = signal_date
-            end_date = exp_date + timedelta(days=1)  # ✅✅✅ USES TIMEDELTA ✅✅✅
+            end_date = exp_date + timedelta(days=1)  # ✅ USES timedelta
             
             expiry_str = exp_date.strftime('%y%m%d')
             strike_str = f"{int(strike * 1000):08d}"
