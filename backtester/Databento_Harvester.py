@@ -124,11 +124,11 @@ class DatabentoHarvester:
             occ_symbol = f"{root_symbol.ljust(6)}{expiry_str}{right}{strike_str}"
             logging.info(f"   OCC: {occ_symbol}")
             
-            # Download from Databento
+            # Download from Databento - 1-MINUTE BARS (not ticks!)
             data = self.client.timeseries.get_range(
                 dataset='OPRA.pillar',
                 symbols=[occ_symbol],
-                schema='cmbp-1',  # ✅ FIXED: Use cmbp-1 (consolidated MBP) for OPRA
+                schema='ohlcv-1m',  # ✅ FIXED: 1-minute OHLCV bars
                 start=start_date,
                 end=end_date,
                 stype_in='raw_symbol'
@@ -139,26 +139,22 @@ class DatabentoHarvester:
                 logging.warning(f"   ⚠️ No data found")
                 return
             
-            # Calculate derived columns
-            df['mid'] = (df['bid_px_00'] + df['ask_px_00']) / 2
-            df['spread'] = df['ask_px_00'] - df['bid_px_00']
+            # OHLCV schema columns: ts_event, open, high, low, close, volume
+            # We need: timestamp, bid, ask, mid, spread, close, high, low, volume
             
-            # Rename to match expected format
-            df = df.rename(columns={
-                'ts_event': 'timestamp',
-                'bid_px_00': 'bid',
-                'ask_px_00': 'ask'
-            })
+            # Rename timestamp
+            df = df.rename(columns={'ts_event': 'timestamp'})
             
-            # Add OHLCV if not present
-            if 'close' not in df.columns:
-                df['close'] = df['mid']
-            if 'high' not in df.columns:
-                df['high'] = df['mid']
-            if 'low' not in df.columns:
-                df['low'] = df['mid']
-            if 'volume' not in df.columns:
-                df['volume'] = 0
+            # For OHLCV bars, we don't have bid/ask, so approximate:
+            # - mid = close
+            # - bid = close - (typical spread / 2)
+            # - ask = close + (typical spread / 2)
+            # - spread = estimate (0.01 for options)
+            
+            df['mid'] = df['close']
+            df['spread'] = 0.01  # Typical penny spread for liquid options
+            df['bid'] = df['close'] - (df['spread'] / 2)
+            df['ask'] = df['close'] + (df['spread'] / 2)
             
             # Select final columns
             columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
