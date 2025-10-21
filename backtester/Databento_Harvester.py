@@ -86,7 +86,10 @@ class DatabentoHarvester:
                 parsed = self.signal_parser.parse_signal(signal_text, default_profile)
                 if parsed:
                     signals.append(parsed)
-                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{parsed['contract_type'][0]} {parsed['expiry']}")
+                    # Use correct keys from signal parser
+                    right = parsed['contract_type'][0]
+                    expiry = parsed.get('expiry', parsed.get('expiry_date', 'unknown'))
+                    logging.info(f"✓ {parsed['ticker']} {parsed['strike']}{right} {expiry}")
         
         return signals
     
@@ -95,7 +98,9 @@ class DatabentoHarvester:
         ticker = signal['ticker']
         strike = signal['strike']
         right = signal['contract_type'][0]  # 'CALL' -> 'C', 'PUT' -> 'P'
-        expiry = signal['expiry']
+        
+        # Signal parser returns 'expiry_date' (YYYYMMDD string)
+        expiry = signal.get('expiry_date', signal.get('expiry', ''))
         
         logging.info(f"📥 {ticker} {strike}{right} exp {expiry}")
         
