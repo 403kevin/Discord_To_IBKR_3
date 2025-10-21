@@ -139,32 +139,24 @@ class DatabentoHarvester:
                 logging.warning(f"   ⚠️ No data found")
                 return
             
-            # DEBUG: Show actual columns
-            logging.info(f"   Columns returned: {df.columns.tolist()}")
+            # OHLCV data has timestamp in the INDEX, not as a column
+            # Columns: ['rtype', 'publisher_id', 'instrument_id', 'open', 'high', 'low', 'close', 'volume', 'symbol']
             
-            # OHLCV schema columns may vary - check what we got
-            # Rename timestamp column (could be 'ts_event' or already 'timestamp')
+            # Reset index to make timestamp a column
+            df = df.reset_index()
+            
+            # Rename index column to 'timestamp' (it's usually called 'ts_event')
             if 'ts_event' in df.columns:
                 df = df.rename(columns={'ts_event': 'timestamp'})
-            
-            # Check if we have OHLCV data
-            if 'close' not in df.columns:
-                logging.error(f"   ❌ No 'close' column in data. Columns: {df.columns.tolist()}")
-                return
+            elif df.columns[0] not in ['timestamp', 'rtype']:
+                # First column is the timestamp
+                df = df.rename(columns={df.columns[0]: 'timestamp'})
             
             # For OHLCV bars, approximate bid/ask from close
             df['mid'] = df['close']
             df['spread'] = 0.01
             df['bid'] = df['close'] - 0.005
             df['ask'] = df['close'] + 0.005
-            
-            # Ensure all required columns exist
-            if 'high' not in df.columns:
-                df['high'] = df['close']
-            if 'low' not in df.columns:
-                df['low'] = df['close']
-            if 'volume' not in df.columns:
-                df['volume'] = 0
             
             # Select final columns
             columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
