@@ -139,22 +139,32 @@ class DatabentoHarvester:
                 logging.warning(f"   ⚠️ No data found")
                 return
             
-            # OHLCV schema columns: ts_event, open, high, low, close, volume
-            # We need: timestamp, bid, ask, mid, spread, close, high, low, volume
+            # DEBUG: Show actual columns
+            logging.info(f"   Columns returned: {df.columns.tolist()}")
             
-            # Rename timestamp
-            df = df.rename(columns={'ts_event': 'timestamp'})
+            # OHLCV schema columns may vary - check what we got
+            # Rename timestamp column (could be 'ts_event' or already 'timestamp')
+            if 'ts_event' in df.columns:
+                df = df.rename(columns={'ts_event': 'timestamp'})
             
-            # For OHLCV bars, we don't have bid/ask, so approximate:
-            # - mid = close
-            # - bid = close - (typical spread / 2)
-            # - ask = close + (typical spread / 2)
-            # - spread = estimate (0.01 for options)
+            # Check if we have OHLCV data
+            if 'close' not in df.columns:
+                logging.error(f"   ❌ No 'close' column in data. Columns: {df.columns.tolist()}")
+                return
             
+            # For OHLCV bars, approximate bid/ask from close
             df['mid'] = df['close']
-            df['spread'] = 0.01  # Typical penny spread for liquid options
-            df['bid'] = df['close'] - (df['spread'] / 2)
-            df['ask'] = df['close'] + (df['spread'] / 2)
+            df['spread'] = 0.01
+            df['bid'] = df['close'] - 0.005
+            df['ask'] = df['close'] + 0.005
+            
+            # Ensure all required columns exist
+            if 'high' not in df.columns:
+                df['high'] = df['close']
+            if 'low' not in df.columns:
+                df['low'] = df['close']
+            if 'volume' not in df.columns:
+                df['volume'] = 0
             
             # Select final columns
             columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
