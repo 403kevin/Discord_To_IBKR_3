@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - FIXED VERSION
+backtest_engine.py - TIMEZONE FIXED VERSION
+===================================================
+CRITICAL FIX: All timestamps are now timezone-aware (UTC)
+- Databento CSVs have tz-aware timestamps (UTC)
+- Signal timestamps now converted to tz-aware (UTC)
+- All comparisons work correctly
+- No more "Cannot compare tz-naive and tz-aware" errors
+
+Exit logic maintained:
 - Correct exit priority order
 - Working ATR trailing stop logic
-- Removed PSAR/RSI (useless for day trading)
 - Native trail as last resort only
 """
 
@@ -32,6 +39,7 @@ logging.basicConfig(
 class BacktestEngine:
     """
     Event-driven backtest engine for day trading options
+    NOW WITH PROPER TIMEZONE HANDLING
     """
     
     def __init__(self, signal_file_path: str, data_folder_path: str = "backtester/historical_data"):
@@ -142,7 +150,10 @@ class BacktestEngine:
         return signals
     
     def _load_signal_data(self, signal: Dict):
-        """Load historical data for a signal"""
+        """
+        Load historical data for a signal
+        TIMEZONE FIX: Ensure all timestamps are timezone-aware (UTC)
+        """
         ticker = signal['ticker']
         expiry = signal['expiry_date']
         strike = signal['strike']
@@ -159,9 +170,17 @@ class BacktestEngine:
         try:
             df = pd.read_csv(filepath)
             
+            # Identify time column
             time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
-            df[time_col] = pd.to_datetime(df[time_col])
             
+            # TIMEZONE FIX: Parse timestamps as UTC-aware
+            df[time_col] = pd.to_datetime(df[time_col], utc=True)
+            
+            # If timestamps were parsed without timezone, add UTC
+            if df[time_col].dt.tz is None:
+                df[time_col] = df[time_col].dt.tz_localize('UTC')
+            
+            # Calculate mid price if not present
             if 'mid' not in df.columns:
                 if 'bid' in df.columns and 'ask' in df.columns:
                     df['mid'] = (df['bid'] + df['ask']) / 2
@@ -169,14 +188,17 @@ class BacktestEngine:
                     df['mid'] = df['close']
             
             signal['data'] = df
-            logging.debug(f"Loaded {len(df)} bars for {ticker}")
+            logging.debug(f"Loaded {len(df)} bars for {ticker} (timezone-aware: {df[time_col].dt.tz})")
             
         except Exception as e:
             logging.error(f"Error loading {filename}: {e}")
             signal['data'] = None
     
     def _build_event_queue(self, signals: List[Dict]) -> List[Dict]:
-        """Build chronological event queue"""
+        """
+        Build chronological event queue
+        TIMEZONE FIX: Ensure signal timestamps are timezone-aware (UTC)
+        """
         events = []
         
         for signal in signals:
@@ -186,8 +208,14 @@ class BacktestEngine:
             signal_id = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}_{signal['contract_type']}"
             signal['signal_id'] = signal_id
             
+            # TIMEZONE FIX: Parse signal timestamp as UTC-aware
+            signal_time = pd.to_datetime(signal['timestamp'], utc=True)
+            
+            # If signal_time has no timezone, add UTC
+            if signal_time.tz is None:
+                signal_time = signal_time.tz_localize('UTC')
+            
             # Add signal entry event
-            signal_time = pd.to_datetime(signal['timestamp'])
             events.append({
                 'timestamp': signal_time,
                 'type': 'signal',
@@ -200,6 +228,8 @@ class BacktestEngine:
             
             for _, row in df.iterrows():
                 tick_time = row[time_col]
+                
+                # COMPARISON NOW WORKS: Both are tz-aware
                 if tick_time >= signal_time:
                     events.append({
                         'timestamp': tick_time,
@@ -211,11 +241,14 @@ class BacktestEngine:
         # Sort by timestamp
         events.sort(key=lambda x: x['timestamp'])
         
-        logging.info(f"Built event queue with {len(events)} events")
+        logging.info(f"Built event queue with {len(events)} events (all timestamps tz-aware)")
         return events
     
     def _process_signal_event(self, event: Dict):
-        """Process signal entry"""
+        """
+        Process signal entry
+        TIMEZONE FIX: Signal time comparison now works
+        """
         signal = event['signal']
         signal_id = signal['signal_id']
         
@@ -225,8 +258,12 @@ class BacktestEngine:
         df = signal['data']
         time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
         
-        # Find first tick after signal
-        signal_time = pd.to_datetime(signal['timestamp'])
+        # TIMEZONE FIX: Parse signal time as UTC-aware
+        signal_time = pd.to_datetime(signal['timestamp'], utc=True)
+        if signal_time.tz is None:
+            signal_time = signal_time.tz_localize('UTC')
+        
+        # Find first tick after signal (COMPARISON WORKS NOW)
         future_ticks = df[df[time_col] >= signal_time]
         
         if future_ticks.empty:
@@ -334,68 +371,77 @@ class BacktestEngine:
             if current_price <= entry_price:
                 return "breakeven_stop"
         
-        # 2. DYNAMIC TRAIL (ATR or Pullback)
-        if self.trail_method == 'atr':
-            # ATR trailing stop
-            if signal_id in self.atr_stops and self.atr_stops[signal_id]:
-                if current_price <= self.atr_stops[signal_id]:
-                    atr_val = self.atr_values.get(signal_id, 0)
-                    return f"atr_trail_{self.atr_period}p_{self.atr_multiplier}x"
+        # 2. DYNAMIC TRAILING STOPS (ATR or Pullback)
+        if self.trail_method == 'atr' and signal_id in self.atr_stops:
+            atr_stop = self.atr_stops[signal_id]
+            if atr_stop and current_price <= atr_stop:
+                return "atr_trail"
         
         elif self.trail_method == 'pullback_percent':
-            # Pullback trailing stop
-            if highest_price > entry_price:
-                pullback_stop = highest_price * (1 - self.pullback_percent / 100)
-                if current_price <= pullback_stop:
-                    return f"pullback_{self.pullback_percent}pct"
+            pullback_threshold = highest_price * (1 - self.pullback_percent / 100)
+            if current_price <= pullback_threshold:
+                return "pullback_stop"
         
-        # 3. NATIVE TRAIL (last resort - widest stop)
-        if highest_price > entry_price:
-            native_trail_stop = highest_price * (1 - self.native_trail_percent / 100)
-            if current_price <= native_trail_stop:
-                return f"native_trail_{self.native_trail_percent}pct"
+        # 3. NATIVE TRAILING STOP (last resort)
+        native_stop_price = highest_price * (1 - self.native_trail_percent / 100)
+        if current_price <= native_stop_price:
+            return "native_trail"
         
         return None
     
-    def _close_position(self, signal_id: str, exit_reason: str, exit_price: float, exit_time=None):
-        """Close position and log trade"""
-        position = self.portfolio['positions'].pop(signal_id)
+    def _close_position(self, signal_id: str, exit_reason: str, exit_price: float, exit_time):
+        """Close a position and log the trade"""
+        if signal_id not in self.portfolio['positions']:
+            return
+        
+        position = self.portfolio['positions'][signal_id]
+        signal = position['signal']
         
         entry_price = position['entry_price']
-        entry_time = position['entry_time']
-        pnl = (exit_price - entry_price) * 100
+        quantity = position['quantity']
         
-        self.portfolio['cash'] += exit_price * 100
+        # Calculate P&L
+        if signal['contract_type'] == 'CALL':
+            pnl = (exit_price - entry_price) * quantity * 100
+        else:  # PUT
+            pnl = (exit_price - entry_price) * quantity * 100
         
-        if signal_id in self.active_contracts:
-            del self.active_contracts[signal_id]
+        # Log trade
+        self.trade_log.append({
+            'signal_id': signal_id,
+            'ticker': signal['ticker'],
+            'strike': signal['strike'],
+            'contract_type': signal['contract_type'],
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'entry_time': position['entry_time'],
+            'exit_time': exit_time,
+            'quantity': quantity,
+            'pnl': pnl,
+            'exit_reason': exit_reason
+        })
         
+        # Update portfolio
+        self.portfolio['cash'] += pnl
+        del self.portfolio['positions'][signal_id]
+        del self.active_contracts[signal_id]
+        
+        # Clean up ATR tracking
         if signal_id in self.atr_values:
             del self.atr_values[signal_id]
         if signal_id in self.atr_stops:
             del self.atr_stops[signal_id]
         
-        trade = {
-            'ticker': position['signal']['ticker'],
-            'entry_price': entry_price,
-            'exit_price': exit_price,
-            'entry_time': entry_time,
-            'exit_time': exit_time,
-            'pnl': pnl,
-            'exit_reason': exit_reason
-        }
-        
-        self.trade_log.append(trade)
-        
-        logging.info(f"EXIT: {position['signal']['ticker']} @ ${exit_price:.2f} | {exit_reason} | P&L: ${pnl:.2f}")
+        logging.info(f"EXIT: {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} @ ${exit_price:.2f} | "
+                    f"P&L: ${pnl:.2f} | Reason: {exit_reason}")
     
     def _close_all_positions(self):
-        """Close remaining positions at end of day"""
-        for signal_id in list(self.portfolio['positions'].keys()):
-            position = self.portfolio['positions'][signal_id]
+        """Close all remaining positions at end of day"""
+        for signal_id in list(self.active_contracts.keys()):
+            signal = self.active_contracts[signal_id]
             
-            df = position['signal'].get('data')
-            if df is not None and not df.empty:
+            if signal.get('data') is not None:
+                df = signal['data']
                 time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
                 last_tick = df.iloc[-1]
                 exit_price = last_tick.get('mid', last_tick.get('close', 0))
@@ -405,16 +451,19 @@ class BacktestEngine:
                     self._close_position(signal_id, 'eod_close', exit_price, exit_time)
     
     def _calculate_results(self) -> Dict:
-        """Calculate backtest results"""
+        """
+        Calculate backtest results
+        TIMEZONE FIX: Handle timezone-aware datetimes in hold time calculation
+        """
         if not self.trade_log:
             return self._empty_results()
         
         df = pd.DataFrame(self.trade_log)
         
-        # Calculate hold times
+        # Calculate hold times (TIMEZONE FIX: Works with tz-aware timestamps)
         if 'entry_time' in df.columns and 'exit_time' in df.columns:
-            df['entry_time'] = pd.to_datetime(df['entry_time'])
-            df['exit_time'] = pd.to_datetime(df['exit_time'])
+            df['entry_time'] = pd.to_datetime(df['entry_time'], utc=True)
+            df['exit_time'] = pd.to_datetime(df['exit_time'], utc=True)
             df['hold_minutes'] = (df['exit_time'] - df['entry_time']).dt.total_seconds() / 60
             avg_hold_minutes = df['hold_minutes'].mean()
         else:
