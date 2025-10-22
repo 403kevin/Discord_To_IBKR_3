@@ -57,7 +57,7 @@ class BatchTesterAllTraders:
         # All traders to test
         self.all_traders = trader_list or [
             'goldman', 'expo', 'qiqo', 'gandalf', 'zeus', 
-            'arrow', 'waxui', 'nitro', 'money_mo', 'diesel', 'prophet'
+            'arrow', 'waxui', 'nitro', 'money_mo', 'diesel', 'prophet', 'dd_alerts'
         ]
         
         self.master_results = []
