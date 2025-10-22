@@ -1,29 +1,26 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - COMPLETE WORKING VERSION (MS 21 REPAIR)
-
-THE ACTUAL FIX (from screenshot):
-- SignalParser returns: contract_type, expiry_date
-- BacktestEngine expects: right, expiry
-- Solution: Map the keys after parsing
+backtest_engine.py - FIXED VERSION
+- Correct exit priority order
+- Working ATR trailing stop logic
+- Removed PSAR/RSI (useless for day trading)
+- Native trail as last resort only
 """
 
-import logging
-import pandas as pd
-import pandas_ta as ta
-from datetime import datetime, timedelta
-import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import re
+from datetime import datetime
+import pandas as pd
+import numpy as np
+import logging
+from typing import Dict, List, Optional
 
-# Add project root to path
+# Add project root
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.config import Config
 from services.signal_parser import SignalParser
+from services.config import Config
 from services.utils import get_data_filename_databento
 
 logging.basicConfig(
@@ -33,113 +30,87 @@ logging.basicConfig(
 
 
 class BacktestEngine:
-    """Event-driven backtesting engine with key mapping fix"""
+    """
+    Event-driven backtest engine for day trading options
+    """
     
-    def __init__(self, signal_file_path: str, data_folder_path: str):
-        self.config = Config()
-        self.signal_parser = SignalParser(self.config)
-        self.signal_file_path = signal_file_path
-        self.historical_data_dir = data_folder_path
-        
-        # Portfolio tracking
+    def __init__(self, signal_file_path: str, data_folder_path: str = "backtester/historical_data"):
+        self.signal_file_path = Path(signal_file_path)
+        self.data_folder_path = Path(data_folder_path)
         self.starting_capital = 100000
-        self.portfolio = {
-            'cash': self.starting_capital,
-            'positions': {}
-        }
-        self.trade_log = []
         
-        # Position tracking
-        self.position_data_cache = {}
-        self.tick_buffer = {}
-        self.last_bar_timestamp = {}
-        self.trailing_highs_and_lows = {}
-        self.atr_stop_prices = {}
-        self.breakeven_activated = {}
-        self.native_trail_stops = {}
-        self.active_contracts = {}
-        
-        # Test parameters (stored on self, not self.config)
+        # Exit parameters (set via run_simulation)
         self.breakeven_trigger_percent = 10
         self.trail_method = 'pullback_percent'
         self.pullback_percent = 10
-        self.native_trail_percent = 25
         self.atr_period = 14
         self.atr_multiplier = 1.5
-        self.psar_enabled = False
-        self.psar_start = 0.02
-        self.psar_increment = 0.02
-        self.psar_max = 0.2
-        self.rsi_hook_enabled = False
-        self.rsi_period = 14
-        self.rsi_overbought = 70
-        self.rsi_oversold = 30
+        self.native_trail_percent = 25
         
-        logging.info("✅ BacktestEngine initialized")
+        # State tracking
+        self.portfolio = {'cash': self.starting_capital, 'positions': {}}
+        self.active_contracts = {}
+        self.trade_log = []
+        
+        # ATR calculation storage
+        self.atr_values = {}  # {signal_id: current_atr}
+        self.atr_stops = {}   # {signal_id: current_stop_price}
     
-    def run_simulation(self, params: Optional[Dict] = None) -> Dict:
-        """Main simulation loop"""
-        logging.info("\n" + "="*80)
-        logging.info("🚀 BACKTEST SIMULATION START")
-        logging.info("="*80)
+    def run_simulation(self, params: Dict = None) -> Dict:
+        """Run backtest with given parameters"""
         
+        # Apply parameters if provided
         if params:
-            self._apply_parameters(params)
+            self.breakeven_trigger_percent = params.get('breakeven_trigger_percent', 10)
+            self.trail_method = params.get('trail_method', 'pullback_percent')
+            self.pullback_percent = params.get('pullback_percent', 10)
+            self.atr_period = params.get('atr_period', 14)
+            self.atr_multiplier = params.get('atr_multiplier', 1.5)
+            self.native_trail_percent = params.get('native_trail_percent', 25)
         
+        # Reset state
+        self.portfolio = {'cash': self.starting_capital, 'positions': {}}
+        self.active_contracts = {}
+        self.trade_log = []
+        self.atr_values = {}
+        self.atr_stops = {}
+        
+        # Load signals
         signals = self._load_signals()
         if not signals:
-            logging.error("❌ No signals found")
+            logging.warning("No valid signals found")
             return self._empty_results()
         
-        logging.info(f"📊 Loaded {len(signals)} signals")
-        
-        # Load historical data
+        # Load historical data for each signal
         for signal in signals:
-            df = self._load_signal_data(signal)
-            if not df.empty:
-                signal['data'] = df
-                signal['has_data'] = True
-            else:
-                signal['has_data'] = False
+            self._load_signal_data(signal)
         
-        valid_signals = [s for s in signals if s.get('has_data', False)]
-        if not valid_signals:
-            logging.error("❌ No signals have historical data")
+        # Build event queue
+        events = self._build_event_queue(signals)
+        
+        if not events:
+            logging.warning("No events in queue")
             return self._empty_results()
         
-        logging.info(f"✅ {len(valid_signals)} signals have data")
-        
-        # Create event queue and process
-        event_queue = self._create_event_queue(valid_signals)
-        logging.info(f"📅 Created {len(event_queue)} events")
-        
-        for event in event_queue:
+        # Process events
+        for event in events:
             if event['type'] == 'signal':
                 self._process_signal_event(event)
             elif event['type'] == 'tick':
                 self._process_tick_event(event)
         
+        # Close remaining positions
         self._close_all_positions()
-        results = self._calculate_results()
         
-        logging.info("="*80)
-        logging.info("🏁 SIMULATION COMPLETE")
-        logging.info("="*80)
-        
-        return results
-    
-    def _apply_parameters(self, params: Dict):
-        """Apply test parameters to self"""
-        for key, value in params.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+        # Calculate results
+        return self._calculate_results()
     
     def _load_signals(self) -> List[Dict]:
-        """Load and parse signals with KEY MAPPING FIX"""
-        signals = []
+        """Load and parse signals from file"""
+        config = Config()
+        parser = SignalParser(config)
         
-        # Default profile for parsing
-        default_profile = self.config.profiles[0] if self.config.profiles else {
+        default_profile = config.profiles[0] if config.profiles else {
             'assume_buy_on_ambiguous': True,
             'ambiguous_expiry_enabled': True,
             'buzzwords_buy': [],
@@ -147,155 +118,144 @@ class BacktestEngine:
             'channel_id': 'backtest'
         }
         
-        if not os.path.exists(self.signal_file_path):
-            logging.error(f"Signal file not found: {self.signal_file_path}")
-            return []
-        
+        signals = []
         with open(self.signal_file_path, 'r') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 line = line.strip()
-                
-                if not line or line.startswith('#') or line.startswith('Trader:') or line.startswith('Format:'):
+                if not line or line.startswith('#') or line.startswith('Trader:'):
                     continue
                 
-                # Parse timestamped format: YYYY-MM-DD HH:MM:SS | channel | signal
                 if '|' in line:
                     parts = line.split('|')
-                    if len(parts) >= 3:
-                        timestamp_str = parts[0].strip()
-                        signal_text = parts[2].strip()
-                    else:
-                        continue
+                    timestamp_str = parts[0].strip()
+                    signal_text = parts[2].strip()
                 else:
                     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     signal_text = line
                 
-                # Parse with SignalParser
-                parsed = self.signal_parser.parse_signal(signal_text, default_profile)
-                
+                parsed = parser.parse_signal(signal_text, default_profile)
                 if parsed:
-                    # ✅ THE FIX - MAP KEYS
-                    parsed['right'] = 'C' if parsed['contract_type'] == 'CALL' else 'P'
-                    parsed['expiry'] = datetime.strptime(parsed['expiry_date'], '%Y%m%d')
                     parsed['timestamp'] = timestamp_str
-                    
                     signals.append(parsed)
-                    logging.debug(f"✅ Line {line_num}: {parsed['ticker']} {parsed['strike']}{parsed['right']}")
-                else:
-                    logging.warning(f"❌ Line {line_num}: Failed to parse '{signal_text}'")
         
+        logging.info(f"Loaded {len(signals)} signals")
         return signals
     
-    def _load_signal_data(self, signal: Dict) -> pd.DataFrame:
-        """Load historical CSV data"""
-        filename = get_data_filename_databento(
-            signal['ticker'],
-            signal['expiry'].strftime('%Y%m%d'),
-            signal['strike'],
-            signal['right']
-        )
+    def _load_signal_data(self, signal: Dict):
+        """Load historical data for a signal"""
+        ticker = signal['ticker']
+        expiry = signal['expiry_date']
+        strike = signal['strike']
+        right = 'C' if signal['contract_type'] == 'CALL' else 'P'
         
-        filepath = os.path.join(self.historical_data_dir, filename)
+        filename = get_data_filename_databento(ticker, expiry, strike, right)
+        filepath = self.data_folder_path / filename
         
-        if not os.path.exists(filepath):
-            logging.warning(f"⚠️ Data file not found: {filename}")
-            return pd.DataFrame()
+        if not filepath.exists():
+            logging.warning(f"Data file not found: {filename}")
+            signal['data'] = None
+            return
         
         try:
             df = pd.read_csv(filepath)
             
-            # Handle timestamp column
-            if 'timestamp' in df.columns:
-                time_col = 'timestamp'
-            elif 'ts_event' in df.columns:
-                time_col = 'ts_event'
-            else:
-                logging.error(f"❌ No timestamp column in {filename}")
-                return pd.DataFrame()
+            time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
+            df[time_col] = pd.to_datetime(df[time_col])
             
-            df[time_col] = pd.to_datetime(df[time_col], utc=True)
+            if 'mid' not in df.columns:
+                if 'bid' in df.columns and 'ask' in df.columns:
+                    df['mid'] = (df['bid'] + df['ask']) / 2
+                elif 'close' in df.columns:
+                    df['mid'] = df['close']
             
-            signal_time = pd.to_datetime(signal['timestamp'])
-            if signal_time.tz is None:
-                signal_time = signal_time.tz_localize('UTC')
-            
-            df = df[df[time_col] >= signal_time].copy()
-            
-            logging.info(f"📈 Loaded {len(df)} ticks for {signal['ticker']}")
-            
-            return df
+            signal['data'] = df
+            logging.debug(f"Loaded {len(df)} bars for {ticker}")
             
         except Exception as e:
-            logging.error(f"❌ Error loading {filename}: {e}")
-            return pd.DataFrame()
+            logging.error(f"Error loading {filename}: {e}")
+            signal['data'] = None
     
-    def _create_event_queue(self, signals: List[Dict]) -> List[Dict]:
-        """Create chronological event queue"""
+    def _build_event_queue(self, signals: List[Dict]) -> List[Dict]:
+        """Build chronological event queue"""
         events = []
         
         for signal in signals:
-            signal_id = f"{signal['ticker']}_{signal['strike']}{signal['right']}"
-            signal_time = pd.to_datetime(signal['timestamp'])
-            if signal_time.tz is None:
-                signal_time = signal_time.tz_localize('UTC')
+            if signal.get('data') is None:
+                continue
             
+            signal_id = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}_{signal['contract_type']}"
+            signal['signal_id'] = signal_id
+            
+            # Add signal entry event
+            signal_time = pd.to_datetime(signal['timestamp'])
             events.append({
-                'type': 'signal',
                 'timestamp': signal_time,
-                'signal': signal,
-                'signal_id': signal_id
+                'type': 'signal',
+                'signal': signal
             })
             
             # Add tick events
-            df = signal.get('data')
-            if df is not None and not df.empty:
-                time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
-                
-                for idx, row in df.iterrows():
+            df = signal['data']
+            time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
+            
+            for _, row in df.iterrows():
+                tick_time = row[time_col]
+                if tick_time >= signal_time:
                     events.append({
+                        'timestamp': tick_time,
                         'type': 'tick',
-                        'timestamp': row[time_col],
                         'signal_id': signal_id,
-                        'data': row
+                        'data': row.to_dict()
                     })
         
+        # Sort by timestamp
         events.sort(key=lambda x: x['timestamp'])
+        
+        logging.info(f"Built event queue with {len(events)} events")
         return events
     
     def _process_signal_event(self, event: Dict):
         """Process signal entry"""
         signal = event['signal']
-        signal_id = event['signal_id']
+        signal_id = signal['signal_id']
         
-        df = signal.get('data')
-        if df is None or df.empty:
+        if signal.get('data') is None:
             return
         
+        df = signal['data']
         time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
-        first_tick = df.iloc[0]
         
-        entry_price = first_tick.get('mid', (first_tick.get('bid', 0) + first_tick.get('ask', 0)) / 2)
+        # Find first tick after signal
+        signal_time = pd.to_datetime(signal['timestamp'])
+        future_ticks = df[df[time_col] >= signal_time]
+        
+        if future_ticks.empty:
+            return
+        
+        first_tick = future_ticks.iloc[0].to_dict()
+        entry_price = first_tick.get('mid', first_tick.get('close', 0))
         
         if entry_price <= 0:
             return
         
-        position_cost = entry_price * 100
-        
-        if self.portfolio['cash'] < position_cost:
-            return
-        
-        self.portfolio['cash'] -= position_cost
+        # Enter position
         self.portfolio['positions'][signal_id] = {
             'signal': signal,
             'entry_price': entry_price,
             'entry_time': first_tick[time_col],
             'quantity': 1,
-            'highest_price': entry_price
+            'highest_price': entry_price,
+            'breakeven_activated': False
         }
         
         self.active_contracts[signal_id] = signal
         
-        logging.info(f"📊 ENTRY: {signal['ticker']} {signal['strike']}{signal['right']} @ ${entry_price:.2f}")
+        # Initialize ATR tracking if using ATR method
+        if self.trail_method == 'atr':
+            self.atr_values[signal_id] = None
+            self.atr_stops[signal_id] = None
+        
+        logging.info(f"ENTRY: {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} @ ${entry_price:.2f}")
     
     def _process_tick_event(self, event: Dict):
         """Process tick and check exits"""
@@ -307,7 +267,6 @@ class BacktestEngine:
         position = self.portfolio['positions'][signal_id]
         tick_data = event['data']
         
-        # Get timestamp from tick
         time_col = 'timestamp' if 'timestamp' in tick_data else 'ts_event'
         current_time = tick_data[time_col] if time_col in tick_data else event['timestamp']
         
@@ -316,37 +275,85 @@ class BacktestEngine:
         if current_price <= 0:
             return
         
+        # Update highest price
         position['highest_price'] = max(position['highest_price'], current_price)
         
-        exit_reason = self._evaluate_exit_conditions(position, current_price)
+        # Update ATR if using ATR method
+        if self.trail_method == 'atr':
+            self._update_atr(signal_id, position, tick_data)
+        
+        # Evaluate exits
+        exit_reason = self._evaluate_exit_conditions(position, current_price, signal_id)
         
         if exit_reason:
             self._close_position(signal_id, exit_reason, current_price, current_time)
     
-    def _evaluate_exit_conditions(self, position: Dict, current_price: float) -> Optional[str]:
-        """Evaluate all exit conditions"""
+    def _update_atr(self, signal_id: str, position: Dict, tick_data: Dict):
+        """Update ATR calculation and trailing stop"""
+        signal = position['signal']
+        df = signal['data']
+        
+        # Need at least atr_period bars
+        if len(df) < self.atr_period:
+            return
+        
+        # Calculate True Range for recent bars
+        recent_bars = df.tail(self.atr_period)
+        
+        if 'high' in recent_bars.columns and 'low' in recent_bars.columns:
+            tr = pd.DataFrame()
+            tr['hl'] = recent_bars['high'] - recent_bars['low']
+            tr['hc'] = abs(recent_bars['high'] - recent_bars['close'].shift(1))
+            tr['lc'] = abs(recent_bars['low'] - recent_bars['close'].shift(1))
+            
+            true_range = tr[['hl', 'hc', 'lc']].max(axis=1)
+            atr = true_range.mean()
+            
+            self.atr_values[signal_id] = atr
+            
+            # Set ATR trailing stop
+            highest_price = position['highest_price']
+            self.atr_stops[signal_id] = highest_price - (atr * self.atr_multiplier)
+    
+    def _evaluate_exit_conditions(self, position: Dict, current_price: float, signal_id: str) -> Optional[str]:
+        """
+        Evaluate exits in CORRECT priority order:
+        1. Breakeven (tightest stop)
+        2. ATR/Pullback (dynamic trail)
+        3. Native trail (last resort)
+        """
         entry_price = position['entry_price']
         highest_price = position['highest_price']
-        signal = position['signal']
         
-        # Native trailing stop
-        if highest_price > entry_price:
-            native_trail_stop = highest_price * (1 - self.native_trail_percent / 100)
-            if current_price <= native_trail_stop:
-                return f"native_trail_{self.native_trail_percent}pct"
+        # 1. BREAKEVEN (checked first - tightest stop)
+        gain_pct = ((highest_price - entry_price) / entry_price) * 100
         
-        # Breakeven stop
-        gain_pct = ((current_price - entry_price) / entry_price) * 100
         if gain_pct >= self.breakeven_trigger_percent:
+            position['breakeven_activated'] = True
+            
             if current_price <= entry_price:
                 return "breakeven_stop"
         
-        # Pullback stop
-        if self.trail_method == 'pullback_percent':
+        # 2. DYNAMIC TRAIL (ATR or Pullback)
+        if self.trail_method == 'atr':
+            # ATR trailing stop
+            if signal_id in self.atr_stops and self.atr_stops[signal_id]:
+                if current_price <= self.atr_stops[signal_id]:
+                    atr_val = self.atr_values.get(signal_id, 0)
+                    return f"atr_trail_{self.atr_period}p_{self.atr_multiplier}x"
+        
+        elif self.trail_method == 'pullback_percent':
+            # Pullback trailing stop
             if highest_price > entry_price:
                 pullback_stop = highest_price * (1 - self.pullback_percent / 100)
                 if current_price <= pullback_stop:
                     return f"pullback_{self.pullback_percent}pct"
+        
+        # 3. NATIVE TRAIL (last resort - widest stop)
+        if highest_price > entry_price:
+            native_trail_stop = highest_price * (1 - self.native_trail_percent / 100)
+            if current_price <= native_trail_stop:
+                return f"native_trail_{self.native_trail_percent}pct"
         
         return None
     
@@ -363,7 +370,11 @@ class BacktestEngine:
         if signal_id in self.active_contracts:
             del self.active_contracts[signal_id]
         
-        # Store trade with timestamps
+        if signal_id in self.atr_values:
+            del self.atr_values[signal_id]
+        if signal_id in self.atr_stops:
+            del self.atr_stops[signal_id]
+        
         trade = {
             'ticker': position['signal']['ticker'],
             'entry_price': entry_price,
@@ -376,7 +387,7 @@ class BacktestEngine:
         
         self.trade_log.append(trade)
         
-        logging.info(f"📤 EXIT: {position['signal']['ticker']} @ ${exit_price:.2f} | {exit_reason} | P&L: ${pnl:.2f}")
+        logging.info(f"EXIT: {position['signal']['ticker']} @ ${exit_price:.2f} | {exit_reason} | P&L: ${pnl:.2f}")
     
     def _close_all_positions(self):
         """Close remaining positions at end of day"""
@@ -441,7 +452,7 @@ class BacktestEngine:
         }
         
         logging.info("\n" + "="*80)
-        logging.info("📊 BACKTEST RESULTS")
+        logging.info("BACKTEST RESULTS")
         logging.info("="*80)
         logging.info(f"Total Trades: {total_trades}")
         logging.info(f"Win Rate: {win_rate:.1f}%")
