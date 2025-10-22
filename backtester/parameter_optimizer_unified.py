@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer_unified.py - FIXED FOR WINDOWS
-Removed emoji characters that cause encoding errors on Windows
+parameter_optimizer_unified.py - COMPLETE FIXED VERSION
+Auto-detects 0DTE vs Regular signals and applies appropriate parameters
 """
 
 import asyncio
@@ -40,6 +40,8 @@ class ParameterOptimizerUnified:
         self.output_dir = Path(f"backtester/optimization_results/unified_{self.timestamp}")
         self.output_dir.mkdir(exist_ok=True, parents=True)
         
+        self.results = []
+        
         logging.info("UNIFIED ParameterOptimizer initialized")
         logging.info(f"Signals file: {self.signals_file}")
         logging.info(f"Quick mode: {quick_mode}")
@@ -55,18 +57,16 @@ class ParameterOptimizerUnified:
                 '0dte': self.get_0dte_full_grid(),
                 'regular': self.get_regular_full_grid()
             }
-        
-        self.results = []
     
-    def get_0dte_quick_grid(self):
-        """Quick test grid for 0DTE"""
+    def get_0dte_quick_grid(self) -> Dict:
+        """Quick test parameters for 0DTE signals"""
         return {
             'breakeven_trigger_percent': [7, 10],
             'trail_method': ['pullback_percent'],
             'pullback_percent': [10, 15],
-            'native_trail_percent': [20, 25],
             'atr_period': [14],
             'atr_multiplier': [1.5],
+            'native_trail_percent': [20, 25],
             'psar_enabled': [False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
@@ -77,16 +77,16 @@ class ParameterOptimizerUnified:
             'rsi_oversold': [30]
         }
     
-    def get_0dte_full_grid(self):
-        """Full test grid for 0DTE"""
+    def get_0dte_full_grid(self) -> Dict:
+        """Full test parameters for 0DTE signals"""
         return {
-            'breakeven_trigger_percent': [5, 7, 10, 12],
+            'breakeven_trigger_percent': [5, 7, 10, 12, 15],
             'trail_method': ['pullback_percent'],
-            'pullback_percent': [8, 10, 12, 15],
-            'native_trail_percent': [20, 25, 30],
+            'pullback_percent': [8, 10, 12, 15, 20],
             'atr_period': [14],
             'atr_multiplier': [1.5],
-            'psar_enabled': [True, False],
+            'native_trail_percent': [15, 20, 25, 30],
+            'psar_enabled': [False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
             'psar_max': [0.2],
@@ -96,8 +96,8 @@ class ParameterOptimizerUnified:
             'rsi_oversold': [30]
         }
     
-    def get_regular_quick_grid(self):
-        """Quick test grid for regular options"""
+    def get_regular_quick_grid(self) -> Dict:
+        """Quick test parameters for regular signals"""
         return {
             'breakeven_trigger_percent': [7, 10, 12],
             'trail_method': ['pullback_percent', 'atr'],
@@ -115,8 +115,8 @@ class ParameterOptimizerUnified:
             'rsi_oversold': [30]
         }
     
-    def get_regular_full_grid(self):
-        """Full test grid for regular options"""
+    def get_regular_full_grid(self) -> Dict:
+        """Full test parameters for regular signals"""
         return {
             'breakeven_trigger_percent': [5, 7, 10, 12, 15],
             'trail_method': ['pullback_percent', 'atr'],
@@ -134,16 +134,41 @@ class ParameterOptimizerUnified:
             'rsi_oversold': [30]
         }
     
-    def classify_signal(self, signal: Dict) -> str:
-        """Classify signal as 0DTE or regular"""
-        try:
-            signal_time = datetime.strptime(signal['timestamp'], '%Y-%m-%d %H:%M:%S')
-            expiry_date = datetime.strptime(signal['expiry'], '%Y%m%d')
-            days_diff = (expiry_date.date() - signal_time.date()).days
-            return '0dte' if days_diff == 0 else 'regular'
-        except Exception as e:
-            logging.warning(f"Could not classify signal: {e}. Defaulting to regular.")
-            return 'regular'
+    def classify_signal(self, parsed_signal: Dict) -> str:
+        """Classify signal as 0dte or regular based on ticker and expiry"""
+        ticker = parsed_signal.get('ticker', '').upper()
+        
+        # 0DTE tickers
+        if ticker in ['SPX', 'SPY', 'SPXW']:
+            # Check if expiry is today (0DTE)
+            try:
+                from datetime import datetime
+                expiry_date = parsed_signal.get('expiry_date')
+                if isinstance(expiry_date, str):
+                    expiry = datetime.strptime(expiry_date, '%Y%m%d').date()
+                else:
+                    expiry = expiry_date.date() if hasattr(expiry_date, 'date') else expiry_date
+                
+                timestamp = parsed_signal.get('timestamp')
+                if isinstance(timestamp, str):
+                    signal_date = datetime.strptime(timestamp.split()[0], '%Y-%m-%d').date()
+                else:
+                    signal_date = timestamp.date()
+                
+                # If expiry is same day as signal, it's 0DTE
+                if expiry == signal_date:
+                    logging.debug(f"Classified {ticker} as 0DTE (same-day expiry)")
+                    return '0dte'
+                else:
+                    logging.debug(f"Classified {ticker} as regular (multi-day expiry)")
+                    return 'regular'
+            except Exception as e:
+                logging.warning(f"Error classifying {ticker}: {e}. Defaulting to regular.")
+                return 'regular'
+        
+        # All other tickers are regular
+        logging.debug(f"Classified {ticker} as regular (non-index)")
+        return 'regular'
     
     def classify_signals_from_file(self) -> Dict[str, List[Dict]]:
         """Load and classify all signals"""
@@ -309,7 +334,7 @@ class ParameterOptimizerUnified:
             return None
     
     def generate_reports(self):
-        """Generate summary reports - FIXED FOR WINDOWS"""
+        """Generate DETAILED summary reports matching QRG standards"""
         if not self.results:
             logging.warning("No results to report!")
             return
@@ -321,69 +346,122 @@ class ParameterOptimizerUnified:
         
         summary_path = self.output_dir / "unified_optimization_summary.txt"
         
-        # FIX: Use UTF-8 encoding for Windows
         with open(summary_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
+            f.write("=" * 100 + "\n")
             f.write("UNIFIED PARAMETER OPTIMIZATION SUMMARY\n")
-            f.write("=" * 80 + "\n\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("Tests both 0DTE and Regular option parameters\n")
+            f.write("=" * 100 + "\n\n")
             
-            f.write(f"Total tests run: {len(self.results)}\n")
-            f.write(f"Quick mode: {self.quick_mode}\n\n")
+            # OVERALL PERFORMANCE
+            f.write("OVERALL PERFORMANCE:\n")
+            f.write("-" * 100 + "\n")
+            total_tests = len(self.results)
+            profitable = sum(1 for r in self.results if r['total_pnl'] > 0)
+            avg_pnl = np.mean([r['total_pnl'] for r in self.results])
+            best_pnl = max([r['total_pnl'] for r in self.results])
+            worst_pnl = min([r['total_pnl'] for r in self.results])
             
+            f.write(f"Total Tests: {total_tests}\n")
+            f.write(f"Profitable Configs: {profitable} ({profitable/total_tests*100:.1f}%)\n")
+            f.write(f"Average P&L: ${avg_pnl:.2f}\n")
+            f.write(f"Best P&L: ${best_pnl:.2f}\n")
+            f.write(f"Worst P&L: ${worst_pnl:.2f}\n")
+            f.write(f"Quick Mode: {self.quick_mode}\n\n")
+            
+            # SEPARATE BY SIGNAL TYPE
             results_0dte = [r for r in self.results if r['signal_type'] == '0dte']
             results_regular = [r for r in self.results if r['signal_type'] == 'regular']
             
+            # 0DTE SECTION
             if results_0dte:
-                f.write("=" * 80 + "\n")
-                f.write("0DTE SIGNALS RESULTS\n")
-                f.write("=" * 80 + "\n\n")
+                f.write("=" * 100 + "\n")
+                f.write("0DTE SIGNALS BREAKDOWN:\n")
+                f.write("-" * 100 + "\n")
                 
-                best_0dte = max(results_0dte, key=lambda x: x['total_pnl'])
+                profitable_0dte = sum(1 for r in results_0dte if r['total_pnl'] > 0)
+                avg_pnl_0dte = np.mean([r['total_pnl'] for r in results_0dte])
+                avg_wr_0dte = np.mean([r['win_rate'] for r in results_0dte])
+                avg_pf_0dte = np.mean([r['profit_factor'] for r in results_0dte])
                 
-                f.write(f"Tests run: {len(results_0dte)}\n")
-                f.write(f"Profitable configs: {sum(1 for r in results_0dte if r['total_pnl'] > 0)}\n\n")
+                f.write(f"Tests Run: {len(results_0dte)}\n")
+                f.write(f"Profitable: {profitable_0dte} ({profitable_0dte/len(results_0dte)*100:.1f}%)\n")
+                f.write(f"Average P&L: ${avg_pnl_0dte:.2f}\n")
+                f.write(f"Average Win Rate: {avg_wr_0dte:.1f}%\n")
+                f.write(f"Average Profit Factor: {avg_pf_0dte:.2f}\n\n")
                 
-                f.write("BEST 0DTE CONFIGURATION:\n")
-                f.write(f"  P&L: ${best_0dte['total_pnl']:,.2f}\n")
-                f.write(f"  Win Rate: {best_0dte['win_rate']:.1f}%\n")
-                f.write(f"  Profit Factor: {best_0dte['profit_factor']:.2f}\n")
-                f.write(f"  Avg Minutes Held: {best_0dte.get('avg_minutes_held', 0):.0f}\n")
-                f.write(f"  Return: {best_0dte['return_pct']:.2f}%\n\n")
-                
-                f.write("PARAMETERS:\n")
-                f.write(f"  Breakeven Trigger: {best_0dte['breakeven_trigger_percent']}%\n")
-                f.write(f"  Trail Method: {best_0dte['trail_method']}\n")
-                f.write(f"  Pullback: {best_0dte['pullback_percent']}%\n")
-                f.write(f"  Native Trail: {best_0dte['native_trail_percent']}%\n")
-                f.write(f"  PSAR: {best_0dte['psar_enabled']}\n")
-                f.write(f"  RSI Hook: {best_0dte['rsi_hook_enabled']}\n\n")
+                # TOP 5 0DTE CONFIGS
+                f.write("TOP 5 0DTE CONFIGURATIONS:\n\n")
+                sorted_0dte = sorted(results_0dte, key=lambda x: x['total_pnl'], reverse=True)[:5]
+                for idx, config in enumerate(sorted_0dte, 1):
+                    f.write(f"#{idx}. {config['test_name']}\n")
+                    f.write(f"   Win Rate: {config['win_rate']:.1f}% | ")
+                    f.write(f"P&L: ${config['total_pnl']:.2f} | ")
+                    f.write(f"PF: {config['profit_factor']:.2f}\n")
+                    f.write(f"   Breakeven: {config['breakeven_trigger_percent']}% | ")
+                    f.write(f"Pullback: {config['pullback_percent']}% | ")
+                    f.write(f"Native: {config['native_trail_percent']}%\n")
+                    f.write(f"   Avg Hold: {config.get('avg_minutes_held', 0):.0f} min | ")
+                    f.write(f"Return: {config['return_pct']:.2f}%\n")
+                    if 'exit_reasons' in config:
+                        f.write(f"   Exits: {config['exit_reasons']}\n")
+                    f.write("\n")
             
+            # REGULAR SECTION
             if results_regular:
-                f.write("=" * 80 + "\n")
-                f.write("REGULAR SIGNALS RESULTS\n")
-                f.write("=" * 80 + "\n\n")
+                f.write("=" * 100 + "\n")
+                f.write("REGULAR SIGNALS BREAKDOWN:\n")
+                f.write("-" * 100 + "\n")
                 
-                best_regular = max(results_regular, key=lambda x: x['total_pnl'])
+                profitable_reg = sum(1 for r in results_regular if r['total_pnl'] > 0)
+                avg_pnl_reg = np.mean([r['total_pnl'] for r in results_regular])
+                avg_wr_reg = np.mean([r['win_rate'] for r in results_regular])
+                avg_pf_reg = np.mean([r['profit_factor'] for r in results_regular])
                 
-                f.write(f"Tests run: {len(results_regular)}\n")
-                f.write(f"Profitable configs: {sum(1 for r in results_regular if r['total_pnl'] > 0)}\n\n")
+                f.write(f"Tests Run: {len(results_regular)}\n")
+                f.write(f"Profitable: {profitable_reg} ({profitable_reg/len(results_regular)*100:.1f}%)\n")
+                f.write(f"Average P&L: ${avg_pnl_reg:.2f}\n")
+                f.write(f"Average Win Rate: {avg_wr_reg:.1f}%\n")
+                f.write(f"Average Profit Factor: {avg_pf_reg:.2f}\n\n")
                 
-                f.write("BEST REGULAR CONFIGURATION:\n")
-                f.write(f"  P&L: ${best_regular['total_pnl']:,.2f}\n")
-                f.write(f"  Win Rate: {best_regular['win_rate']:.1f}%\n")
-                f.write(f"  Profit Factor: {best_regular['profit_factor']:.2f}\n")
-                f.write(f"  Avg Minutes Held: {best_regular.get('avg_minutes_held', 0):.0f}\n")
-                f.write(f"  Return: {best_regular['return_pct']:.2f}%\n\n")
+                # TOP 5 REGULAR CONFIGS
+                f.write("TOP 5 REGULAR CONFIGURATIONS:\n\n")
+                sorted_reg = sorted(results_regular, key=lambda x: x['total_pnl'], reverse=True)[:5]
+                for idx, config in enumerate(sorted_reg, 1):
+                    f.write(f"#{idx}. {config['test_name']}\n")
+                    f.write(f"   Win Rate: {config['win_rate']:.1f}% | ")
+                    f.write(f"P&L: ${config['total_pnl']:.2f} | ")
+                    f.write(f"PF: {config['profit_factor']:.2f}\n")
+                    f.write(f"   Breakeven: {config['breakeven_trigger_percent']}% | ")
+                    f.write(f"Trail: {config['trail_method']} | ")
+                    if config['trail_method'] == 'pullback_percent':
+                        f.write(f"Pullback: {config['pullback_percent']}% | ")
+                    else:
+                        f.write(f"ATR: {config['atr_period']}p x {config['atr_multiplier']} | ")
+                    f.write(f"Native: {config['native_trail_percent']}%\n")
+                    f.write(f"   PSAR: {config['psar_enabled']} | RSI: {config['rsi_hook_enabled']} | ")
+                    f.write(f"Avg Hold: {config.get('avg_minutes_held', 0):.0f} min\n")
+                    f.write(f"   Return: {config['return_pct']:.2f}%\n")
+                    if 'exit_reasons' in config:
+                        f.write(f"   Exits: {config['exit_reasons']}\n")
+                    f.write("\n")
+            
+            # COMPARISON
+            if results_0dte and results_regular:
+                f.write("=" * 100 + "\n")
+                f.write("SIGNAL TYPE COMPARISON:\n")
+                f.write("-" * 100 + "\n")
+                f.write(f"0DTE:    {len(results_0dte)} tests | ")
+                f.write(f"Avg P&L ${avg_pnl_0dte:.2f} | ")
+                f.write(f"{avg_wr_0dte:.1f}% WR | ")
+                f.write(f"{avg_pf_0dte:.2f} PF\n")
+                f.write(f"Regular: {len(results_regular)} tests | ")
+                f.write(f"Avg P&L ${avg_pnl_reg:.2f} | ")
+                f.write(f"{avg_wr_reg:.1f}% WR | ")
+                f.write(f"{avg_pf_reg:.2f} PF\n\n")
                 
-                f.write("PARAMETERS:\n")
-                f.write(f"  Breakeven Trigger: {best_regular['breakeven_trigger_percent']}%\n")
-                f.write(f"  Trail Method: {best_regular['trail_method']}\n")
-                f.write(f"  Pullback: {best_regular['pullback_percent']}%\n")
-                f.write(f"  ATR Period: {best_regular['atr_period']}\n")
-                f.write(f"  ATR Multiplier: {best_regular['atr_multiplier']}\n")
-                f.write(f"  Native Trail: {best_regular['native_trail_percent']}%\n")
-                f.write(f"  PSAR: {best_regular['psar_enabled']}\n")
-                f.write(f"  RSI Hook: {best_regular['rsi_hook_enabled']}\n\n")
+                winner = "0DTE" if avg_pnl_0dte > avg_pnl_reg else "Regular"
+                f.write(f"WINNER: {winner} signals performed better on average\n")
         
         logging.info(f"Saved summary report: {summary_path}")
 
