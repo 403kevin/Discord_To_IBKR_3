@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Databento Harvester - ACTUALLY FINAL VERSION
-Uses correct signal parser keys: contract_type, expiry_date
+Databento_Harvester.py - PROPER 1-MINUTE BAR VERSION
+====================================================
+CRITICAL FIX: Resamples data to TRUE 1-minute bars
+- Databento returns multiple ticks per minute
+- This version consolidates to ONE bar per minute
+- Result: ~390 bars per trading day (9:30am-4:00pm)
+- Industry-standard for day trading backtests
 """
 
 import databento as db
@@ -91,7 +96,7 @@ class DatabentoHarvester:
         return signals
     
     def _download_signal_data(self, signal):
-        """Download data for a single signal"""
+        """Download and resample data for a single signal"""
         ticker = signal['ticker']
         strike = signal['strike']
         right = signal['right']  # Already converted to 'C' or 'P'
@@ -104,9 +109,9 @@ class DatabentoHarvester:
             signal_date = datetime.strptime(signal_timestamp, '%Y-%m-%d %H:%M:%S').date()
             exp_date = datetime.strptime(expiry, '%Y%m%d').date()
             
-            # ✅ CRITICAL FIX: Day trader - ONLY download signal date!
+            # Day trader - ONLY download signal date
             start_date = signal_date
-            end_date = signal_date + timedelta(days=1)  # Just one day
+            end_date = signal_date + timedelta(days=1)
             
             logging.info(f"   Date: {signal_date} (signal day only)")
             
@@ -124,11 +129,12 @@ class DatabentoHarvester:
             occ_symbol = f"{root_symbol.ljust(6)}{expiry_str}{right}{strike_str}"
             logging.info(f"   OCC: {occ_symbol}")
             
-            # Download from Databento - 1-MINUTE BARS (not ticks!)
+            # Download from Databento - using trades schema for tick data
+            # We'll resample this to 1-minute bars ourselves
             data = self.client.timeseries.get_range(
                 dataset='OPRA.pillar',
                 symbols=[occ_symbol],
-                schema='ohlcv-1m',  # ✅ FIXED: 1-minute OHLCV bars
+                schema='trades',  # Get raw trades, we'll resample
                 start=start_date,
                 end=end_date,
                 stype_in='raw_symbol'
@@ -139,35 +145,56 @@ class DatabentoHarvester:
                 logging.warning(f"   ⚠️ No data found")
                 return
             
-            # OHLCV data has timestamp in the INDEX, not as a column
-            # Columns: ['rtype', 'publisher_id', 'instrument_id', 'open', 'high', 'low', 'close', 'volume', 'symbol']
-            
             # Reset index to make timestamp a column
             df = df.reset_index()
             
-            # Rename index column to 'timestamp' (it's usually called 'ts_event')
+            # Identify timestamp column
             if 'ts_event' in df.columns:
-                df = df.rename(columns={'ts_event': 'timestamp'})
-            elif df.columns[0] not in ['timestamp', 'rtype']:
-                # First column is the timestamp
-                df = df.rename(columns={df.columns[0]: 'timestamp'})
+                time_col = 'ts_event'
+            elif 'timestamp' in df.columns:
+                time_col = 'timestamp'
+            else:
+                time_col = df.columns[0]
             
-            # For OHLCV bars, approximate bid/ask from close
-            df['mid'] = df['close']
-            df['spread'] = 0.01
-            df['bid'] = df['close'] - 0.005
-            df['ask'] = df['close'] + 0.005
+            # Ensure timestamp is datetime
+            df[time_col] = pd.to_datetime(df[time_col], utc=True)
             
-            # Select final columns
+            # Set timestamp as index for resampling
+            df = df.set_index(time_col)
+            
+            logging.info(f"   Raw data: {len(df):,} ticks")
+            
+            # ===== CRITICAL FIX: RESAMPLE TO 1-MINUTE BARS =====
+            # This consolidates multiple ticks per minute into ONE bar
+            df_1min = df.resample('1min').agg({
+                'price': ['first', 'max', 'min', 'last'],  # OHLC from price
+                'size': 'sum'  # Total volume
+            }).dropna()
+            
+            # Flatten column names
+            df_1min.columns = ['open', 'high', 'low', 'close', 'volume']
+            
+            # Reset index to make timestamp a column again
+            df_1min = df_1min.reset_index()
+            df_1min = df_1min.rename(columns={time_col: 'timestamp'})
+            
+            # Calculate bid/ask/mid from close (approximate for options)
+            df_1min['mid'] = df_1min['close']
+            df_1min['spread'] = 0.01
+            df_1min['bid'] = df_1min['close'] - 0.005
+            df_1min['ask'] = df_1min['close'] + 0.005
+            
+            # Select final columns in standard order
             columns = ['timestamp', 'bid', 'ask', 'mid', 'spread', 'close', 'high', 'low', 'volume']
-            df = df[columns]
+            df_final = df_1min[columns]
             
             # Save to CSV
             filename = get_data_filename_databento(ticker, expiry, strike, right)
             filepath = self.output_dir / filename
-            df.to_csv(filepath, index=False)
+            df_final.to_csv(filepath, index=False)
             
-            logging.info(f"   ✅ Saved {len(df):,} ticks → {filename}")
+            logging.info(f"   ✅ Resampled {len(df):,} ticks → {len(df_final)} bars (1-min)")
+            logging.info(f"   📁 Saved → {filename}")
             
         except Exception as e:
             logging.error(f"   ❌ Failed: {e}")
@@ -192,7 +219,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("=" * 60)
-    print("DATABENTO DATA HARVESTER")
+    print("DATABENTO DATA HARVESTER - 1-MINUTE BARS")
     print("=" * 60)
     
     harvester = DatabentoHarvester(api_key)
