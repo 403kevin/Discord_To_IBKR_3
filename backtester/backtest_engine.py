@@ -307,6 +307,10 @@ class BacktestEngine:
         position = self.portfolio['positions'][signal_id]
         tick_data = event['data']
         
+        # Get timestamp from tick
+        time_col = 'timestamp' if 'timestamp' in tick_data else 'ts_event'
+        current_time = tick_data[time_col] if time_col in tick_data else event['timestamp']
+        
         current_price = tick_data.get('mid', (tick_data.get('bid', 0) + tick_data.get('ask', 0)) / 2)
         
         if current_price <= 0:
@@ -317,7 +321,7 @@ class BacktestEngine:
         exit_reason = self._evaluate_exit_conditions(position, current_price)
         
         if exit_reason:
-            self._close_position(signal_id, exit_reason, current_price)
+            self._close_position(signal_id, exit_reason, current_price, current_time)
     
     def _evaluate_exit_conditions(self, position: Dict, current_price: float) -> Optional[str]:
         """Evaluate all exit conditions"""
@@ -346,11 +350,12 @@ class BacktestEngine:
         
         return None
     
-    def _close_position(self, signal_id: str, exit_reason: str, exit_price: float):
+    def _close_position(self, signal_id: str, exit_reason: str, exit_price: float, exit_time=None):
         """Close position and log trade"""
         position = self.portfolio['positions'].pop(signal_id)
         
         entry_price = position['entry_price']
+        entry_time = position['entry_time']
         pnl = (exit_price - entry_price) * 100
         
         self.portfolio['cash'] += exit_price * 100
@@ -358,10 +363,13 @@ class BacktestEngine:
         if signal_id in self.active_contracts:
             del self.active_contracts[signal_id]
         
+        # Store trade with timestamps
         trade = {
             'ticker': position['signal']['ticker'],
             'entry_price': entry_price,
             'exit_price': exit_price,
+            'entry_time': entry_time,
+            'exit_time': exit_time,
             'pnl': pnl,
             'exit_reason': exit_reason
         }
@@ -380,9 +388,10 @@ class BacktestEngine:
                 time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
                 last_tick = df.iloc[-1]
                 exit_price = last_tick.get('mid', last_tick.get('close', 0))
+                exit_time = last_tick[time_col]
                 
                 if exit_price > 0:
-                    self._close_position(signal_id, 'eod_close', exit_price)
+                    self._close_position(signal_id, 'eod_close', exit_price, exit_time)
     
     def _calculate_results(self) -> Dict:
         """Calculate backtest results"""
@@ -390,6 +399,15 @@ class BacktestEngine:
             return self._empty_results()
         
         df = pd.DataFrame(self.trade_log)
+        
+        # Calculate hold times
+        if 'entry_time' in df.columns and 'exit_time' in df.columns:
+            df['entry_time'] = pd.to_datetime(df['entry_time'])
+            df['exit_time'] = pd.to_datetime(df['exit_time'])
+            df['hold_minutes'] = (df['exit_time'] - df['entry_time']).dt.total_seconds() / 60
+            avg_hold_minutes = df['hold_minutes'].mean()
+        else:
+            avg_hold_minutes = 0
         
         total_trades = len(df)
         winning_trades = len(df[df['pnl'] > 0])
@@ -418,7 +436,7 @@ class BacktestEngine:
             'profit_factor': profit_factor,
             'final_capital': final_capital,
             'return_pct': return_pct,
-            'avg_minutes_held': 0,
+            'avg_minutes_held': avg_hold_minutes,
             'exit_reasons': exit_reasons
         }
         
@@ -430,6 +448,7 @@ class BacktestEngine:
         logging.info(f"Total P&L: ${total_pnl:,.2f}")
         logging.info(f"Profit Factor: {profit_factor:.2f}")
         logging.info(f"Final Capital: ${final_capital:,.2f} ({return_pct:+.2f}%)")
+        logging.info(f"Avg Hold Time: {avg_hold_minutes:.0f} minutes")
         logging.info("="*80)
         
         return results
