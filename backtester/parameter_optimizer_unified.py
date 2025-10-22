@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-parameter_optimizer_unified.py - UNIFIED SUPER OPTIMIZER
-Automatically detects 0DTE vs regular signals and applies appropriate parameter grids
-Handles mixed signal files intelligently
+parameter_optimizer_unified.py - FIXED FOR WINDOWS
+Removed emoji characters that cause encoding errors on Windows
 """
 
 import asyncio
@@ -32,7 +31,6 @@ logging.basicConfig(
 class ParameterOptimizerUnified:
     """
     UNIFIED OPTIMIZER - Auto-detects signal types and applies correct parameters
-    Handles both 0DTE and regular signals in the same file
     """
     
     def __init__(self, signals_file="backtester/signals_to_test.txt", quick_mode=False):
@@ -42,12 +40,11 @@ class ParameterOptimizerUnified:
         self.output_dir = Path(f"backtester/optimization_results/unified_{self.timestamp}")
         self.output_dir.mkdir(exist_ok=True, parents=True)
         
-        logging.info("🚀 UNIFIED ParameterOptimizer initialized")
-        logging.info(f"📊 Signals file: {self.signals_file}")
-        logging.info(f"⚡ Quick mode: {quick_mode}")
-        logging.info(f"📂 Output dir: {self.output_dir}")
+        logging.info("UNIFIED ParameterOptimizer initialized")
+        logging.info(f"Signals file: {self.signals_file}")
+        logging.info(f"Quick mode: {quick_mode}")
+        logging.info(f"Output dir: {self.output_dir}")
         
-        # Load parameter grids
         if quick_mode:
             self.param_grids = {
                 '0dte': self.get_0dte_quick_grid(),
@@ -60,17 +57,16 @@ class ParameterOptimizerUnified:
             }
         
         self.results = []
-        self.signal_breakdown = {'0dte': [], 'regular': []}
     
     def get_0dte_quick_grid(self):
-        """Quick test grid for 0DTE - tight parameters for 15-60 min holds"""
+        """Quick test grid for 0DTE"""
         return {
             'breakeven_trigger_percent': [7, 10],
             'trail_method': ['pullback_percent'],
             'pullback_percent': [10, 15],
+            'native_trail_percent': [20, 25],
             'atr_period': [14],
             'atr_multiplier': [1.5],
-            'native_trail_percent': [20, 25],
             'psar_enabled': [False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
@@ -82,15 +78,15 @@ class ParameterOptimizerUnified:
         }
     
     def get_0dte_full_grid(self):
-        """Full test grid for 0DTE - comprehensive testing"""
+        """Full test grid for 0DTE"""
         return {
-            'breakeven_trigger_percent': [5, 7, 10, 12, 15],
+            'breakeven_trigger_percent': [5, 7, 10, 12],
             'trail_method': ['pullback_percent'],
-            'pullback_percent': [8, 10, 12, 15, 20],
+            'pullback_percent': [8, 10, 12, 15],
+            'native_trail_percent': [20, 25, 30],
             'atr_period': [14],
             'atr_multiplier': [1.5],
-            'native_trail_percent': [15, 20, 25, 30],
-            'psar_enabled': [False],
+            'psar_enabled': [True, False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
             'psar_max': [0.2],
@@ -101,13 +97,13 @@ class ParameterOptimizerUnified:
         }
     
     def get_regular_quick_grid(self):
-        """Quick test grid for regular options - wider parameters"""
+        """Quick test grid for regular options"""
         return {
             'breakeven_trigger_percent': [7, 10, 12],
             'trail_method': ['pullback_percent', 'atr'],
-            'pullback_percent': [8, 10],
+            'pullback_percent': [10, 12],
             'atr_period': [14],
-            'atr_multiplier': [1.5],
+            'atr_multiplier': [1.5, 2.0],
             'native_trail_percent': [25, 30],
             'psar_enabled': [True, False],
             'psar_start': [0.02],
@@ -120,7 +116,7 @@ class ParameterOptimizerUnified:
         }
     
     def get_regular_full_grid(self):
-        """Full test grid for regular options - comprehensive testing"""
+        """Full test grid for regular options"""
         return {
             'breakeven_trigger_percent': [5, 7, 10, 12, 15],
             'trail_method': ['pullback_percent', 'atr'],
@@ -139,59 +135,32 @@ class ParameterOptimizerUnified:
         }
     
     def classify_signal(self, signal: Dict) -> str:
-        """
-        Classify signal as 0DTE or regular based on expiry date
-        
-        Args:
-            signal: Parsed signal dict with 'expiry' in YYYYMMDD format
-        
-        Returns:
-            '0dte' or 'regular'
-        """
+        """Classify signal as 0DTE or regular"""
         try:
-            # Parse signal timestamp and expiry
             signal_time = datetime.strptime(signal['timestamp'], '%Y-%m-%d %H:%M:%S')
             expiry_date = datetime.strptime(signal['expiry'], '%Y%m%d')
-            
-            # Calculate days to expiry
             days_diff = (expiry_date.date() - signal_time.date()).days
-            
-            # 0DTE = same day expiry
-            if days_diff == 0:
-                return '0dte'
-            else:
-                return 'regular'
-                
+            return '0dte' if days_diff == 0 else 'regular'
         except Exception as e:
-            logging.warning(f"Could not classify signal: {e}. Defaulting to 'regular'")
+            logging.warning(f"Could not classify signal: {e}. Defaulting to regular.")
             return 'regular'
     
-    def load_and_classify_signals(self) -> Dict[str, List]:
-        """
-        Load signals from file and classify them as 0DTE or regular
-        
-        Returns:
-            Dict with '0dte' and 'regular' keys containing lists of signals
-        """
+    def classify_signals_from_file(self) -> Dict[str, List[Dict]]:
+        """Load and classify all signals"""
         from services.signal_parser import SignalParser
         
         config = Config()
         parser = SignalParser(config)
         
-        # Create default profile for parsing
         default_profile = config.profiles[0] if config.profiles else {
             'assume_buy_on_ambiguous': True,
             'ambiguous_expiry_enabled': True,
             'buzzwords_buy': [],
             'buzzwords_sell': [],
-            'channel_id': 'optimizer'
+            'channel_id': 'backtest'
         }
         
         classified = {'0dte': [], 'regular': []}
-        
-        if not self.signals_file.exists():
-            logging.error(f"Signals file not found: {self.signals_file}")
-            return classified
         
         with open(self.signals_file, 'r') as f:
             for line in f:
@@ -199,7 +168,6 @@ class ParameterOptimizerUnified:
                 if not line or line.startswith('#') or line.startswith('Trader:') or line.startswith('Format:'):
                     continue
                 
-                # Parse signal
                 if '|' in line:
                     parts = line.split('|')
                     timestamp_str = parts[0].strip()
@@ -210,116 +178,87 @@ class ParameterOptimizerUnified:
                     channel = 'test_server'
                     signal_text = line
                 
-                # ✅ FIXED: Pass profile object, not channel string
                 parsed = parser.parse_signal(signal_text, default_profile)
                 
                 if parsed:
                     parsed['timestamp'] = timestamp_str
-                    
-                    # Classify and add to appropriate list
                     signal_type = self.classify_signal(parsed)
                     classified[signal_type].append(parsed)
         
-        logging.info(f"📊 Signal Classification:")
+        logging.info(f"Signal Classification:")
         logging.info(f"   0DTE signals: {len(classified['0dte'])}")
         logging.info(f"   Regular signals: {len(classified['regular'])}")
         
         return classified
     
+    def generate_combinations(self, param_grid: Dict) -> List[Dict]:
+        """Generate all parameter combinations"""
+        keys = list(param_grid.keys())
+        values = [param_grid[k] for k in keys]
+        combinations = [dict(zip(keys, combo)) for combo in product(*values)]
+        return combinations
+    
     async def run_optimization(self):
-        """Main optimization loop - handles mixed signals intelligently"""
-        logging.info("=" * 80)
-        logging.info("UNIFIED PARAMETER OPTIMIZATION")
-        logging.info("=" * 80)
+        """Run unified optimization"""
+        logging.info("\n" + "="*80)
+        logging.info("UNIFIED PARAMETER OPTIMIZATION START")
+        logging.info("="*80)
         
-        # Load and classify signals
-        classified_signals = self.load_and_classify_signals()
+        classified_signals = self.classify_signals_from_file()
         
-        total_signals = len(classified_signals['0dte']) + len(classified_signals['regular'])
-        if total_signals == 0:
-            logging.error("No valid signals found!")
-            return
+        test_num = 0
+        total_tests = 0
         
-        # Generate parameter combinations for each type
-        test_queue = []
-        test_num = 1
+        for signal_type in ['0dte', 'regular']:
+            if classified_signals[signal_type]:
+                param_combos = self.generate_combinations(self.param_grids[signal_type])
+                total_tests += len(param_combos)
         
-        # Add 0DTE tests if we have 0DTE signals
-        if classified_signals['0dte']:
-            grid_0dte = self.param_grids['0dte']
-            keys = sorted(grid_0dte.keys())
-            combinations_0dte = [dict(zip(keys, v)) for v in product(*[grid_0dte[k] for k in keys])]
+        for signal_type in ['0dte', 'regular']:
+            if not classified_signals[signal_type]:
+                logging.info(f"\nNo {signal_type} signals found - skipping")
+                continue
             
-            logging.info(f"📋 0DTE Testing: {len(combinations_0dte)} parameter combinations")
+            logging.info(f"\n{'='*80}")
+            logging.info(f"TESTING {signal_type.upper()} SIGNALS")
+            logging.info(f"{'='*80}")
             
-            for params in combinations_0dte:
-                test_queue.append({
-                    'test_num': test_num,
-                    'params': params,
-                    'signal_type': '0dte'
-                })
+            param_combinations = self.generate_combinations(self.param_grids[signal_type])
+            logging.info(f"Testing {len(param_combinations)} parameter combinations")
+            
+            for params in param_combinations:
                 test_num += 1
+                result = await self.run_single_test(test_num, params, signal_type, total_tests)
+                if result:
+                    self.results.append(result)
         
-        # Add regular tests if we have regular signals
-        if classified_signals['regular']:
-            grid_regular = self.param_grids['regular']
-            keys = sorted(grid_regular.keys())
-            combinations_regular = [dict(zip(keys, v)) for v in product(*[grid_regular[k] for k in keys])]
-            
-            logging.info(f"📋 Regular Testing: {len(combinations_regular)} parameter combinations")
-            
-            for params in combinations_regular:
-                test_queue.append({
-                    'test_num': test_num,
-                    'params': params,
-                    'signal_type': 'regular'
-                })
-                test_num += 1
-        
-        total_tests = len(test_queue)
-        logging.info(f"🎯 Total tests to run: {total_tests}")
-        logging.info("=" * 80)
-        
-        # Run all tests
-        for test in test_queue:
-            result = await self.run_single_test(
-                test['test_num'],
-                test['params'],
-                test['signal_type'],
-                total_tests
-            )
-            if result:
-                self.results.append(result)
-        
-        # Generate reports
         self.generate_reports()
         
         logging.info("=" * 80)
-        logging.info("✅ OPTIMIZATION COMPLETE")
+        logging.info("OPTIMIZATION COMPLETE")
         logging.info("=" * 80)
-        logging.info(f"📂 Results saved in: {self.output_dir}")
+        logging.info(f"Results saved in: {self.output_dir}")
         
         if self.results:
-            # Show best result for each type
             results_0dte = [r for r in self.results if r['signal_type'] == '0dte']
             results_regular = [r for r in self.results if r['signal_type'] == 'regular']
             
             if results_0dte:
                 best_0dte = max(results_0dte, key=lambda x: x['total_pnl'])
-                logging.info(f"\n🏆 Best 0DTE Configuration:")
+                logging.info(f"\nBest 0DTE Configuration:")
                 logging.info(f"   P&L: ${best_0dte['total_pnl']:,.2f}")
                 logging.info(f"   Win Rate: {best_0dte['win_rate']:.1f}%")
                 logging.info(f"   Profit Factor: {best_0dte['profit_factor']:.2f}")
             
             if results_regular:
                 best_regular = max(results_regular, key=lambda x: x['total_pnl'])
-                logging.info(f"\n🏆 Best Regular Configuration:")
+                logging.info(f"\nBest Regular Configuration:")
                 logging.info(f"   P&L: ${best_regular['total_pnl']:,.2f}")
                 logging.info(f"   Win Rate: {best_regular['win_rate']:.1f}%")
                 logging.info(f"   Profit Factor: {best_regular['profit_factor']:.2f}")
     
     async def run_single_test(self, test_num: int, params: Dict, signal_type: str, total_tests: int) -> Dict:
-        """Run a single backtest with specific parameters"""
+        """Run single backtest"""
         test_name = f"test_{test_num:04d}_{signal_type}"
         
         logging.info(f"\n[{test_num}/{total_tests}] Running: {test_name}")
@@ -329,17 +268,14 @@ class ParameterOptimizerUnified:
                     f"Native: {params['native_trail_percent']}%")
         
         try:
-            # Create backtest engine
             engine = BacktestEngine(
                 signal_file_path=str(self.signals_file),
                 data_folder_path="backtester/historical_data"
             )
             
-            # Run simulation with parameters
             results = engine.run_simulation(params)
             
             if results:
-                # Add parameter details and signal type to results
                 summary = {
                     'test_name': test_name,
                     'signal_type': signal_type,
@@ -353,55 +289,50 @@ class ParameterOptimizerUnified:
                     'final_capital': results['final_capital'],
                     'return_pct': results['return_pct'],
                     'avg_minutes_held': results.get('avg_minutes_held', 0),
-                    **params  # Include all parameters
+                    **params
                 }
                 
-                # Log exit reasons if available
                 if 'exit_reasons' in results:
                     summary['exit_reasons'] = results['exit_reasons']
                 
-                logging.info(f"  ✅ Results: {results['total_trades']} trades | "
+                logging.info(f"  Results: {results['total_trades']} trades | "
                            f"${results['total_pnl']:.0f} P&L | "
                            f"{results['win_rate']:.1f}% WR")
                 
                 return summary
             else:
-                logging.warning(f"  ⚠️ No results returned")
+                logging.warning(f"  No results returned")
                 return None
                 
         except Exception as e:
-            logging.error(f"  ❌ Error in {test_name}: {str(e)}")
+            logging.error(f"  Error in {test_name}: {str(e)}")
             return None
     
     def generate_reports(self):
-        """Generate comprehensive summary reports"""
+        """Generate summary reports - FIXED FOR WINDOWS"""
         if not self.results:
             logging.warning("No results to report!")
             return
         
-        # Save detailed results CSV
         df = pd.DataFrame(self.results)
         csv_path = self.output_dir / "unified_results.csv"
         df.to_csv(csv_path, index=False)
-        logging.info(f"📊 Saved detailed results: {csv_path}")
+        logging.info(f"Saved detailed results: {csv_path}")
         
-        # Generate text summary
         summary_path = self.output_dir / "unified_optimization_summary.txt"
         
-        with open(summary_path, 'w') as f:
+        # FIX: Use UTF-8 encoding for Windows
+        with open(summary_path, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
             f.write("UNIFIED PARAMETER OPTIMIZATION SUMMARY\n")
             f.write("=" * 80 + "\n\n")
             
-            # Overall stats
             f.write(f"Total tests run: {len(self.results)}\n")
             f.write(f"Quick mode: {self.quick_mode}\n\n")
             
-            # Separate results by type
             results_0dte = [r for r in self.results if r['signal_type'] == '0dte']
             results_regular = [r for r in self.results if r['signal_type'] == 'regular']
             
-            # 0DTE Results
             if results_0dte:
                 f.write("=" * 80 + "\n")
                 f.write("0DTE SIGNALS RESULTS\n")
@@ -412,19 +343,21 @@ class ParameterOptimizerUnified:
                 f.write(f"Tests run: {len(results_0dte)}\n")
                 f.write(f"Profitable configs: {sum(1 for r in results_0dte if r['total_pnl'] > 0)}\n\n")
                 
-                f.write("🏆 BEST 0DTE CONFIGURATION:\n")
+                f.write("BEST 0DTE CONFIGURATION:\n")
                 f.write(f"  P&L: ${best_0dte['total_pnl']:,.2f}\n")
                 f.write(f"  Win Rate: {best_0dte['win_rate']:.1f}%\n")
                 f.write(f"  Profit Factor: {best_0dte['profit_factor']:.2f}\n")
-                f.write(f"  Avg Minutes Held: {best_0dte.get('avg_minutes_held', 0):.0f}\n\n")
+                f.write(f"  Avg Minutes Held: {best_0dte.get('avg_minutes_held', 0):.0f}\n")
+                f.write(f"  Return: {best_0dte['return_pct']:.2f}%\n\n")
                 
-                f.write("  Parameters:\n")
-                f.write(f"    Breakeven Trigger: {best_0dte['breakeven_trigger_percent']}%\n")
-                f.write(f"    Trail Method: {best_0dte['trail_method']}\n")
-                f.write(f"    Pullback %: {best_0dte['pullback_percent']}%\n")
-                f.write(f"    Native Trail: {best_0dte['native_trail_percent']}%\n\n")
+                f.write("PARAMETERS:\n")
+                f.write(f"  Breakeven Trigger: {best_0dte['breakeven_trigger_percent']}%\n")
+                f.write(f"  Trail Method: {best_0dte['trail_method']}\n")
+                f.write(f"  Pullback: {best_0dte['pullback_percent']}%\n")
+                f.write(f"  Native Trail: {best_0dte['native_trail_percent']}%\n")
+                f.write(f"  PSAR: {best_0dte['psar_enabled']}\n")
+                f.write(f"  RSI Hook: {best_0dte['rsi_hook_enabled']}\n\n")
             
-            # Regular Results
             if results_regular:
                 f.write("=" * 80 + "\n")
                 f.write("REGULAR SIGNALS RESULTS\n")
@@ -435,76 +368,50 @@ class ParameterOptimizerUnified:
                 f.write(f"Tests run: {len(results_regular)}\n")
                 f.write(f"Profitable configs: {sum(1 for r in results_regular if r['total_pnl'] > 0)}\n\n")
                 
-                f.write("🏆 BEST REGULAR CONFIGURATION:\n")
+                f.write("BEST REGULAR CONFIGURATION:\n")
                 f.write(f"  P&L: ${best_regular['total_pnl']:,.2f}\n")
                 f.write(f"  Win Rate: {best_regular['win_rate']:.1f}%\n")
                 f.write(f"  Profit Factor: {best_regular['profit_factor']:.2f}\n")
-                f.write(f"  Avg Minutes Held: {best_regular.get('avg_minutes_held', 0):.0f}\n\n")
+                f.write(f"  Avg Minutes Held: {best_regular.get('avg_minutes_held', 0):.0f}\n")
+                f.write(f"  Return: {best_regular['return_pct']:.2f}%\n\n")
                 
-                f.write("  Parameters:\n")
-                f.write(f"    Breakeven Trigger: {best_regular['breakeven_trigger_percent']}%\n")
-                f.write(f"    Trail Method: {best_regular['trail_method']}\n")
-                f.write(f"    Pullback %: {best_regular['pullback_percent']}%\n")
-                f.write(f"    Native Trail: {best_regular['native_trail_percent']}%\n")
-                f.write(f"    PSAR Enabled: {best_regular['psar_enabled']}\n")
-                f.write(f"    RSI Hook Enabled: {best_regular['rsi_hook_enabled']}\n\n")
+                f.write("PARAMETERS:\n")
+                f.write(f"  Breakeven Trigger: {best_regular['breakeven_trigger_percent']}%\n")
+                f.write(f"  Trail Method: {best_regular['trail_method']}\n")
+                f.write(f"  Pullback: {best_regular['pullback_percent']}%\n")
+                f.write(f"  ATR Period: {best_regular['atr_period']}\n")
+                f.write(f"  ATR Multiplier: {best_regular['atr_multiplier']}\n")
+                f.write(f"  Native Trail: {best_regular['native_trail_percent']}%\n")
+                f.write(f"  PSAR: {best_regular['psar_enabled']}\n")
+                f.write(f"  RSI Hook: {best_regular['rsi_hook_enabled']}\n\n")
         
-        logging.info(f"📋 Saved summary report: {summary_path}")
+        logging.info(f"Saved summary report: {summary_path}")
 
 
 async def main():
-    """Main entry point"""
     import argparse
     
-    parser = argparse.ArgumentParser(
-        description="Unified parameter optimization for both 0DTE and regular signals"
-    )
-    parser.add_argument(
-        '--quick', 
-        action='store_true', 
-        help='Use quick mode (fewer tests)'
-    )
-    parser.add_argument(
-        '--signals', 
-        type=str,
-        default='backtester/signals_to_test.txt',
-        help='Path to signals file'
-    )
-    parser.add_argument(
-        '--params',
-        type=str,
-        help='Path to custom parameter grid JSON file (optional)'
-    )
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--quick', action='store_true', help='Run quick test mode')
+    parser.add_argument('--signals', default='backtester/signals_to_test.txt', help='Path to signals file')
+    parser.add_argument('--params', help='Path to custom parameter grid JSON')
     args = parser.parse_args()
     
-    # Create optimizer
     optimizer = ParameterOptimizerUnified(
         signals_file=args.signals,
         quick_mode=args.quick
     )
     
-    # Load custom params if provided
     if args.params:
         with open(args.params, 'r') as f:
             custom_grids = json.load(f)
-        
-        if '0dte_params' in custom_grids:
-            optimizer.param_grids['0dte'] = custom_grids['0dte_params']
-            logging.info(f"Loaded custom 0DTE grid from {args.params}")
-        
-        if 'regular_params' in custom_grids:
-            optimizer.param_grids['regular'] = custom_grids['regular_params']
-            logging.info(f"Loaded custom regular grid from {args.params}")
+            if '0dte_params' in custom_grids:
+                optimizer.param_grids['0dte'] = custom_grids['0dte_params']
+            if 'regular_params' in custom_grids:
+                optimizer.param_grids['regular'] = custom_grids['regular_params']
     
-    # Run optimization
     await optimizer.run_optimization()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("\n⚠️ Optimization interrupted by user")
-    except Exception as e:
-        logging.error(f"❌ Fatal error: {e}", exc_info=True)
+    asyncio.run(main())
