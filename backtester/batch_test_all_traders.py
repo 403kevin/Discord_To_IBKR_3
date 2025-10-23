@@ -276,7 +276,7 @@ Total P&L:                ${best_pnl_row['total_pnl']:,.2f}
 Win rate:                 {best_pnl_row['win_rate']:.1f}%
 Profit factor:            {best_pnl_row['profit_factor']:.2f}
 Total trades:             {best_pnl_row['total_trades']:.0f}
-Max drawdown:             ${best_pnl_row['max_drawdown']:,.2f}
+Max drawdown:             ${best_pnl_row.get('max_drawdown', 0):,.2f}
 
 Exit Parameters:
   Breakeven trigger:      {best_pnl_row['breakeven_trigger_percent']}%
