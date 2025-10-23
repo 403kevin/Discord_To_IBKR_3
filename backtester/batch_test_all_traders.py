@@ -342,7 +342,7 @@ All native-trail-only results:
         
         # Save summary report
         summary_file = output_dir / f"{trader_name}_optimization_summary.txt"
-        with open(summary_file, 'w') as f:
+        with open(summary_file, 'w', encoding='utf-8') as f:
             f.write(summary_text)
         
         logging.info(f"✅ Generated summary report: {summary_file}")
