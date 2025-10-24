@@ -1,4 +1,4 @@
-import os
+git pull origin mainimport os
 import pandas as pd
 
 # Get the directory where this script lives

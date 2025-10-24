@@ -18,9 +18,9 @@ class Config:
         # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
         # =================================================================
-        self.polling_interval_seconds = 3
+        self.polling_interval_seconds = 2
         self.delay_between_channels = 2
-        self.delay_after_full_cycle = 4
+        self.delay_after_full_cycle = 3
         
         self.MARKET_TIMEZONE = "US/Mountain" 
 
@@ -49,8 +49,8 @@ class Config:
         self.daily_expiry_tickers = ["SPX", "SPY", "QQQ", "SPXW"]
 
         self.eod_close = {
-            "enabled": False, #False while testing
-            "hour": 14,
+            "enabled": True, #False while testing
+            "hour": 13,
             "minute": 00
         }
         
@@ -165,7 +165,7 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True,
+                "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 
@@ -219,9 +219,190 @@ class Config:
                 # Per-channel buzzwords
                 "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES", "HERE",
                                   "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
-                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE", 
-                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
+                "buzzwords_ignore": ["hut"],
                 
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 5,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 10,
+                        "atr_period": 5,
+                        "atr_multiplier": 3
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 25}
+            },
+
+            # ==========
+            # Channel 02
+            # ==========
+
+            {
+                "channel_id": "1240051753861382249",
+                "channel_name": "NITRO_1",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["bun"],
+
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 8,
+                        "atr_period": 5,
+                        "atr_multiplier": 2.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 25}
+            },
+
+            # ==========
+            # Channel 03
+            # ==========
+
+            {
+                "channel_id": "916540757236678706",
+                "channel_name": "trader_1",
+                "enabled": False,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE",
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
+
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 10,
+                        "atr_period": 14,
+                        "atr_multiplier": 1.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 35}
+            },
+
+            # ==========
+            # Channel 04
+            # ==========
+
+            {
+                "channel_id": "799402744011292702",
+                "channel_name": "trader_1",
+                "enabled": False,
+                "assume_buy_on_ambiguous": True,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["hug"],
+
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 12,
+                        "atr_period": 5,
+                        "atr_multiplier": 0.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 35}
+            },
+
+            # ==========
+            # Channel 05
+            # ==========
+
+            {
+                "channel_id": "916540757236678706",
+                "channel_name": "trader_1",
+                "enabled": False,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE",
+                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
+
                 "trading": {
                     "funds_allocation": 1000,
                     "min_price_per_contract": 0.30,
