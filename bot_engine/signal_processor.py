@@ -819,8 +819,11 @@ class SignalProcessor:
         except Exception as e:
             logging.error(f"Error sending Telegram notification: {e}", exc_info=True)
 
-    async def _reconciliation_loop(self):
-        """Periodic reconciliation with broker."""
+async def _reconciliation_loop(self):
+        """
+        Periodic reconciliation with broker.
+        FIXED: Now actually closes ghost positions instead of just logging them.
+        """
         while not self._shutdown_event.is_set():
             await asyncio.sleep(self.config.reconciliation_interval_seconds)
             
@@ -828,15 +831,81 @@ class SignalProcessor:
                 logging.info("Starting periodic position reconciliation...")
                 broker_positions = await self.ib_interface.get_open_positions()
                 
+                # Build sets for comparison
                 broker_conIds = {pos.contract.conId for pos in broker_positions}
                 tracked_conIds = set(self.open_positions.keys())
                 
-                # Check for ghost positions
+                # ========================================================================
+                # GHOST POSITION HANDLING (NEW LOGIC)
+                # ========================================================================
+                # Ghost = position at broker that we're NOT tracking
+                # This happens when native trail stops execute but we don't catch the fill
                 ghost_positions = broker_conIds - tracked_conIds
-                if ghost_positions:
-                    logging.warning(f"Found {len(ghost_positions)} ghost positions during reconciliation")
                 
-                # Check for phantom positions
+                if ghost_positions:
+                    logging.warning(f"🚨 GHOST ALERT: Found {len(ghost_positions)} untracked positions at broker")
+                    
+                    # Force-close each ghost position using broker's actual quantity
+                    for ghost_conId in ghost_positions:
+                        # Find the position object from broker
+                        ghost_pos = None
+                        for pos in broker_positions:
+                            if pos.contract.conId == ghost_conId:
+                                ghost_pos = pos
+                                break
+                        
+                        if ghost_pos is None:
+                            logging.error(f"Could not find ghost position {ghost_conId} in broker list")
+                            continue
+                        
+                        try:
+                            contract = ghost_pos.contract
+                            quantity = abs(ghost_pos.position)  # Use broker's actual quantity
+                            action = 'SELL' if ghost_pos.position > 0 else 'BUY'
+                            
+                            logging.warning(f"🔨 FORCE-CLOSING GHOST: {action} {quantity} of {contract.localSymbol} (conId: {ghost_conId})")
+                            
+                            # Cancel any existing orders for this contract first
+                            await self.ib_interface.cancel_all_orders_for_contract(contract)
+                            
+                            # Place market order to force close
+                            order = await self.ib_interface.place_order(
+                                contract,
+                                'MKT',
+                                quantity,
+                                action
+                            )
+                            
+                            if order:
+                                logging.info(f"✅ Ghost position closed: {contract.localSymbol}")
+                                
+                                # Send Telegram alert
+                                try:
+                                    msg = f"""
+🔨 *GHOST POSITION CLOSED*
+
+*Contract:* {contract.localSymbol}
+*Quantity:* {quantity}
+*Action:* {action}
+*Reason:* Untracked position detected during reconciliation
+"""
+                                    await self.telegram_interface.send_message(msg.strip())
+                                except:
+                                    pass  # Don't let Telegram failure stop reconciliation
+                            else:
+                                logging.error(f"Failed to place close order for ghost {contract.localSymbol}")
+                        
+                        except Exception as e:
+                            logging.error(f"Error closing ghost position {ghost_conId}: {e}", exc_info=True)
+                    
+                    # Give time for orders to fill before next reconciliation
+                    await asyncio.sleep(2)
+                
+                # ========================================================================
+                # PHANTOM POSITION HANDLING (EXISTING LOGIC - NO CHANGE)
+                # ========================================================================
+                # Phantom = position we're tracking that broker doesn't have
+                # This means it already closed and we need to clean up our tracking
                 phantom_positions = tracked_conIds - broker_conIds
                 if phantom_positions:
                     for conId in phantom_positions:
@@ -849,6 +918,10 @@ class SignalProcessor:
                     all_processed_ids.extend(list(channel_deque))
                 
                 self.state_manager.save_state(self.open_positions, all_processed_ids)
+                
+                # Log summary
+                if not ghost_positions and not phantom_positions:
+                    logging.info(f"✅ Reconciliation OK: {len(self.open_positions)} positions verified")
                 
             except Exception as e:
                 logging.error(f"Error during reconciliation: {e}", exc_info=True)
