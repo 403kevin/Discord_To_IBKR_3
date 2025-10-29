@@ -196,7 +196,7 @@ class Config:
                         "atr_multiplier": 1.5
                     },
                     "momentum_exits": {
-                        "psar_enabled": True,
+                        "psar_enabled": False,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
                         "rsi_hook_enabled": False,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
@@ -299,18 +299,17 @@ class Config:
             # ==========
 
             {
-                "channel_id": "916540757236678706",
-                "channel_name": "trader_1",
-                "enabled": False,
-                "assume_buy_on_ambiguous": False,
+                "channel_id": "799402744011292702",
+                "channel_name": "Money_Mo",
+                "enabled": True,
+                "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
 
                 # Per-channel buzzwords
                 "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
                                   "HERE",
                                   "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
-                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE",
-                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
+                "buzzwords_ignore": ["cheese"],
 
                 "trading": {
                     "funds_allocation": 1000,
@@ -321,14 +320,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 5,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-                    "trail_method": "atr",
+                    "trail_method": "pullback_percent",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 14,
-                        "atr_multiplier": 1.5
+                        "pullback_percent": 12,
+                        "atr_period": 5,
+                        "atr_multiplier": 0.5
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -337,7 +336,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 35}
+                "safety_net": {"enabled": True, "native_trail_percent": 25}
             },
 
             # ==========
@@ -345,11 +344,11 @@ class Config:
             # ==========
 
             {
-                "channel_id": "799402744011292702",
-                "channel_name": "trader_1",
-                "enabled": False,
-                "assume_buy_on_ambiguous": True,
-                "ambiguous_expiry_enabled": True,
+                "channel_id": "1005363564296540243",
+                "channel_name": "EXPO",
+                "enabled": True,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": False,
 
                 # Per-channel buzzwords
                 "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
@@ -366,14 +365,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 15,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 12,
-                        "atr_period": 5,
-                        "atr_multiplier": 0.5
+                        "pullback_percent": 8,
+                        "atr_period": 30,
+                        "atr_multiplier": 3.0
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -382,7 +381,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 35}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             # ==========
@@ -390,9 +389,9 @@ class Config:
             # ==========
 
             {
-                "channel_id": "916540757236678706",
-                "channel_name": "trader_1",
-                "enabled": False,
+                "channel_id": "1196227916032376883",
+                "channel_name": "arrow",
+                "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
 
@@ -400,8 +399,7 @@ class Config:
                 "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
                                   "HERE",
                                   "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
-                "buzzwords_ignore": ["RISK", "LOTTO", "EARNINGS", "PLAY", "IGNORE",
-                                     "STC", "SELL", "SOLD", "CLOSE", "TRIM", "TAKING"],
+                "buzzwords_ignore": ["limb"],
 
                 "trading": {
                     "funds_allocation": 1000,
@@ -417,12 +415,12 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 14,
-                        "atr_multiplier": 1.5
+                        "pullback_percent": 8,
+                        "atr_period": 30,
+                        "atr_multiplier": 3.0
                     },
                     "momentum_exits": {
-                        "psar_enabled": True,
+                        "psar_enabled": False,
                         "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
                         "rsi_hook_enabled": False,
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
