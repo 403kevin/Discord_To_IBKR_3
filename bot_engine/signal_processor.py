@@ -859,32 +859,15 @@ class SignalProcessor:
                                 continue
 
                             try:
+                                contract = ghost_pos.contract
                                 quantity = abs(ghost_pos.position)  # Use broker's actual quantity
                                 action = 'SELL' if ghost_pos.position > 0 else 'BUY'
-                                
-                                # FIX: Properly handle contract exchange like close_all_positions.py does
-                                if ghost_pos.contract.secType == 'OPT':
-                                    # Request contract details to get proper exchange
-                                    logging.info(f"Requesting contract details for ghost option {ghost_pos.contract.localSymbol}")
-                                    contract_details = await self.ib_interface.ib.reqContractDetailsAsync(ghost_pos.contract)
-                                    
-                                    if contract_details:
-                                        # Use the contract from details which has proper exchange
-                                        contract = contract_details[0].contract
-                                        logging.info(f"Got exchange '{contract.exchange}' for {contract.localSymbol}")
-                                    else:
-                                        logging.error(f"Could not get contract details for ghost {ghost_conId}")
-                                        continue
-                                else:
-                                    # For stocks, use SMART exchange
-                                    contract = ghost_pos.contract
-                                    contract.exchange = 'SMART'
-                                
+
                                 logging.warning(f"🔨 FORCE-CLOSING GHOST: {action} {quantity} of {contract.localSymbol} (conId: {ghost_conId})")
-                                
+
                                 # Cancel any existing orders for this contract first
                                 await self.ib_interface.cancel_all_orders_for_contract(contract)
-                                
+
                                 # Place market order to force close
                                 order = await self.ib_interface.place_order(
                                     contract,
