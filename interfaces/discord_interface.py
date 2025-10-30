@@ -1,11 +1,10 @@
 """
-Discord HTTP Interface - FIXED with Option 3 Clean Logging
+Discord HTTP Interface - FIXED with Option 3 Clean Logging + Config-based Init
 """
 import requests
 import time
 import logging
 from typing import List, Dict, Optional
-import os
 
 
 class DiscordInterface:
@@ -14,19 +13,25 @@ class DiscordInterface:
     Uses HTTP API instead of WebSocket for simpler implementation.
     """
     
-    def __init__(self, token: str, channel_ids: List[str]):
+    def __init__(self, config):
         """
         Initialize Discord HTTP interface.
         
         Args:
-            token: Discord bot token or user token
-            channel_ids: List of channel IDs to monitor
+            config: Config object containing Discord settings
         """
-        self.token = token
-        self.channel_ids = channel_ids
+        self.token = config.DISCORD_TOKEN
+        
+        # Extract channel IDs from config profiles
+        self.channel_ids = []
+        for profile in config.CHANNEL_PROFILES.values():
+            channel_id = profile.get('channel_id')
+            if channel_id and channel_id not in self.channel_ids:
+                self.channel_ids.append(channel_id)
+        
         self.base_url = "https://discord.com/api/v10"
         self.headers = {
-            "Authorization": token,
+            "Authorization": self.token,
             "Content-Type": "application/json"
         }
         self.processed_message_ids = set()
@@ -230,53 +235,3 @@ class DiscordInterface:
         """
         logging.info("Discord interface shutting down...")
         self.session.close()
-
-
-# Example usage
-if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    
-    # Example: Read token from environment variable
-    token = os.getenv('DISCORD_TOKEN')
-    if not token:
-        logging.error("DISCORD_TOKEN environment variable not set")
-        exit(1)
-    
-    # Example channel IDs (replace with your actual channel IDs)
-    channel_ids = [
-        "1234567890123456789",  # Replace with real channel ID
-    ]
-    
-    # Initialize interface
-    discord = DiscordInterface(token, channel_ids)
-    
-    # Verify token
-    if not discord.verify_token():
-        logging.error("Failed to verify Discord token")
-        exit(1)
-    
-    # Warmup (mark existing messages as processed)
-    discord.warmup_message_cache()
-    
-    # Poll for new messages
-    logging.info("Starting to poll for new messages...")
-    try:
-        while True:
-            new_messages = discord.poll_all_channels()
-            
-            if new_messages:
-                for channel_id, msg in new_messages:
-                    content = msg.get('content', '')
-                    author = msg.get('author', {}).get('username', 'Unknown')
-                    logging.info(f"New message in {channel_id} from {author}: {content[:100]}")
-            
-            time.sleep(5)  # Poll every 5 seconds
-            
-    except KeyboardInterrupt:
-        logging.info("Stopping...")
-    finally:
-        discord.shutdown()
