@@ -333,6 +333,39 @@ class IBInterface:
         
         ticker.updateEvent += ticker_callback
 
+    # ADD THIS METHOD TO ib_interface.py
+
+async def cancel_all_orders_for_contract(self, contract):
+    """
+    Cancels all open orders for a specific contract.
+    This is needed to clean up before closing ghost positions.
+    """
+    try:
+        # Get all open orders
+        open_orders = self.ib.openOrders()
+        
+        # Filter for orders matching this contract
+        orders_to_cancel = []
+        for order in open_orders:
+            # Check if this order is for the same contract (by conId)
+            if hasattr(order, 'contract') and order.contract.conId == contract.conId:
+                orders_to_cancel.append(order)
+        
+        # Cancel each matching order
+        for order in orders_to_cancel:
+            logging.info(f"Cancelling order {order.orderId} for {contract.localSymbol}")
+            self.ib.cancelOrder(order)
+            await asyncio.sleep(0.1)  # Small delay between cancellations
+        
+        if orders_to_cancel:
+            logging.info(f"Cancelled {len(orders_to_cancel)} orders for {contract.localSymbol}")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error cancelling orders for contract {contract.localSymbol}: {e}")
+        return False
+
     def _on_pending_tickers(self, tickers):
         """
         Internal callback that is automatically invoked by ib_insync whenever
