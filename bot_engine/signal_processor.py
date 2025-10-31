@@ -822,85 +822,88 @@ class SignalProcessor:
 # RECONCILIATION LOOP FIX - Add this method to signal_processor.py
 # This replaces the existing _reconciliation_loop method
 
-async def _reconciliation_loop(self):
-    """
-    Periodic reconciliation to detect and close ghost positions.
-    FIXED: Now requests contract details to get exchange before closing.
-    """
-    while not self._shutdown_event.is_set():
-        await asyncio.sleep(self.config.reconciliation_interval_seconds)
-        
-        try:
-            logging.info("Starting periodic position reconciliation...")
-            broker_positions = await self.ib_interface.get_open_positions()
+# FIX FOR signal_processor.py - Add these missing methods with CORRECT INDENTATION
+# These should be added at the class level, not nested inside other methods
+
+    async def _reconciliation_loop(self):
+        """
+        Periodic reconciliation to detect and close ghost positions.
+        FIXED: Now requests contract details to get exchange before closing.
+        """
+        while not self._shutdown_event.is_set():
+            await asyncio.sleep(self.config.reconciliation_interval_seconds)
             
-            # Build sets for comparison
-            broker_conIds = {pos.contract.conId for pos in broker_positions}
-            tracked_conIds = set(self.open_positions.keys())
-            
-            # ========================================================================
-            # GHOST POSITION HANDLING - FIXED WITH EXCHANGE SPECIFICATION
-            # ========================================================================
-            ghost_positions = broker_conIds - tracked_conIds
-            
-            if ghost_positions:
-                logging.warning(f"🚨 GHOST ALERT: Found {len(ghost_positions)} untracked positions at broker")
+            try:
+                logging.info("Starting periodic position reconciliation...")
+                broker_positions = await self.ib_interface.get_open_positions()
                 
-                # Force-close each ghost position
-                for ghost_conId in ghost_positions:
-                    # Find the position object from broker
-                    ghost_pos = None
-                    for pos in broker_positions:
-                        if pos.contract.conId == ghost_conId:
-                            ghost_pos = pos
-                            break
+                # Build sets for comparison
+                broker_conIds = {pos.contract.conId for pos in broker_positions}
+                tracked_conIds = set(self.open_positions.keys())
+                
+                # ========================================================================
+                # GHOST POSITION HANDLING - FIXED WITH EXCHANGE SPECIFICATION
+                # ========================================================================
+                ghost_positions = broker_conIds - tracked_conIds
+                
+                if ghost_positions:
+                    logging.warning(f"🚨 GHOST ALERT: Found {len(ghost_positions)} untracked positions at broker")
                     
-                    if ghost_pos is None:
-                        logging.error(f"Could not find ghost position {ghost_conId} in broker list")
-                        continue
-                    
-                    try:
-                        contract = ghost_pos.contract
-                        quantity = abs(ghost_pos.position)  # Use broker's actual quantity
-                        action = 'SELL' if ghost_pos.position > 0 else 'BUY'
+                    # Force-close each ghost position
+                    for ghost_conId in ghost_positions:
+                        # Find the position object from broker
+                        ghost_pos = None
+                        for pos in broker_positions:
+                            if pos.contract.conId == ghost_conId:
+                                ghost_pos = pos
+                                break
                         
-                        logging.warning(f"🔨 FORCE-CLOSING GHOST: {action} {quantity} of {contract.localSymbol} (conId: {ghost_conId})")
+                        if ghost_pos is None:
+                            logging.error(f"Could not find ghost position {ghost_conId} in broker list")
+                            continue
                         
-                        # Cancel any existing orders for this contract first
-                        await self.ib_interface.cancel_all_orders_for_contract(contract)
-                        
-                        # FIX: Request contract details to get the exchange (like close_all_positions.py does)
-                        if contract.secType == 'OPT':
-                            logging.info("Requesting contract details for options contract...")
-                            contract_details = await self.ib_interface.ib.reqContractDetailsAsync(contract)
+                        try:
+                            contract = ghost_pos.contract
+                            quantity = abs(ghost_pos.position)  # Use broker's actual quantity
+                            action = 'SELL' if ghost_pos.position > 0 else 'BUY'
                             
-                            if contract_details:
-                                # Update contract with proper exchange from details
-                                detailed_contract = contract_details[0].contract
-                                contract.exchange = detailed_contract.exchange
-                                logging.info(f"Got exchange from contract details: {contract.exchange}")
+                            logging.warning(f"🔨 FORCE-CLOSING GHOST: {action} {quantity} of {contract.localSymbol} (conId: {ghost_conId})")
+                            
+                            # Cancel any existing orders for this contract first
+                            await self.ib_interface.cancel_all_orders_for_contract(contract)
+                            
+                            # FIX: Request contract details to get the exchange (like close_all_positions.py does)
+                            if contract.secType == 'OPT':
+                                logging.info("Requesting contract details for options contract...")
+                                contract_details = await self.ib_interface.ib.reqContractDetailsAsync(contract)
+                                
+                                if contract_details:
+                                    # Update contract with proper exchange from details
+                                    detailed_contract = contract_details[0].contract
+                                    contract.exchange = detailed_contract.exchange
+                                    logging.info(f"Got exchange from contract details: {contract.exchange}")
+                                else:
+                                    # Fallback to SMART if details not available
+                                    contract.exchange = 'SMART'
+                                    logging.warning("Contract details not available, using SMART exchange")
                             else:
-                                # Fallback to SMART if details not available
+                                # For non-options, use SMART
                                 contract.exchange = 'SMART'
-                                logging.warning("Contract details not available, using SMART exchange")
-                        else:
-                            # For non-options, use SMART
-                            contract.exchange = 'SMART'
-                        
-                        # Place market order to force close with proper exchange
-                        order = await self.ib_interface.place_order(
-                            contract,
-                            'MKT',
-                            quantity,
-                            action
-                        )
-                        
-                        if order:
-                            logging.info(f"✅ Ghost position closed: {contract.localSymbol}")
                             
-                            # Send Telegram alert
-                            try:
-                                msg = f"""
+                            # Place market order to force close with proper exchange
+                            order = await self.ib_interface.place_order(
+                                contract,
+                                'MKT',
+                                quantity,
+                                action
+                            )
+                            
+                            if order:
+                                logging.info(f"✅ Ghost position closed: {contract.localSymbol}")
+                                
+                                # Send Telegram alert
+                                try:
+                                    msg = f"""
 🔨 *GHOST POSITION CLOSED*
 
 *Contract:* {contract.localSymbol}
@@ -909,40 +912,52 @@ async def _reconciliation_loop(self):
 *Exchange:* {contract.exchange}
 *Reason:* Untracked position detected during reconciliation
 """
-                                await self.telegram_interface.send_message(msg.strip())
-                            except:
-                                pass  # Don't let Telegram failure stop reconciliation
-                        else:
-                            logging.error(f"Failed to place close order for ghost {contract.localSymbol}")
-                        
-                    except Exception as e:
-                        logging.error(f"Error closing ghost position {ghost_conId}: {e}", exc_info=True)
+                                    await self.telegram_interface.send_message(msg.strip())
+                                except:
+                                    pass  # Don't let Telegram failure stop reconciliation
+                            else:
+                                logging.error(f"Failed to place close order for ghost {contract.localSymbol}")
+                            
+                        except Exception as e:
+                            logging.error(f"Error closing ghost position {ghost_conId}: {e}", exc_info=True)
+                    
+                    # Give time for orders to fill before next reconciliation
+                    await asyncio.sleep(2)
                 
-                # Give time for orders to fill before next reconciliation
-                await asyncio.sleep(2)
-            
-            # ========================================================================
-            # PHANTOM POSITION HANDLING (EXISTING LOGIC - NO CHANGE)
-            # ========================================================================
-            phantom_positions = tracked_conIds - broker_conIds
-            if phantom_positions:
-                for conId in phantom_positions:
-                    logging.warning(f"Removing phantom position {conId}")
-                    del self.open_positions[conId]
-            
-            # Save reconciled state
-            all_processed_ids = []
-            for channel_deque in self._processed_messages.values():
-                all_processed_ids.extend(list(channel_deque))
-            
-            self.state_manager.save_state(self.open_positions, all_processed_ids)
-            
-            # Log summary
-            if not ghost_positions and not phantom_positions:
-                logging.info(f"✅ Reconciliation OK: {len(self.open_positions)} positions verified")
-            
-        except Exception as e:
-            logging.error(f"Error during reconciliation: {e}", exc_info=True)
+                # ========================================================================
+                # PHANTOM POSITION HANDLING (EXISTING LOGIC - NO CHANGE)
+                # ========================================================================
+                phantom_positions = tracked_conIds - broker_conIds
+                if phantom_positions:
+                    for conId in phantom_positions:
+                        logging.warning(f"Removing phantom position {conId}")
+                        del self.open_positions[conId]
+                
+                # Save reconciled state
+                all_processed_ids = []
+                for channel_deque in self._processed_messages.values():
+                    all_processed_ids.extend(list(channel_deque))
+                
+                self.state_manager.save_state(self.open_positions, all_processed_ids)
+                
+                # Log summary
+                if not ghost_positions and not phantom_positions:
+                    logging.info(f"✅ Reconciliation OK: {len(self.open_positions)} positions verified")
+                
+            except Exception as e:
+                logging.error(f"Error during reconciliation: {e}", exc_info=True)
+
+    async def shutdown(self):
+        """Graceful shutdown."""
+        logging.info("Shutting down SignalProcessor...")
+        self._shutdown_event.set()
+
+        # Save final state
+        all_processed_ids = []
+        for channel_deque in self._processed_messages.values():
+            all_processed_ids.extend(list(channel_deque))
+
+        self.state_manager.save_state(self.open_positions, all_processed_ids)
 
             async def shutdown(self):
                 """Graceful shutdown."""
