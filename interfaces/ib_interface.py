@@ -22,6 +22,15 @@ class IBInterface:
     def is_connected(self):
         return self.ib.isConnected()
 
+    # ADD THIS METHOD TO interfaces/ib_interface.py after the __init__ method
+
+    def _on_pending_tickers(self, tickers):
+        """
+        Internal callback that is automatically invoked by ib_insync whenever
+        pending tickers have updated market data. This is for connection heartbeat purposes.
+        """
+        pass  # This can be empty - it's just for the event subscription
+
     async def connect(self):
         """Establishes and manages the connection to IBKR TWS/Gateway."""
         try:
