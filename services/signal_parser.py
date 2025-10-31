@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 class SignalParser:
     """
-    The Master Linguist - now with per-channel buzzword support.
-    Parses 17+ signal formats with surgical precision.
-    FIXED: ambiguous_expiry now works for ALL tickers, not just daily expiry tickers.
+    The Master Linguist - FIXED FOR EMBED FORMATS
+    Combines aggressive tokenization from old script with modern multi-format parsing.
+    Handles 17+ signal formats including Discord embeds with emojis and extra text.
     """
 
     def __init__(self, config):
@@ -30,13 +30,29 @@ class SignalParser:
         return parsed_signal
 
     def _preprocess_message(self, text):
-        """Clean and normalize the input text."""
+        """
+        ENHANCED: Aggressive preprocessing to handle embed formats.
+        Strips emojis, "Contract:", "Price:", and other noise.
+        """
         if not text:
             return None
 
+        # Remove emojis (non-ASCII characters)
+        text = re.sub(r'[^\x00-\x7F]+', ' ', text)
+        
+        # Remove common embed prefixes that break parsing
+        text = re.sub(r'\bContract:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bPrice:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bComments?:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bExpiry:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bTicker:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bStrike:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bExpiration:\s*', '', text, flags=re.IGNORECASE)
+        
         # Remove markdown artifacts
         text = re.sub(r'\*\*', '', text)
         text = re.sub(r'__', '', text)
+        text = re.sub(r'```', '', text)
 
         # Normalize whitespace
         text = ' '.join(text.split())
@@ -45,11 +61,13 @@ class SignalParser:
 
     def _parse_multi_step(self, text, profile):
         """
-        The "Step-by-Step Surgeon" - now with strict ticker validation.
-        FIXED: ambiguous_expiry now calculates next Friday for ALL tickers when enabled.
+        FIXED: Uses aggressive tokenization from old script.
+        Splits on spaces, newlines, colons, asterisks to handle embed formats.
         """
-        # Split text into parts for component extraction
-        msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*]+|\*\*', text) if p.strip()]
+        # CRITICAL: Use old script's aggressive tokenization
+        # This splits on [\s\n:*]+ which handles "Contract: META" → ["CONTRACT", "META"]
+        msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*$]+|\*\*', text) if p.strip()]
+        
         if not msg_parts:
             return None
 
@@ -89,14 +107,29 @@ class SignalParser:
                     continue
 
         # Step 3: Extract STRIKE + TYPE (combined or separate)
+        # Pattern 1: "427.5P" or "427.5C"
         for part in list(temp_parts):
-            match = re.match(r'^(\d+(\.\d+)?)(C|P)$', part)
+            match = re.match(r'^(\d+(?:\.\d+)?)(C|P|CALL|PUT|CALLS|PUTS)$', part)
             if match:
                 strike = float(match.group(1))
-                contract_type = match.group(3)
+                contract_type = 'C' if match.group(2).startswith('C') else 'P'
                 temp_parts.remove(part)
                 break
 
+        # Pattern 2: "427.5 P" (strike and type separated)
+        if strike is None or contract_type is None:
+            for i, part in enumerate(temp_parts):
+                if part in ['C', 'P', 'CALL', 'PUT', 'CALLS', 'PUTS'] and i > 0:
+                    try:
+                        strike = float(temp_parts[i - 1])
+                        contract_type = 'C' if part.startswith('C') else 'P'
+                        temp_parts.pop(i)
+                        temp_parts.pop(i - 1)
+                        break
+                    except (ValueError, IndexError):
+                        continue
+
+        # Pattern 3: Separated strike and type (fallback)
         if strike is None or contract_type is None:
             for part in list(temp_parts):
                 if re.match(r'^\d+(\.\d+)?$', part):
@@ -104,14 +137,17 @@ class SignalParser:
                     temp_parts.remove(part)
                     break
             for part in list(temp_parts):
-                if part in ['C', 'P', 'CALL', 'PUT']:
-                    contract_type = 'C' if part in ['C', 'CALL'] else 'P'
+                if part in ['C', 'P', 'CALL', 'PUT', 'CALLS', 'PUTS']:
+                    contract_type = 'C' if part.startswith('C') else 'P'
                     temp_parts.remove(part)
                     break
 
-        # Step 4: Extract TICKER (what's left)
-        potential_tickers = [p for p in temp_parts if len(p) >= 1 and len(p) <= 5 and p.isalpha()]
+        # Step 4: Extract TICKER (what's left after removing other components)
+        # OLD SCRIPT LOGIC: Sort by length and take longest alpha string
+        potential_tickers = [p for p in temp_parts if p.isalpha() and len(p) >= 1 and len(p) <= 5]
         if potential_tickers:
+            # Sort by length (longest first) to prefer full tickers over fragments
+            potential_tickers.sort(key=len, reverse=True)
             ticker = potential_tickers[0]
 
         # Validation
@@ -119,26 +155,23 @@ class SignalParser:
             logging.debug(f"Missing components: ticker={ticker}, strike={strike}, type={contract_type}")
             return None
 
-        # FIXED: Handle expiry date with corrected logic
-        if exp_month and exp_day:
-            # Expiry was explicitly provided in the signal
-            pass
-        elif profile.get('ambiguous_expiry_enabled', False):
-            # Calculate expiry when ambiguous_expiry is enabled
-            if ticker in self.config.daily_expiry_tickers:
-                # Daily expiry tickers (SPX, SPY, QQQ) → 0DTE
-                logging.info(f"Ticker {ticker} is a daily expiry ticker. Defaulting to 0DTE.")
-                today = datetime.now()
-                exp_month, exp_day = today.month, today.day
+        # Handle expiry date (from old script logic)
+        if not exp_month:  # If no date was found...
+            if profile.get('ambiguous_expiry_enabled', False):
+                if ticker in self.config.daily_expiry_tickers:
+                    # Daily expiry tickers (SPX, SPY, QQQ) → 0DTE
+                    logging.info(f"Ticker {ticker} is a daily expiry ticker. Defaulting to 0DTE.")
+                    today = datetime.now()
+                    exp_month, exp_day = today.month, today.day
+                else:
+                    # Regular stocks → next Friday
+                    logging.info(f"No expiry found for {ticker}. Defaulting to next Friday.")
+                    next_friday = self._get_next_friday()
+                    exp_month, exp_day = next_friday.month, next_friday.day
             else:
-                # Regular stocks → next Friday
-                logging.info(f"No expiry found for {ticker}. Calculating next Friday.")
-                next_friday = self._get_next_friday()
-                exp_month, exp_day = next_friday.month, next_friday.day
-        else:
-            # ambiguous_expiry is disabled and no expiry provided
-            logging.debug(f"Parser requires explicit expiry date for {ticker} (ambiguous_expiry_enabled=False)")
-            return None
+                # ambiguous_expiry is disabled and no expiry provided
+                logging.debug(f"Parser requires explicit expiry date for {ticker} (ambiguous_expiry_enabled=False)")
+                return None
 
         # Final validation
         if not all([exp_month, exp_day]):
@@ -163,11 +196,13 @@ class SignalParser:
 
     def _find_action(self, text, profile):
         """Determines trade action using channel-specific buzzwords."""
+        text_upper = text.upper()
+        
         # FIX: Get channel-specific buy words with safe empty list fallback
         channel_buy_words = profile.get('buzzwords_buy', [])
 
         # Check if any buy word is in the text
-        if channel_buy_words and any(word.upper() in text.upper() for word in channel_buy_words):
+        if channel_buy_words and any(word.upper() in text_upper for word in channel_buy_words):
             return "BTO"
 
         # If no buy word found but profile assumes buy on ambiguous
