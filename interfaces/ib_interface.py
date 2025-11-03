@@ -1,6 +1,6 @@
 """
 IBKR Interface - Manages all interactions with Interactive Brokers.
-FIXED VERSION: Includes properly indented cancel_all_orders_for_contract method.
+FIXED: Now accepts config object like the rest of the codebase.
 """
 
 import asyncio
@@ -13,11 +13,16 @@ import pandas as pd
 class IBInterface:
     """Manages all communication with IBKR API."""
     
-    def __init__(self, host='127.0.0.1', port=7497, client_id=1):
+    def __init__(self, config):
+        """
+        Initialize with config object to match rest of codebase.
+        This is how test_runner.py, data_harvester.py, and others expect it.
+        """
+        self.config = config
         self.ib = IB()
-        self.host = host
-        self.port = port
-        self.client_id = client_id
+        self.host = config.ibkr_host
+        self.port = config.ibkr_port
+        self.client_id = config.ibkr_client_id
         self._order_filled_callback = None
         self.market_data_queue = asyncio.Queue()
         
@@ -248,7 +253,6 @@ class IBInterface:
     async def get_historical_data(self, contract, duration='1 D', bar_size='1 min'):
         """
         Fetches historical data for a contract.
-        This method was missing and causing the AttributeError.
         
         Args:
             contract: IBKR contract object
