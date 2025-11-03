@@ -947,7 +947,7 @@ class SignalProcessor:
             except Exception as e:
                 logging.error(f"Error during reconciliation: {e}", exc_info=True)
 
-    async def shutdown(self):
+async def shutdown(self):
         """Graceful shutdown."""
         logging.info("Shutting down SignalProcessor...")
         self._shutdown_event.set()
@@ -956,17 +956,5 @@ class SignalProcessor:
         all_processed_ids = []
         for channel_deque in self._processed_messages.values():
             all_processed_ids.extend(list(channel_deque))
-
-        self.state_manager.save_state(self.open_positions, all_processed_ids)
-
-        async def shutdown(self):
-             """Graceful shutdown."""
-             logging.info("Shutting down SignalProcessor...")
-             self._shutdown_event.set()
-
-            # Save final state
-        all_processed_ids = []
-        for channel_deque in self._processed_messages.values():
-                 all_processed_ids.extend(list(channel_deque))
 
         self.state_manager.save_state(self.open_positions, all_processed_ids)
