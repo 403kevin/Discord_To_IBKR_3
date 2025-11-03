@@ -93,11 +93,8 @@ async def main():
         else:
             from interfaces.ib_interface import IBInterface
             # FIX: Pass individual parameters instead of config object
-            ib_interface = IBInterface(
-                host=config.ibkr_host,
-                port=config.ibkr_port,
-                client_id=config.ibkr_client_id
-            )
+            ib_interface = IBInterface(config)
+
         
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
