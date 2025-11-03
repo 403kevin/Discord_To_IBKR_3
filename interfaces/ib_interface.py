@@ -302,6 +302,43 @@ class IBInterface:
             logging.error(f"Error fetching historical data for {contract.localSymbol}: {e}", exc_info=True)
             return None
 
+    async def get_live_ticker(self, contract):
+        """
+        Fetches live ticker data for position sizing.
+        Returns a ticker object with bid/ask/last prices.
+        """
+        if not self.is_connected():
+            logging.error("Cannot get live ticker, not connected to IBKR.")
+            return None
+        
+        try:
+            # Request market data
+            ticker = self.ib.reqMktData(contract, '', False, False)
+            
+            # Wait for ticker to populate (max 5 seconds)
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                if ticker.ask and ticker.ask > 0:
+                    logging.info(f"Got live ticker for {contract.localSymbol}: Ask=${ticker.ask}")
+                    return ticker
+            
+            # If no ask price, try to use last price
+            if ticker.last and ticker.last > 0:
+                logging.warning(f"No ask price for {contract.localSymbol}, using last=${ticker.last}")
+                ticker.ask = ticker.last  # Set ask to last for sizing
+                return ticker
+            
+            logging.warning(f"No live data for {contract.localSymbol}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error getting live ticker for {contract.localSymbol}: {e}")
+            return None
+        finally:
+            # Cancel market data subscription
+            if ticker:
+                self.ib.cancelMktData(contract)
+
     async def stream_market_data_ticks(self, contract):
         """Streams live tick data for a contract and puts each tick into a queue."""
         if not self.is_connected():
