@@ -92,7 +92,12 @@ async def main():
             ib_interface = MockIBInterface(config)
         else:
             from interfaces.ib_interface import IBInterface
-            ib_interface = IBInterface(config)
+            # FIX: Pass individual parameters instead of config object
+            ib_interface = IBInterface(
+                host=config.ibkr_host,
+                port=config.ibkr_port,
+                client_id=config.ibkr_client_id
+            )
         
         telegram_interface = TelegramInterface(config)
         discord_interface = DiscordInterface(config)
