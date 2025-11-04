@@ -323,11 +323,11 @@ class SignalProcessor:
             
             # Get current price
             ticker_data = await self.ib_interface.get_live_ticker(contract)
-            if not ticker_data or ticker_data.last <= 0:
+            if not ticker_data or (not ticker_data.ask or ticker_data.ask <= 0):
                 logging.error(f"No market data for {contract.localSymbol}")
                 return
             
-            current_price = ticker_data.last
+            current_price = ticker_data.ask
             
             # Calculate quantity
             funds = profile['trading']['funds_allocation']
