@@ -165,7 +165,7 @@ class Config:
             {
                 "channel_id": "1392531225348014180",
                 "channel_name": "test_server",
-                "enabled": True,
+                "enabled": False,
                 "assume_buy_on_ambiguous": True,
                 "ambiguous_expiry_enabled": True,
                 
@@ -427,6 +427,98 @@ class Config:
                     }
                 },
                 "safety_net": {"enabled": True, "native_trail_percent": 35}
+            },
+
+            
+            # ==========
+            # Channel 06
+            # ==========
+
+            {
+                "channel_id": "00000000",
+                "channel_name": "ZEUS",
+                "enabled": False,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["limb"],
+
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "pullback_percent",
+                    "trail_settings": {
+                        "pullback_percent": 10,
+                        "atr_period": 5,
+                        "atr_multiplier": 0.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 25}
+            },
+
+            
+            # ==========
+            # Channel 07
+            # ==========
+
+            {
+                "channel_id": "000000000",
+                "channel_name": "Prophet_Day",
+                "enabled": False,
+                "assume_buy_on_ambiguous": False,
+                "ambiguous_expiry_enabled": True,
+
+                # Per-channel buzzwords
+                "buzzwords_buy": ["BTO", "BUY", "BOUGHT", "ADD", "ENTRY", "IN", "OPEN", "ENTER", "BOT", "ENTRIES",
+                                  "HERE",
+                                  "OPENING", "ADDED", "ENTERING", "GRABBED", "POSITION"],
+                "buzzwords_ignore": ["limb"],
+
+                "trading": {
+                    "funds_allocation": 1000,
+                    "min_price_per_contract": 0.30,
+                    "max_price_per_contract": 10.0,
+                    "entry_order_type": "MKT",
+                    "time_in_force": "DAY"
+                },
+
+                "exit_strategy": {
+                    "breakeven_trigger_percent": 10,
+                    "min_ticks_per_bar": 5,
+                    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+                    "trail_method": "atr",
+                    "trail_settings": {
+                        "pullback_percent": 8,
+                        "atr_period": 5,
+                        "atr_multiplier": 0.5
+                    },
+                    "momentum_exits": {
+                        "psar_enabled": False,
+                        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+                        "rsi_hook_enabled": False,
+                        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+                    }
+                },
+                "safety_net": {"enabled": True, "native_trail_percent": 25}
             },
 
         ]
