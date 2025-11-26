@@ -1,0 +1,109 @@
+{
+  "_comment": "COMPREHENSIVE PARAMETER GRID - Use with batch_test_all_traders.py",
+  "_comment2": "This grid tests EVERY meaningful parameter variation",
+  "_comment3": "Estimated combinations: ~15,000+ per trader",
+  "_comment4": "Estimated time: 4-8 hours per trader",
+  
+  "breakeven_trigger_percent": {
+    "_description": "When to activate breakeven stop (% gain from entry)",
+    "_reasoning": "Lower = more protection, Higher = more room to run",
+    "values": [3, 5, 7, 10, 12, 15, 20, 25]
+  },
+  
+  "trail_method": {
+    "_description": "How to trail the stop loss",
+    "_reasoning": "pullback_percent = fixed %, atr = volatility-adjusted",
+    "values": ["pullback_percent", "atr"]
+  },
+  
+  "pullback_percent": {
+    "_description": "Fixed percentage trailing stop from peak",
+    "_reasoning": "Lower = tighter stop (more whipsaw), Higher = more drawdown allowed",
+    "values": [5, 7, 8, 10, 12, 15, 20, 30]
+  },
+  
+  "atr_period": {
+    "_description": "Lookback period for ATR calculation",
+    "_reasoning": "Lower = more reactive, Higher = smoother",
+    "values": [5, 7, 10, 14, 20, 30]
+  },
+  
+  "atr_multiplier": {
+    "_description": "How many ATRs for stop distance",
+    "_reasoning": "Lower = tighter stop, Higher = wider stop",
+    "values": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+  },
+  
+  "native_trail_percent": {
+    "_description": "Broker-level trailing stop (safety net)",
+    "_reasoning": "This is the 'airbag' - last resort protection",
+    "values": [10, 15, 20, 25, 30, 35, 40]
+  },
+  
+  "psar_enabled": {
+    "_description": "Enable Parabolic SAR momentum exit",
+    "_reasoning": "Works better for trending markets, less useful for scalping",
+    "values": [true, false]
+  },
+  
+  "psar_start": {
+    "_description": "PSAR acceleration start value",
+    "_reasoning": "Lower = slower start, Higher = faster acceleration",
+    "values": [0.01, 0.02, 0.03]
+  },
+  
+  "psar_increment": {
+    "_description": "PSAR acceleration increment",
+    "_reasoning": "How much to increase acceleration per bar",
+    "values": [0.01, 0.02, 0.03]
+  },
+  
+  "psar_max": {
+    "_description": "PSAR maximum acceleration",
+    "_reasoning": "Cap on how aggressive PSAR can get",
+    "values": [0.1, 0.2, 0.3]
+  },
+  
+  "rsi_hook_enabled": {
+    "_description": "Enable RSI-based momentum exit",
+    "_reasoning": "Exit when RSI hooks from overbought/oversold",
+    "values": [true, false]
+  },
+  
+  "rsi_period": {
+    "_description": "RSI lookback period",
+    "_reasoning": "Lower = more signals, Higher = smoother",
+    "values": [7, 10, 14, 20]
+  },
+  
+  "rsi_overbought": {
+    "_description": "RSI overbought threshold",
+    "_reasoning": "Exit calls when RSI exceeds this and hooks down",
+    "values": [65, 70, 75, 80]
+  },
+  
+  "rsi_oversold": {
+    "_description": "RSI oversold threshold",
+    "_reasoning": "Exit puts when RSI drops below this and hooks up",
+    "values": [20, 25, 30, 35]
+  },
+  
+  "_total_combinations_calculation": {
+    "breakeven": 8,
+    "trail_method": 2,
+    "pullback": 8,
+    "atr_period": 6,
+    "atr_multiplier": 7,
+    "native_trail": 7,
+    "psar_enabled": 2,
+    "psar_start": 3,
+    "psar_increment": 3,
+    "psar_max": 3,
+    "rsi_enabled": 2,
+    "rsi_period": 4,
+    "rsi_overbought": 4,
+    "rsi_oversold": 4,
+    "_note": "Full grid = 8×2×8×6×7×7×2×3×3×3×2×4×4×4 = ~15M combinations",
+    "_practical_note": "The script intelligently prunes impossible combinations"
+  }
+}
