@@ -1,11 +1,26 @@
+"""
+services/signal_parser.py
+
+The Master Linguist - FIXED WITH TICKER WHITELIST
+Combines aggressive tokenization with whitelist validation.
+Handles 17+ signal formats including Discord embeds.
+
+FIXES:
+1. Now validates tickers against whitelist (prevents SELL, WATCH, EOD etc from being parsed as tickers)
+2. Aggressive tokenization for embed formats
+"""
+
 import re
 import logging
 from datetime import datetime, timedelta
 
+# Import ticker whitelist
+from services.tickers import VALID_TICKERS, is_valid_ticker
+
 
 class SignalParser:
     """
-    The Master Linguist - FIXED FOR EMBED FORMATS
+    The Master Linguist - FIXED FOR EMBED FORMATS + TICKER VALIDATION
     Combines aggressive tokenization from old script with modern multi-format parsing.
     Handles 17+ signal formats including Discord embeds with emojis and extra text.
     """
@@ -61,55 +76,63 @@ class SignalParser:
 
     def _parse_multi_step(self, text, profile):
         """
-        FIXED: Uses aggressive tokenization from old script.
+        FIXED: Uses aggressive tokenization + TICKER WHITELIST VALIDATION.
         Splits on spaces, newlines, colons, asterisks to handle embed formats.
+        Only accepts tickers that are in the whitelist.
         """
-        # CRITICAL: Use old script's aggressive tokenization
-        # This splits on [\s\n:*]+ which handles "Contract: META" → ["CONTRACT", "META"]
-        msg_parts = [p.strip().upper() for p in re.split(r'[\s\n:*$]+|\*\*', text) if p.strip()]
-        
-        if not msg_parts:
-            return None
+        # Step 1: Aggressive tokenization (from old script)
+        # Split on spaces, newlines, colons, asterisks, dollar signs
+        parts = re.split(r'[\s\n:*$]+|\*\*', text.upper())
+        parts = [p.strip() for p in parts if p.strip()]
+
+        logging.debug(f"Tokenized parts: {parts}")
 
         # Initialize variables
-        action, ticker, strike, contract_type = None, None, None, None
-        exp_month, exp_day = None, None
-        temp_parts = list(msg_parts)
-
-        # Step 1: Extract ACTION using channel-specific buzzwords
+        ticker = None
+        strike = None
+        contract_type = None
+        exp_month = None
+        exp_day = None
         action = self._find_action(text, profile)
-        if action:
-            # Get channel-specific buy words with safe fallback
-            channel_buy_words = profile.get('buzzwords_buy', [])
-            # Remove buy action words from temp_parts
-            for part in list(temp_parts):
-                if part in [w.upper() for w in channel_buy_words]:
-                    temp_parts.remove(part)
 
-        # Step 2: Extract DATE (MM/DD or XDTE format)
-        for part in list(temp_parts):
-            if "/" in part and len(part) >= 3:
-                try:
-                    m, d = part.split('/')
-                    exp_month, exp_day = int(m), int(d)
-                    temp_parts.remove(part)
-                    break
-                except (ValueError, IndexError):
-                    continue
-            elif "DTE" in part:
-                try:
-                    dte_value = int(part.replace("DTE", ""))
-                    expiry = self._get_business_day(dte_value)
-                    exp_month, exp_day = expiry.month, expiry.day
-                    temp_parts.remove(part)
-                    break
-                except (ValueError, IndexError):
-                    continue
+        # Create working copy for extraction
+        temp_parts = parts.copy()
 
-        # Step 3: Extract STRIKE + TYPE (combined or separate)
-        # Pattern 1: "427.5P" or "427.5C"
+        # Step 2: Extract DATE first (most specific pattern)
         for part in list(temp_parts):
-            match = re.match(r'^(\d+(?:\.\d+)?)(C|P|CALL|PUT|CALLS|PUTS)$', part)
+            # Pattern: "10/15" or "10-15" or "1015"
+            date_match = re.match(r'^(\d{1,2})[/-]?(\d{1,2})$', part)
+            if date_match:
+                exp_month = int(date_match.group(1))
+                exp_day = int(date_match.group(2))
+                temp_parts.remove(part)
+                break
+            
+            # Pattern: "OCT15" or "OCT 15"
+            month_match = re.match(r'^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{1,2})?$', part)
+            if month_match:
+                month_map = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+                             'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
+                exp_month = month_map[month_match.group(1)]
+                if month_match.group(2):
+                    exp_day = int(month_match.group(2))
+                temp_parts.remove(part)
+                break
+
+        # Check for xDTE patterns (0DTE, 1DTE, etc.)
+        for part in list(temp_parts):
+            dte_match = re.match(r'^(\d+)DTE$', part)
+            if dte_match:
+                dte = int(dte_match.group(1))
+                target_date = self._get_business_day(dte)
+                exp_month, exp_day = target_date.month, target_date.day
+                temp_parts.remove(part)
+                break
+
+        # Step 3: Extract STRIKE and CONTRACT TYPE
+        # Pattern 1: "427.5C" or "500P" (combined)
+        for part in list(temp_parts):
+            match = re.match(r'^(\d+\.?\d*)(C|P|CALL|PUT|CALLS|PUTS)$', part)
             if match:
                 strike = float(match.group(1))
                 contract_type = 'C' if match.group(2).startswith('C') else 'P'
@@ -142,13 +165,23 @@ class SignalParser:
                     temp_parts.remove(part)
                     break
 
-        # Step 4: Extract TICKER (what's left after removing other components)
-        # OLD SCRIPT LOGIC: Sort by length and take longest alpha string
-        potential_tickers = [p for p in temp_parts if p.isalpha() and len(p) >= 1 and len(p) <= 5]
-        if potential_tickers:
+        # Step 4: Extract TICKER (FIXED: Validate against whitelist)
+        # Get potential tickers: alphabetic, 1-5 chars
+        potential_tickers = [p for p in temp_parts if p.isalpha() and 1 <= len(p) <= 5]
+        
+        # CRITICAL FIX: Filter to only VALID tickers from whitelist
+        valid_potential_tickers = [t for t in potential_tickers if is_valid_ticker(t)]
+        
+        if valid_potential_tickers:
             # Sort by length (longest first) to prefer full tickers over fragments
-            potential_tickers.sort(key=len, reverse=True)
-            ticker = potential_tickers[0]
+            valid_potential_tickers.sort(key=len, reverse=True)
+            ticker = valid_potential_tickers[0]
+            logging.debug(f"Valid ticker found: {ticker} (from candidates: {potential_tickers})")
+        else:
+            # Log what was rejected
+            if potential_tickers:
+                logging.debug(f"Rejected invalid ticker candidates: {potential_tickers}")
+            logging.debug(f"No valid ticker found in whitelist")
 
         # Validation
         if not all([ticker, strike, contract_type]):
