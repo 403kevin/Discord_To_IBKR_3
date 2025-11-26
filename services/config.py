@@ -20,7 +20,7 @@ class Config:
         # =================================================================
         self.polling_interval_seconds = 2
         self.delay_between_channels = 2
-        self.delay_after_full_cycle = 3
+        self.delay_after_full_cycle = 2
         
         self.MARKET_TIMEZONE = "US/Mountain" 
 
@@ -87,7 +87,7 @@ class Config:
         # ADD THIS NEW SECTION BELOW sentiment_filter
         # No API key required - uses TradingView's public endpoints
         self.vix_filter = {
-            "enabled": False,
+            "enabled": True,
             
             # Basic VIX range
             "vix_max": 30,      # Don't trade when VIX > 30 (market panic/extreme fear)
@@ -102,7 +102,7 @@ class Config:
             # ADVANCED: Multi-metric volatility regime detection
             # Set "enabled": True to use sophisticated vol filtering
             "advanced_metrics": {
-                "enabled": False,  # Set True to enable advanced filtering
+                "enabled": True,  # Set True to enable advanced filtering
                 
                 "vvix_max": 130,   # VIX of VIX - don't trade if volatility itself is too volatile
                                    # Normal range: 70-100, High: 100-130, Extreme: >130
@@ -391,7 +391,7 @@ class Config:
             {
                 "channel_id": "1196227916032376883",
                 "channel_name": "arrow",
-                "enabled": True,
+                "enabled": False,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
 
@@ -435,9 +435,9 @@ class Config:
             # ==========
 
             {
-                "channel_id": "00000000",
+                "channel_id": "1330376524498731028",
                 "channel_name": "ZEUS",
-                "enabled": False,
+                "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
 
@@ -481,9 +481,9 @@ class Config:
             # ==========
 
             {
-                "channel_id": "000000000",
+                "channel_id": "925217078569500723",
                 "channel_name": "Prophet_Day",
-                "enabled": False,
+                "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
 
