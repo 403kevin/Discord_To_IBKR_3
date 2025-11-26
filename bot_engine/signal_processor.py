@@ -179,7 +179,27 @@ class SignalProcessor:
         channel_name = profile.get('channel_name', 'Unknown')
         channel_ignore = profile.get('buzzwords_ignore', [])
         
+        # ====================================================================
+        # EOD TIME CHECK - Stop accepting new trades after cutoff time
+        # ====================================================================
+        if self.config.eod_close.get('enabled', False):
+            eod_hour = self.config.eod_close.get('hour', 15)
+            eod_minute = self.config.eod_close.get('minute', 30)
+            
+            now = datetime.now()
+            eod_cutoff = now.replace(hour=eod_hour, minute=eod_minute, second=0, microsecond=0)
+            
+            if now >= eod_cutoff:
+                # Log once per minute to avoid spam
+                if not hasattr(self, '_eod_logged_minute') or self._eod_logged_minute != now.minute:
+                    self._eod_logged_minute = now.minute
+                    logging.info(f"⏰ EOD CUTOFF ACTIVE - Not accepting new trades after {eod_hour:02d}:{eod_minute:02d}")
+                return  # Exit early, don't process any signals
+        # ====================================================================
+        
         for message_data in raw_messages:
+
+# 
             msg_id = None
             try:
                 # Handle both tuple and dict formats
