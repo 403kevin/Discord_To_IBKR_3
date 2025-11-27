@@ -293,24 +293,24 @@ class ComprehensiveBatchTester:
             Dictionary with optimization results and recommendations
         """
         logging.info("\n" + "=" * 100)
-        logging.info(f"🎯 TESTING: {trader_name.upper()}")
+        logging.info(f"[TARGET] TESTING: {trader_name.upper()}")
         logging.info("=" * 100)
         
         # Find signals file
         signals_file = self._find_signals_file(trader_name)
         
         if not signals_file:
-            logging.warning(f"⚠️ No signals file found for {trader_name}")
+            logging.warning(f"[WARNING] No signals file found for {trader_name}")
             return self._empty_trader_result(trader_name, "No signals file found")
         
-        logging.info(f"📂 Signals file: {signals_file}")
+        logging.info(f"[FOLDER] Signals file: {signals_file}")
         
         # Count signals
         signal_count = self._count_signals(signals_file)
-        logging.info(f"📊 Signal count: {signal_count}")
+        logging.info(f"[CHART] Signal count: {signal_count}")
         
         if signal_count < 5:
-            logging.warning(f"⚠️ Too few signals ({signal_count}) for meaningful optimization")
+            logging.warning(f"[WARNING] Too few signals ({signal_count}) for meaningful optimization")
             return self._empty_trader_result(trader_name, f"Too few signals ({signal_count})")
         
         # Create trader output directory
@@ -318,7 +318,7 @@ class ComprehensiveBatchTester:
         trader_output_dir.mkdir(exist_ok=True)
         
         # Run main optimization
-        logging.info(f"\n🔄 Running {self.total_combinations:,} parameter combinations...")
+        logging.info(f"\n[CYCLE] Running {self.total_combinations:,} parameter combinations...")
         main_results = await self._run_optimization(
             signals_file, 
             self.param_grid, 
@@ -327,7 +327,7 @@ class ComprehensiveBatchTester:
         )
         
         # Run native-trail-only optimization
-        logging.info(f"\n🔄 Running {self.native_only_combinations} native-trail-only tests...")
+        logging.info(f"\n[CYCLE] Running {self.native_only_combinations} native-trail-only tests...")
         native_results = await self._run_optimization(
             signals_file,
             self.native_trail_only_grid,
@@ -370,7 +370,7 @@ class ComprehensiveBatchTester:
     def _count_signals(self, signals_file: Path) -> int:
         """Count valid signals in file."""
         count = 0
-        with open(signals_file, 'r') as f:
+        with open(signals_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and not line.startswith('Trader:'):
@@ -433,8 +433,8 @@ class ComprehensiveBatchTester:
         if results:
             df = pd.DataFrame(results)
             csv_path = output_dir / f"{test_type}_all_results.csv"
-            df.to_csv(csv_path, index=False)
-            logging.info(f"  💾 Saved {len(results)} results to {csv_path}")
+            df.to_csv(csv_path, index=False, encoding='utf-8')
+            logging.info(f"  [SAVE] Saved {len(results)} results to {csv_path}")
         
         return results
     
@@ -536,31 +536,31 @@ class ComprehensiveBatchTester:
         """Generate trading recommendation based on results."""
         
         if not best_config:
-            return "❌ AVOID - No profitable configurations found"
+            return "[X] AVOID - No profitable configurations found"
         
         pnl = best_config.get('total_pnl', 0)
         wr = best_config.get('win_rate', 0)
         pf = best_config.get('profit_factor', 0)
         
         if pnl < 0:
-            return "❌ AVOID - Best configuration is still unprofitable"
+            return "[X] AVOID - Best configuration is still unprofitable"
         
         if profitable_pct < 10:
-            return f"⚠️ RISKY - Only {profitable_pct:.1f}% of configs profitable (highly parameter-sensitive)"
+            return f"[!] RISKY - Only {profitable_pct:.1f}% of configs profitable (highly parameter-sensitive)"
         
         if pf < 1.2:
-            return f"⚠️ MARGINAL - Low profit factor ({pf:.2f}), edge is thin"
+            return f"[!] MARGINAL - Low profit factor ({pf:.2f}), edge is thin"
         
         if wr < 40:
-            return f"⚠️ CAUTION - Low win rate ({wr:.1f}%), requires strong risk management"
+            return f"[!] CAUTION - Low win rate ({wr:.1f}%), requires strong risk management"
         
         if profitable_pct > 50 and pf > 1.5 and wr > 50:
-            return f"✅ RECOMMENDED - Robust trader ({profitable_pct:.0f}% configs profitable, PF: {pf:.2f})"
+            return f"[OK] RECOMMENDED - Robust trader ({profitable_pct:.0f}% configs profitable, PF: {pf:.2f})"
         
         if profitable_pct > 30 and pf > 1.3:
-            return f"👍 VIABLE - Decent trader ({profitable_pct:.0f}% configs profitable)"
+            return f"[+] VIABLE - Decent trader ({profitable_pct:.0f}% configs profitable)"
         
-        return f"🔶 TEST MORE - Results inconclusive ({profitable_pct:.0f}% profitable)"
+        return f"[?] TEST MORE - Results inconclusive ({profitable_pct:.0f}% profitable)"
     
     def _generate_trader_report(
         self, trader_name: str, df_main: pd.DataFrame, df_native: pd.DataFrame,
@@ -577,9 +577,9 @@ class ComprehensiveBatchTester:
         report.append("=" * 100)
         
         # Summary statistics
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("SUMMARY STATISTICS")
-        report.append("─" * 50)
+        report.append("-" * 50)
         report.append(f"Total configurations tested: {len(df_main):,}")
         report.append(f"Profitable configurations: {profitable_configs:,} ({profitable_configs/len(df_main)*100:.1f}%)")
         report.append(f"Average P&L across all configs: ${df_main['total_pnl'].mean():.2f}")
@@ -587,9 +587,9 @@ class ComprehensiveBatchTester:
         report.append(f"P&L Std Dev: ${df_main['total_pnl'].std():.2f}")
         
         # Best by P&L
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("BEST CONFIGURATION (by P&L)")
-        report.append("─" * 50)
+        report.append("-" * 50)
         if best_pnl:
             report.append(f"Total P&L: ${best_pnl['total_pnl']:.2f}")
             report.append(f"Win Rate: {best_pnl['win_rate']:.1f}%")
@@ -607,18 +607,18 @@ class ComprehensiveBatchTester:
             report.append(f"  RSI Hook Enabled: {best_pnl['rsi_hook_enabled']}")
         
         # Best by Win Rate
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("BEST CONFIGURATION (by Win Rate)")
-        report.append("─" * 50)
+        report.append("-" * 50)
         if best_wr:
             report.append(f"Win Rate: {best_wr['win_rate']:.1f}%")
             report.append(f"Total P&L: ${best_wr['total_pnl']:.2f}")
             report.append(f"Profit Factor: {best_wr['profit_factor']:.2f}")
         
         # Best by Profit Factor
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("BEST CONFIGURATION (by Profit Factor)")
-        report.append("─" * 50)
+        report.append("-" * 50)
         if best_pf:
             report.append(f"Profit Factor: {best_pf['profit_factor']:.2f}")
             report.append(f"Total P&L: ${best_pf['total_pnl']:.2f}")
@@ -626,9 +626,9 @@ class ComprehensiveBatchTester:
         
         # Native-trail-only results
         if best_native:
-            report.append("\n" + "─" * 50)
+            report.append("\n" + "-" * 50)
             report.append("NATIVE TRAIL ONLY (Baseline)")
-            report.append("─" * 50)
+            report.append("-" * 50)
             report.append(f"Best Native Trail %: {best_native['native_trail_percent']}%")
             report.append(f"P&L: ${best_native['total_pnl']:.2f}")
             report.append(f"Win Rate: {best_native['win_rate']:.1f}%")
@@ -636,12 +636,12 @@ class ComprehensiveBatchTester:
             if len(df_native) > 0:
                 report.append("\nAll native-trail-only results:")
                 for _, row in df_native.sort_values('native_trail_percent').iterrows():
-                    report.append(f"  {row['native_trail_percent']:3.0f}% → ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}%")
+                    report.append(f"  {row['native_trail_percent']:3.0f}% -> ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}%")
         
         # Parameter sensitivity
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("PARAMETER SENSITIVITY ANALYSIS")
-        report.append("─" * 50)
+        report.append("-" * 50)
         for param, data in param_analysis.items():
             importance = data.get('importance', 'UNKNOWN')
             best_val = data.get('best_value')
@@ -656,9 +656,9 @@ class ComprehensiveBatchTester:
             report.append(f"  P&L spread: ${spread:.2f}")
         
         # Top 20 configurations
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("TOP 20 CONFIGURATIONS BY P&L")
-        report.append("─" * 50)
+        report.append("-" * 50)
         top_20 = df_main.nlargest(20, 'total_pnl')
         for i, (_, row) in enumerate(top_20.iterrows(), 1):
             report.append(f"{i:2d}. P&L: ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}% | "
@@ -673,9 +673,9 @@ class ComprehensiveBatchTester:
         
         # Config.py snippet
         if best_pnl and best_pnl.get('total_pnl', 0) > 0:
-            report.append("\n" + "─" * 50)
+            report.append("\n" + "-" * 50)
             report.append("COPY-PASTE CONFIG.PY SNIPPET")
-            report.append("─" * 50)
+            report.append("-" * 50)
             report.append(f'''
 "exit_strategy": {{
     "breakeven_trigger_percent": {best_pnl['breakeven_trigger_percent']},
@@ -698,10 +698,10 @@ class ComprehensiveBatchTester:
         
         # Save report
         report_path = output_dir / f"{trader_name}_optimization_report.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(report))
         
-        logging.info(f"  📝 Generated report: {report_path}")
+        logging.info(f"  [DOC] Generated report: {report_path}")
     
     def _empty_trader_result(self, trader_name: str, reason: str) -> Dict:
         """Return empty result structure."""
@@ -715,7 +715,7 @@ class ComprehensiveBatchTester:
             'best_by_profit_factor': None,
             'best_native_only': None,
             'param_analysis': {},
-            'recommendation': f"❌ SKIP - {reason}"
+            'recommendation': f"[X] SKIP - {reason}"
         }
     
     def generate_master_report(self):
@@ -737,12 +737,12 @@ class ComprehensiveBatchTester:
         report.append(f"Mode: {self.mode.upper()}")
         report.append("=" * 100)
         
-        report.append("\n" + "─" * 100)
+        report.append("\n" + "-" * 100)
         report.append("TRADER RANKINGS (by Best P&L)")
-        report.append("─" * 100)
+        report.append("-" * 100)
         
         for i, row in df_sorted.iterrows():
-            status = "✅" if row['best_pnl'] > 0 else "❌"
+            status = "[OK]" if row['best_pnl'] > 0 else "[X]"
             report.append(f"{status} {row['trader'].upper():15s} | "
                          f"Best P&L: ${row['best_pnl']:8.2f} | "
                          f"Best WR: {row['best_win_rate']:5.1f}% | "
@@ -753,41 +753,41 @@ class ComprehensiveBatchTester:
         profitable = df_sorted[df_sorted['best_pnl'] > 0]
         unprofitable = df_sorted[df_sorted['best_pnl'] <= 0]
         
-        report.append("\n" + "─" * 100)
+        report.append("\n" + "-" * 100)
         report.append("SUMMARY")
-        report.append("─" * 100)
+        report.append("-" * 100)
         report.append(f"Total traders tested: {len(df)}")
         report.append(f"Profitable traders: {len(profitable)}")
         report.append(f"Unprofitable traders: {len(unprofitable)}")
         
         if len(profitable) > 0:
-            report.append(f"\n✅ RECOMMENDED TRADERS:")
+            report.append(f"\n[OK] RECOMMENDED TRADERS:")
             for _, row in profitable.iterrows():
                 report.append(f"   - {row['trader'].upper()}: ${row['best_pnl']:.2f}")
         
         if len(unprofitable) > 0:
-            report.append(f"\n❌ AVOID TRADERS:")
+            report.append(f"\n[X] AVOID TRADERS:")
             for _, row in unprofitable.iterrows():
                 report.append(f"   - {row['trader'].upper()}: ${row['best_pnl']:.2f}")
         
         # Save master report
         report_path = self.master_output_dir / "MASTER_COMPARISON.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(report))
         
         # Save master CSV
         csv_path = self.master_output_dir / "master_comparison.csv"
-        df_sorted.to_csv(csv_path, index=False)
+        df_sorted.to_csv(csv_path, index=False, encoding='utf-8')
         
-        logging.info(f"\n📊 Master report: {report_path}")
-        logging.info(f"📊 Master CSV: {csv_path}")
+        logging.info(f"\n[CHART] Master report: {report_path}")
+        logging.info(f"[CHART] Master CSV: {csv_path}")
     
     async def run(self):
         """Run batch tests on all traders."""
         
-        logging.info("\n" + "🚀" * 50)
+        logging.info("\n" + "=" * 100)
         logging.info("STARTING COMPREHENSIVE BATCH TESTING")
-        logging.info("🚀" * 50 + "\n")
+        logging.info("=" * 100 + "\n")
         
         start_time = datetime.now()
         
@@ -801,11 +801,11 @@ class ComprehensiveBatchTester:
         # Generate master report
         self.generate_master_report()
         
-        logging.info("\n" + "🎉" * 50)
+        logging.info("\n" + "=" * 100)
         logging.info("BATCH TESTING COMPLETE!")
         logging.info(f"Total time: {duration}")
         logging.info(f"Results: {self.master_output_dir}")
-        logging.info("🎉" * 50)
+        logging.info("=" * 100)
 
 
 async def main():
