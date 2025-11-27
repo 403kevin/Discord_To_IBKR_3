@@ -8,13 +8,13 @@ and does SURGICAL fine-tuning around those values.
 PURPOSE:
 - Validate that profitable configs aren't just lucky outliers
 - Find the optimal "sweet spot" for each parameter
-- Test parameter stability (does ±1-2% change results dramatically?)
+- Test parameter stability (does +-1-2% change results dramatically?)
 - Generate production-ready configurations
 
 WORKFLOW:
 1. Load results from batch_test_all_traders.py
 2. For each profitable trader, extract best config
-3. Create fine-tuning grid ±20% around each optimal parameter
+3. Create fine-tuning grid +-20% around each optimal parameter
 4. Run comprehensive tests
 5. Compare to original to detect overfitting
 
@@ -63,7 +63,7 @@ class ComprehensiveFineTuner:
         Args:
             batch_results_dir: Path to batch test results (auto-detect if None)
             traders: Specific traders to fine-tune (default: all profitable)
-            mode: 'tight' (±10%), 'standard' (±20%), 'wide' (±30%)
+            mode: 'tight' (+-10%), 'standard' (+-20%), 'wide' (+-30%)
         """
         self.batch_results_dir = self._find_batch_results(batch_results_dir)
         self.mode = mode
@@ -86,7 +86,7 @@ class ComprehensiveFineTuner:
         logging.info("COMPREHENSIVE FINE-TUNER INITIALIZED")
         logging.info("=" * 100)
         logging.info(f"Batch results from: {self.batch_results_dir}")
-        logging.info(f"Mode: {mode.upper()} (±{self._get_variation_pct()}%)")
+        logging.info(f"Mode: {mode.upper()} (+-{self._get_variation_pct()}%)")
         logging.info(f"Traders to fine-tune: {self.traders_to_tune}")
         logging.info(f"Output: {self.output_dir}")
         logging.info("=" * 100)
@@ -152,7 +152,7 @@ class ComprehensiveFineTuner:
     def _create_fine_tune_grid(self, best_config: Dict) -> Dict:
         """
         Create fine-tuning grid around optimal configuration.
-        Tests ±variation% around each optimal parameter.
+        Tests +-variation% around each optimal parameter.
         """
         variation = self._get_variation_pct() / 100
         
@@ -263,7 +263,7 @@ class ComprehensiveFineTuner:
             Dictionary with fine-tuning results and stability analysis
         """
         logging.info("\n" + "=" * 100)
-        logging.info(f"🎯 FINE-TUNING: {trader_name.upper()}")
+        logging.info(f"[TARGET] FINE-TUNING: {trader_name.upper()}")
         logging.info("=" * 100)
         
         # Get original best config
@@ -275,8 +275,8 @@ class ComprehensiveFineTuner:
         original_best = trader_data['best_config']
         original_pnl = trader_data['best_pnl']
         
-        logging.info(f"📊 Original best P&L: ${original_pnl:.2f}")
-        logging.info(f"📊 Original config: BE={original_best['breakeven_trigger_percent']}%, "
+        logging.info(f"[CHART] Original best P&L: ${original_pnl:.2f}")
+        logging.info(f"[CHART] Original config: BE={original_best['breakeven_trigger_percent']}%, "
                     f"Trail={original_best['trail_method']}, Native={original_best['native_trail_percent']}%")
         
         # Find signals file
@@ -288,7 +288,7 @@ class ComprehensiveFineTuner:
         fine_tune_grid = self._create_fine_tune_grid(original_best)
         total_combinations = self._count_combinations(fine_tune_grid)
         
-        logging.info(f"🔧 Fine-tune grid: {total_combinations:,} combinations")
+        logging.info(f"[WRENCH] Fine-tune grid: {total_combinations:,} combinations")
         
         # Create output directory
         trader_output = self.output_dir / trader_name
@@ -365,7 +365,7 @@ class ComprehensiveFineTuner:
         # Save results
         if results:
             df = pd.DataFrame(results)
-            df.to_csv(output_dir / "fine_tune_all_results.csv", index=False)
+            df.to_csv(output_dir / "fine_tune_all_results.csv", index=False, encoding='utf-8')
         
         return results
     
@@ -408,13 +408,13 @@ class ComprehensiveFineTuner:
         
         # Generate stability verdict
         if stability_score > 70 and overfit_score < 20:
-            verdict = "✅ ROBUST - Config is stable across parameter variations"
+            verdict = "[OK] ROBUST - Config is stable across parameter variations"
         elif stability_score > 50 and overfit_score < 30:
-            verdict = "👍 ACCEPTABLE - Config is reasonably stable"
+            verdict = "[+] ACCEPTABLE - Config is reasonably stable"
         elif stability_score > 30:
-            verdict = "⚠️ SENSITIVE - Config is parameter-sensitive, use caution"
+            verdict = "[!] SENSITIVE - Config is parameter-sensitive, use caution"
         else:
-            verdict = "❌ UNSTABLE - Config may be overfit, original results unreliable"
+            verdict = "[X] UNSTABLE - Config may be overfit, original results unreliable"
         
         # Generate detailed report
         self._generate_fine_tune_report(
@@ -487,41 +487,41 @@ class ComprehensiveFineTuner:
         report.append("=" * 100)
         
         # Comparison
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("ORIGINAL vs FINE-TUNED")
-        report.append("─" * 50)
+        report.append("-" * 50)
         report.append(f"Original Best P&L: ${original_pnl:.2f}")
         report.append(f"Fine-Tuned Best P&L: ${new_best_pnl:.2f}")
         report.append(f"Improvement: ${improvement:.2f} ({improvement_pct:+.1f}%)")
         
         # Stability metrics
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("STABILITY ANALYSIS")
-        report.append("─" * 50)
+        report.append("-" * 50)
         report.append(f"Stability Score: {stability_score:.1f}% (% of configs profitable)")
         report.append(f"Overfit Score: {overfit_score:.1f}% (lower is better, <20% is good)")
         report.append(f"Total configs tested: {len(df):,}")
         report.append(f"Profitable configs: {len(df[df['total_pnl'] > 0]):,}")
         
         # Verdict
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("VERDICT")
-        report.append("─" * 50)
+        report.append("-" * 50)
         report.append(verdict)
         
         # Parameter stability
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("PARAMETER STABILITY")
-        report.append("─" * 50)
+        report.append("-" * 50)
         for param, data in param_stability.items():
             report.append(f"{param}:")
             report.append(f"  P&L Range: ${data['pnl_range']:.2f}")
             report.append(f"  Rating: {data['rating']}")
         
         # New best config
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("FINE-TUNED OPTIMAL CONFIG")
-        report.append("─" * 50)
+        report.append("-" * 50)
         report.append(f"P&L: ${new_best_pnl:.2f}")
         report.append(f"Win Rate: {new_best['win_rate']:.1f}%")
         report.append(f"Profit Factor: {new_best['profit_factor']:.2f}")
@@ -536,9 +536,9 @@ class ComprehensiveFineTuner:
         report.append(f"  rsi_hook_enabled: {new_best['rsi_hook_enabled']}")
         
         # Top 10 fine-tuned configs
-        report.append("\n" + "─" * 50)
+        report.append("\n" + "-" * 50)
         report.append("TOP 10 FINE-TUNED CONFIGS")
-        report.append("─" * 50)
+        report.append("-" * 50)
         top_10 = df.nlargest(10, 'total_pnl')
         for i, (_, row) in enumerate(top_10.iterrows(), 1):
             report.append(f"{i:2d}. ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}% | "
@@ -548,10 +548,10 @@ class ComprehensiveFineTuner:
         
         # Save report
         report_path = output_dir / f"{trader_name}_fine_tune_report.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(report))
         
-        logging.info(f"  📝 Report: {report_path}")
+        logging.info(f"  [DOC] Report: {report_path}")
     
     def _empty_result(self, trader_name: str, reason: str) -> Dict:
         """Return empty result structure."""
@@ -567,7 +567,7 @@ class ComprehensiveFineTuner:
             'total_configs': 0,
             'new_best_config': {},
             'param_stability': {},
-            'verdict': f"❌ SKIP - {reason}"
+            'verdict': f"[X] SKIP - {reason}"
         }
     
     def generate_master_report(self):
@@ -591,60 +591,60 @@ class ComprehensiveFineTuner:
             reverse=True
         )
         
-        report.append("\n" + "─" * 100)
+        report.append("\n" + "-" * 100)
         report.append("TRADER RANKINGS (Post Fine-Tuning)")
-        report.append("─" * 100)
+        report.append("-" * 100)
         
         for r in sorted_results:
-            stability_icon = "✅" if r['stability_score'] > 50 else "⚠️" if r['stability_score'] > 30 else "❌"
+            stability_icon = "[OK]" if r['stability_score'] > 50 else "[!]" if r['stability_score'] > 30 else "[X]"
             report.append(
                 f"{stability_icon} {r['trader'].upper():15s} | "
                 f"New P&L: ${r['new_best_pnl']:8.2f} | "
                 f"Original: ${r['original_pnl']:8.2f} | "
-                f"Δ: ${r['improvement']:+7.2f} | "
+                f"Delta: ${r['improvement']:+7.2f} | "
                 f"Stability: {r['stability_score']:5.1f}%"
             )
         
         # Recommendations
-        report.append("\n" + "─" * 100)
+        report.append("\n" + "-" * 100)
         report.append("RECOMMENDATIONS")
-        report.append("─" * 100)
+        report.append("-" * 100)
         
         robust = [r for r in sorted_results if r['stability_score'] > 50 and r['new_best_pnl'] > 0]
         if robust:
-            report.append("\n✅ ROBUST (Ready for Production):")
+            report.append("\n[OK] ROBUST (Ready for Production):")
             for r in robust:
                 report.append(f"   - {r['trader'].upper()}: ${r['new_best_pnl']:.2f} ({r['stability_score']:.0f}% stable)")
         
         marginal = [r for r in sorted_results if 30 < r['stability_score'] <= 50 and r['new_best_pnl'] > 0]
         if marginal:
-            report.append("\n⚠️ MARGINAL (Paper Trade First):")
+            report.append("\n[!] MARGINAL (Paper Trade First):")
             for r in marginal:
                 report.append(f"   - {r['trader'].upper()}: ${r['new_best_pnl']:.2f} ({r['stability_score']:.0f}% stable)")
         
         avoid = [r for r in sorted_results if r['stability_score'] <= 30 or r['new_best_pnl'] <= 0]
         if avoid:
-            report.append("\n❌ AVOID (Unstable/Unprofitable):")
+            report.append("\n[X] AVOID (Unstable/Unprofitable):")
             for r in avoid:
                 report.append(f"   - {r['trader'].upper()}: ${r['new_best_pnl']:.2f} ({r['stability_score']:.0f}% stable)")
         
         # Save report
         report_path = self.output_dir / "MASTER_FINE_TUNE_REPORT.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(report))
         
         # Save CSV
         df = pd.DataFrame(sorted_results)
-        df.to_csv(self.output_dir / "master_fine_tune_comparison.csv", index=False)
+        df.to_csv(self.output_dir / "master_fine_tune_comparison.csv", index=False, encoding='utf-8')
         
-        logging.info(f"\n📊 Master report: {report_path}")
+        logging.info(f"\n[CHART] Master report: {report_path}")
     
     async def run(self):
         """Run fine-tuning on all profitable traders."""
         
-        logging.info("\n" + "🔧" * 50)
+        logging.info("\n" + "=" * 100)
         logging.info("STARTING COMPREHENSIVE FINE-TUNING")
-        logging.info("🔧" * 50 + "\n")
+        logging.info("=" * 100 + "\n")
         
         start_time = datetime.now()
         
@@ -658,11 +658,11 @@ class ComprehensiveFineTuner:
         # Generate master report
         self.generate_master_report()
         
-        logging.info("\n" + "🎉" * 50)
+        logging.info("\n" + "=" * 100)
         logging.info("FINE-TUNING COMPLETE!")
         logging.info(f"Total time: {duration}")
         logging.info(f"Results: {self.output_dir}")
-        logging.info("🎉" * 50)
+        logging.info("=" * 100)
 
 
 async def main():
@@ -673,7 +673,7 @@ async def main():
     parser.add_argument('--traders', nargs='+', default=None,
                        help='Specific traders to fine-tune (default: all profitable)')
     parser.add_argument('--mode', choices=['tight', 'standard', 'wide'], default='standard',
-                       help='Fine-tune variation: tight (±10%%), standard (±20%%), wide (±30%%)')
+                       help='Fine-tune variation: tight (+-10%%), standard (+-20%%), wide (+-30%%)')
     
     args = parser.parse_args()
     
