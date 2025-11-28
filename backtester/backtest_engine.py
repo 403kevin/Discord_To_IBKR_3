@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - TIMEZONE FIXED VERSION
-===================================================
-CRITICAL FIX: All timestamps are now timezone-aware (UTC)
-- Databento CSVs have tz-aware timestamps (UTC)
-- Signal timestamps now converted to tz-aware (UTC)
-- All comparisons work correctly
-- No more "Cannot compare tz-naive and tz-aware" errors
+backtest_engine.py - TIMEZONE FIXED VERSION v2
+===============================================
+CRITICAL FIX: Signal timestamps are now properly converted from LOCAL TIME to UTC
+
+THE BUG:
+- Signal timestamps in files are in USER'S LOCAL TIME (Mountain Time)
+- Previous code treated them as UTC, causing entries at wrong times
+- Example: "07:35:00" MT should be 13:35 UTC, but was being treated as 07:35 UTC
+
+THE FIX:
+- Added SIGNAL_TIMEZONE setting (default: America/Denver for Mountain Time)
+- Signal timestamps are now properly localized then converted to UTC
+- Data timestamps (from Databento) are already in UTC - no change needed
 
 Exit logic maintained:
 - Correct exit priority order
-- Working ATR trailing stop logic
+- Working ATR trailing stop logic  
 - Native trail as last resort only
 """
 
@@ -21,6 +27,7 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Dict, List, Optional
+import pytz
 
 # Add project root
 project_root = Path(__file__).parent.parent
@@ -35,17 +42,33 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# =============================================================================
+# TIMEZONE CONFIGURATION
+# =============================================================================
+# Set this to YOUR timezone - the timezone your signal timestamps are in
+# Common options:
+#   'America/Denver'     - Mountain Time (MT)
+#   'America/Chicago'    - Central Time (CT)  
+#   'America/New_York'   - Eastern Time (ET)
+#   'America/Los_Angeles' - Pacific Time (PT)
+#   'UTC'                - If your signals are already in UTC
+# =============================================================================
+SIGNAL_TIMEZONE = 'America/Denver'  # <-- CHANGE THIS IF NEEDED
+
 
 class BacktestEngine:
     """
     Event-driven backtest engine for day trading options
-    NOW WITH PROPER TIMEZONE HANDLING
+    NOW WITH PROPER LOCAL TIME -> UTC CONVERSION
     """
     
     def __init__(self, signal_file_path: str, data_folder_path: str = "backtester/historical_data"):
         self.signal_file_path = Path(signal_file_path)
         self.data_folder_path = Path(data_folder_path)
         self.starting_capital = 100000
+        
+        # Timezone for signal timestamps
+        self.signal_tz = pytz.timezone(SIGNAL_TIMEZONE)
         
         # Exit parameters (set via run_simulation)
         self.breakeven_trigger_percent = 10
@@ -61,8 +84,8 @@ class BacktestEngine:
         self.trade_log = []
         
         # ATR calculation storage
-        self.atr_values = {}  # {signal_id: current_atr}
-        self.atr_stops = {}   # {signal_id: current_stop_price}
+        self.atr_values = {}   # {signal_id: current_atr}
+        self.atr_stops = {}    # {signal_id: current_stop_price}
     
     def run_simulation(self, params: Dict = None) -> Dict:
         """Run backtest with given parameters"""
@@ -127,7 +150,7 @@ class BacktestEngine:
         }
         
         signals = []
-        with open(self.signal_file_path, 'r') as f:
+        with open(self.signal_file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#') or line.startswith('Trader:'):
@@ -136,7 +159,7 @@ class BacktestEngine:
                 if '|' in line:
                     parts = line.split('|')
                     timestamp_str = parts[0].strip()
-                    signal_text = parts[2].strip()
+                    signal_text = parts[2].strip() if len(parts) > 2 else parts[1].strip()
                 else:
                     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     signal_text = line
@@ -152,7 +175,7 @@ class BacktestEngine:
     def _load_signal_data(self, signal: Dict):
         """
         Load historical data for a signal
-        TIMEZONE FIX: Ensure all timestamps are timezone-aware (UTC)
+        Data timestamps are already in UTC from Databento
         """
         ticker = signal['ticker']
         expiry = signal['expiry_date']
@@ -173,10 +196,10 @@ class BacktestEngine:
             # Identify time column
             time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
             
-            # TIMEZONE FIX: Parse timestamps as UTC-aware
+            # Parse timestamps as UTC (Databento data is already UTC)
             df[time_col] = pd.to_datetime(df[time_col], utc=True)
             
-            # If timestamps were parsed without timezone, add UTC
+            # Ensure timezone is set
             if df[time_col].dt.tz is None:
                 df[time_col] = df[time_col].dt.tz_localize('UTC')
             
@@ -188,16 +211,44 @@ class BacktestEngine:
                     df['mid'] = df['close']
             
             signal['data'] = df
-            logging.debug(f"Loaded {len(df)} bars for {ticker} (timezone-aware: {df[time_col].dt.tz})")
+            logging.debug(f"Loaded {len(df)} bars for {ticker}")
             
         except Exception as e:
             logging.error(f"Error loading {filename}: {e}")
             signal['data'] = None
     
+    def _convert_signal_time_to_utc(self, timestamp_str: str) -> pd.Timestamp:
+        """
+        Convert signal timestamp from local time to UTC.
+        
+        THE KEY FIX: Signal timestamps are in user's local time (e.g., Mountain Time)
+        but data is in UTC. We must convert properly.
+        
+        Example:
+            Input:  "2025-08-25 07:35:00" (Mountain Time)
+            Output: "2025-08-25 13:35:00+00:00" (UTC)
+        """
+        try:
+            # Parse the timestamp string (naive datetime)
+            naive_dt = pd.to_datetime(timestamp_str)
+            
+            # Localize to signal timezone (e.g., Mountain Time)
+            local_dt = self.signal_tz.localize(naive_dt)
+            
+            # Convert to UTC
+            utc_dt = local_dt.astimezone(pytz.UTC)
+            
+            return pd.Timestamp(utc_dt)
+            
+        except Exception as e:
+            logging.error(f"Error converting timestamp '{timestamp_str}': {e}")
+            # Fallback: treat as UTC (old behavior)
+            return pd.to_datetime(timestamp_str, utc=True)
+    
     def _build_event_queue(self, signals: List[Dict]) -> List[Dict]:
         """
         Build chronological event queue
-        TIMEZONE FIX: Ensure signal timestamps are timezone-aware (UTC)
+        FIXED: Signal timestamps properly converted from local time to UTC
         """
         events = []
         
@@ -208,12 +259,10 @@ class BacktestEngine:
             signal_id = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}_{signal['contract_type']}"
             signal['signal_id'] = signal_id
             
-            # TIMEZONE FIX: Parse signal timestamp as UTC-aware
-            signal_time = pd.to_datetime(signal['timestamp'], utc=True)
+            # CRITICAL FIX: Convert signal time from local timezone to UTC
+            signal_time = self._convert_signal_time_to_utc(signal['timestamp'])
             
-            # If signal_time has no timezone, add UTC
-            if signal_time.tz is None:
-                signal_time = signal_time.tz_localize('UTC')
+            logging.debug(f"Signal {signal_id}: local={signal['timestamp']} -> UTC={signal_time}")
             
             # Add signal entry event
             events.append({
@@ -222,14 +271,14 @@ class BacktestEngine:
                 'signal': signal
             })
             
-            # Add tick events
+            # Add tick events (data is already in UTC)
             df = signal['data']
             time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
             
             for _, row in df.iterrows():
                 tick_time = row[time_col]
                 
-                # COMPARISON NOW WORKS: Both are tz-aware
+                # Only include ticks after signal time
                 if tick_time >= signal_time:
                     events.append({
                         'timestamp': tick_time,
@@ -241,13 +290,12 @@ class BacktestEngine:
         # Sort by timestamp
         events.sort(key=lambda x: x['timestamp'])
         
-        logging.info(f"Built event queue with {len(events)} events (all timestamps tz-aware)")
+        logging.info(f"Built event queue with {len(events)} events")
         return events
     
     def _process_signal_event(self, event: Dict):
         """
         Process signal entry
-        TIMEZONE FIX: Signal time comparison now works
         """
         signal = event['signal']
         signal_id = signal['signal_id']
@@ -258,15 +306,14 @@ class BacktestEngine:
         df = signal['data']
         time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
         
-        # TIMEZONE FIX: Parse signal time as UTC-aware
-        signal_time = pd.to_datetime(signal['timestamp'], utc=True)
-        if signal_time.tz is None:
-            signal_time = signal_time.tz_localize('UTC')
+        # Signal time is already in UTC from _build_event_queue
+        signal_time = event['timestamp']
         
-        # Find first tick after signal (COMPARISON WORKS NOW)
+        # Find first tick after signal
         future_ticks = df[df[time_col] >= signal_time]
         
         if future_ticks.empty:
+            logging.warning(f"No ticks found after signal time {signal_time} for {signal_id}")
             return
         
         first_tick = future_ticks.iloc[0].to_dict()
@@ -292,7 +339,8 @@ class BacktestEngine:
             self.atr_values[signal_id] = None
             self.atr_stops[signal_id] = None
         
-        logging.info(f"ENTRY: {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} @ ${entry_price:.2f}")
+        logging.info(f"ENTRY: {signal['ticker']} {signal['strike']}{signal['contract_type'][0]} @ ${entry_price:.2f} "
+                    f"(signal: {signal['timestamp']} -> entry: {first_tick[time_col]})")
     
     def _process_tick_event(self, event: Dict):
         """Process tick and check exits"""
@@ -400,11 +448,8 @@ class BacktestEngine:
         entry_price = position['entry_price']
         quantity = position['quantity']
         
-        # Calculate P&L
-        if signal['contract_type'] == 'CALL':
-            pnl = (exit_price - entry_price) * quantity * 100
-        else:  # PUT
-            pnl = (exit_price - entry_price) * quantity * 100
+        # Calculate P&L (same for CALL and PUT - we're buying to open, selling to close)
+        pnl = (exit_price - entry_price) * quantity * 100
         
         # Log trade
         self.trade_log.append({
@@ -451,16 +496,13 @@ class BacktestEngine:
                     self._close_position(signal_id, 'eod_close', exit_price, exit_time)
     
     def _calculate_results(self) -> Dict:
-        """
-        Calculate backtest results
-        TIMEZONE FIX: Handle timezone-aware datetimes in hold time calculation
-        """
+        """Calculate backtest results"""
         if not self.trade_log:
             return self._empty_results()
         
         df = pd.DataFrame(self.trade_log)
         
-        # Calculate hold times (TIMEZONE FIX: Works with tz-aware timestamps)
+        # Calculate hold times
         if 'entry_time' in df.columns and 'exit_time' in df.columns:
             df['entry_time'] = pd.to_datetime(df['entry_time'], utc=True)
             df['exit_time'] = pd.to_datetime(df['exit_time'], utc=True)
@@ -532,6 +574,11 @@ class BacktestEngine:
 
 
 if __name__ == "__main__":
+    print("="*80)
+    print("BACKTEST ENGINE - TIMEZONE FIXED v2")
+    print(f"Signal timezone: {SIGNAL_TIMEZONE}")
+    print("="*80)
+    
     engine = BacktestEngine(
         signal_file_path="backtester/signals_to_test.txt",
         data_folder_path="backtester/historical_data"
