@@ -744,18 +744,18 @@ class ComprehensiveBatchTester:
             f.write("Based on top performers, focus testing on these ranges:\n\n")
             f.write("```json\n")
             def convert_to_native(obj):
-            if isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_native(i) for i in obj]
-            elif isinstance(obj, (np.bool_, np.integer)):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, bool):
-                return obj
-            else:
-                return obj
+                if isinstance(obj, dict):
+                    return {k: convert_to_native(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_native(i) for i in obj]
+                elif isinstance(obj, (np.bool_, np.integer)):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, bool):
+                    return obj
+                else:
+                    return obj
         
         f.write(json.dumps(convert_to_native(fine_tune_grid), indent=2))
             f.write("\n```\n\n")
