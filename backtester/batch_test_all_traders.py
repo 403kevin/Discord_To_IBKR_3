@@ -59,9 +59,8 @@ class ComprehensiveBatchTester:
     
     # All traders to test
     ALL_TRADERS = [
-        'goldman', 'qiqo', 'gandalf', 'zeus', 'arrow', 
-        'waxui', 'nitro', 'money_mo', 'diesel', 'prophet', 
-        'dd_alerts', 'expo'
+        'goldman', 'qiqo', 'gandalf', 'zeus', 'waxui', 
+        'nitro', 'money_mo', 'diesel', 'prophet', 'expo'
     ]
     
     def __init__(self, traders: List[str] = None, mode: str = 'full'):
