@@ -1,30 +1,19 @@
 #!/usr/bin/env python3
 """
-batch_test_all_traders.py - COMPREHENSIVE VERSION
-==================================================
-Tests ALL traders with EXPANDED parameter grid.
-No shortcuts - thorough testing of every variable combination.
+batch_test_all_traders.py - COMPREHENSIVE VERSION v2
+=====================================================
+Tests ALL traders with THREE modes:
+- quick: Fast validation (~200 combinations, ~20 min total)
+- balanced: Diverse exploration (~3,000 combinations, ~3-4 hours total)  
+- full: Maximum coverage (~15,000+ combinations, ~15-20 hours total)
 
-PARAMETER COUNT:
-- Breakeven triggers: 8 values
-- Trail methods: 2 values
-- Pullback percentages: 8 values
-- ATR periods: 6 values
-- ATR multipliers: 7 values
-- Native trail percentages: 7 values
-- PSAR enabled: 2 values
-- PSAR start: 3 values
-- PSAR increment: 3 values
-- PSAR max: 3 values
-- RSI enabled: 2 values
-- RSI period: 4 values
-- RSI overbought: 4 values
-- RSI oversold: 4 values
-
-ESTIMATED COMBINATIONS: ~15,000+ per trader (depends on grid)
-ESTIMATED TIME: 4-8 hours per trader
+OUTPUT INCLUDES:
+- Per-trader results with best configurations
+- Fine-tune recommendations based on top performers
+- Master comparison across all traders
 
 Author: 403-Forbidden
+Updated: 2025-12-11
 """
 
 import asyncio
@@ -63,13 +52,13 @@ class ComprehensiveBatchTester:
         'nitro', 'money_mo', 'diesel', 'prophet', 'expo'
     ]
     
-    def __init__(self, traders: List[str] = None, mode: str = 'full'):
+    def __init__(self, traders: List[str] = None, mode: str = 'balanced'):
         """
         Initialize batch tester.
         
         Args:
             traders: List of trader names to test (default: all)
-            mode: 'full' (comprehensive), 'standard' (balanced), 'quick' (fast screening)
+            mode: 'quick' (validation), 'balanced' (exploration), 'full' (comprehensive)
         """
         self.traders = traders or self.ALL_TRADERS
         self.mode = mode
@@ -104,69 +93,93 @@ class ComprehensiveBatchTester:
         """Get parameter grid based on mode."""
         if self.mode == 'quick':
             return self._get_quick_grid()
-        elif self.mode == 'standard':
-            return self._get_standard_grid()
+        elif self.mode == 'balanced':
+            return self._get_balanced_grid()
         else:  # full
             return self._get_full_grid()
     
     def _get_quick_grid(self) -> Dict:
-        """Quick screening grid - ~100 combinations"""
+        """
+        QUICK MODE - Fast validation (~200 combinations)
+        Purpose: Verify everything runs, get rough directional signal
+        Time: ~2 min per trader, ~20 min total
+        """
         return {
-            # Breakeven
-            'breakeven_trigger_percent': [5, 7, 10, 15],
+            # Breakeven - 4 key values
+            'breakeven_trigger_percent': [5, 10, 15, 20],
             
-            # Trail method
+            # Trail method - both
             'trail_method': ['pullback_percent', 'atr'],
             
-            # Pullback
+            # Pullback - 4 values including wider for 0DTE
             'pullback_percent': [8, 10, 15, 20],
             
-            # ATR
+            # ATR - simplified
             'atr_period': [14],
             'atr_multiplier': [1.5, 2.0],
             
-            # Native trail
+            # Native trail - 3 key values
             'native_trail_percent': [20, 25, 30],
             
-            # PSAR (disabled for quick)
+            # PSAR - disabled for quick
             'psar_enabled': [False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
             'psar_max': [0.2],
             
-            # RSI (disabled for quick)
+            # RSI - disabled for quick
             'rsi_hook_enabled': [False],
             'rsi_period': [14],
             'rsi_overbought': [70],
             'rsi_oversold': [30],
         }
     
-    def _get_standard_grid(self) -> Dict:
-        """Standard grid - ~2,000 combinations"""
+    def _get_balanced_grid(self) -> Dict:
+        """
+        BALANCED MODE - Diverse exploration (~3,000 combinations)
+        Purpose: Find optimal parameter ranges with good coverage
+        Time: ~20-30 min per trader, ~3-4 hours total
+        """
         return {
-            # Breakeven - more granular
-            'breakeven_trigger_percent': [3, 5, 7, 10, 12, 15],
+            # ================================================================
+            # BREAKEVEN - When to lock in entry price as stop
+            # Wider range to find sweet spot
+            # ================================================================
+            'breakeven_trigger_percent': [3, 5, 7, 10, 12, 15, 20, 25],  # 8 values
             
-            # Trail method
-            'trail_method': ['pullback_percent', 'atr'],
+            # ================================================================
+            # TRAIL METHOD - How to trail the stop
+            # ================================================================
+            'trail_method': ['pullback_percent', 'atr'],  # 2 values
             
-            # Pullback - expanded
-            'pullback_percent': [5, 7, 10, 12, 15, 20],
+            # ================================================================
+            # PULLBACK - Fixed % trailing from peak
+            # Wide range for both tight scalps and 0DTE breathing room
+            # ================================================================
+            'pullback_percent': [5, 7, 10, 12, 15, 20, 25],  # 7 values
             
-            # ATR - expanded
-            'atr_period': [5, 10, 14, 20],
-            'atr_multiplier': [1.0, 1.5, 2.0, 2.5],
+            # ================================================================
+            # ATR - Volatility-adjusted trailing
+            # ================================================================
+            'atr_period': [5, 10, 14, 20, 30],           # 5 values
+            'atr_multiplier': [0.5, 1.0, 1.5, 2.0, 2.5, 3.0],  # 6 values
             
-            # Native trail - more options
-            'native_trail_percent': [15, 20, 25, 30, 35],
+            # ================================================================
+            # NATIVE TRAIL - Broker-level safety net (airbag)
+            # ================================================================
+            'native_trail_percent': [15, 20, 25, 30, 35, 40],  # 6 values
             
-            # PSAR - test on/off
+            # ================================================================
+            # PSAR - Test on/off only (detailed PSAR tuning in full mode)
+            # ================================================================
             'psar_enabled': [True, False],
             'psar_start': [0.02],
             'psar_increment': [0.02],
             'psar_max': [0.2],
             
-            # RSI - test on/off
+            # ================================================================
+            # RSI - Test on/off only (detailed RSI tuning in full mode)
+            # ================================================================
             'rsi_hook_enabled': [True, False],
             'rsi_period': [14],
             'rsi_overbought': [70],
@@ -175,69 +188,52 @@ class ComprehensiveBatchTester:
     
     def _get_full_grid(self) -> Dict:
         """
-        FULL COMPREHENSIVE GRID - ~15,000+ combinations
-        Tests EVERY meaningful parameter variation.
+        FULL MODE - Maximum parameter exploration (~15,000+ combinations)
+        Purpose: Leave no stone unturned, find global optimum
+        Time: ~1.5-2 hours per trader, ~15-20 hours total
         """
         return {
             # ================================================================
-            # BREAKEVEN TRIGGER - When to activate breakeven stop
+            # BREAKEVEN - Extensive range
             # ================================================================
-            # Range: 3% to 25% (8 values)
-            # Lower = more aggressive protection
-            # Higher = more room to breathe
-            'breakeven_trigger_percent': [3, 5, 7, 10, 12, 15, 20, 25],
+            'breakeven_trigger_percent': [3, 5, 7, 10, 12, 15, 20, 25, 30],  # 9 values
             
             # ================================================================
-            # TRAIL METHOD - How to trail the stop
+            # TRAIL METHOD
             # ================================================================
-            'trail_method': ['pullback_percent', 'atr'],
+            'trail_method': ['pullback_percent', 'atr'],  # 2 values
             
             # ================================================================
-            # PULLBACK PERCENT - Fixed % trailing stop
+            # PULLBACK - Full spectrum
             # ================================================================
-            # Range: 5% to 30% (8 values)
-            # Lower = tighter stop, more whipsaw
-            # Higher = more room, larger drawdowns
-            'pullback_percent': [5, 7, 8, 10, 12, 15, 20, 30],
+            'pullback_percent': [5, 7, 8, 10, 12, 15, 18, 20, 25, 30],  # 10 values
             
             # ================================================================
-            # ATR PERIOD - Lookback for volatility calculation
+            # ATR - Comprehensive
             # ================================================================
-            # Range: 5 to 30 bars (6 values)
-            # Lower = more reactive to recent volatility
-            # Higher = smoother, slower adaptation
-            'atr_period': [5, 7, 10, 14, 20, 30],
+            'atr_period': [5, 7, 10, 14, 20, 30],        # 6 values
+            'atr_multiplier': [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],  # 7 values
             
             # ================================================================
-            # ATR MULTIPLIER - How many ATRs for stop distance
+            # NATIVE TRAIL - Full range including extremes
             # ================================================================
-            # Range: 0.5 to 3.5 (7 values)
-            # Lower = tighter stop
-            # Higher = wider stop
-            'atr_multiplier': [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            'native_trail_percent': [10, 15, 20, 25, 30, 35, 40, 50],  # 8 values
             
             # ================================================================
-            # NATIVE TRAIL PERCENT - Broker-level safety net
-            # ================================================================
-            # Range: 10% to 40% (7 values)
-            # This is the "airbag" - last resort protection
-            'native_trail_percent': [10, 15, 20, 25, 30, 35, 40],
-            
-            # ================================================================
-            # PSAR - Parabolic SAR momentum exit
+            # PSAR - Full parameter exploration
             # ================================================================
             'psar_enabled': [True, False],
-            'psar_start': [0.01, 0.02, 0.03],        # Acceleration start
-            'psar_increment': [0.01, 0.02, 0.03],    # Acceleration increment
-            'psar_max': [0.1, 0.2, 0.3],             # Max acceleration
+            'psar_start': [0.01, 0.02, 0.03],
+            'psar_increment': [0.01, 0.02, 0.03],
+            'psar_max': [0.1, 0.2, 0.3],
             
             # ================================================================
-            # RSI HOOK - RSI-based momentum exit
+            # RSI - Full parameter exploration
             # ================================================================
             'rsi_hook_enabled': [True, False],
-            'rsi_period': [7, 10, 14, 20],           # RSI lookback period
-            'rsi_overbought': [65, 70, 75, 80],      # Overbought threshold
-            'rsi_oversold': [20, 25, 30, 35],        # Oversold threshold
+            'rsi_period': [7, 10, 14, 20],
+            'rsi_overbought': [65, 70, 75, 80],
+            'rsi_oversold': [20, 25, 30, 35],
         }
     
     def _get_native_trail_only_grid(self) -> Dict:
@@ -284,32 +280,26 @@ class ComprehensiveBatchTester:
     async def test_single_trader(self, trader_name: str) -> Dict:
         """
         Test a single trader with full parameter optimization.
-        
-        Args:
-            trader_name: Name of the trader/channel
-            
-        Returns:
-            Dictionary with optimization results and recommendations
         """
         logging.info("\n" + "=" * 100)
-        logging.info(f"[TARGET] TESTING: {trader_name.upper()}")
+        logging.info(f"TESTING: {trader_name.upper()}")
         logging.info("=" * 100)
         
         # Find signals file
         signals_file = self._find_signals_file(trader_name)
         
         if not signals_file:
-            logging.warning(f"[WARNING] No signals file found for {trader_name}")
+            logging.warning(f"No signals file found for {trader_name}")
             return self._empty_trader_result(trader_name, "No signals file found")
         
-        logging.info(f"[FOLDER] Signals file: {signals_file}")
+        logging.info(f"Signals file: {signals_file}")
         
         # Count signals
         signal_count = self._count_signals(signals_file)
-        logging.info(f"[CHART] Signal count: {signal_count}")
+        logging.info(f"Signal count: {signal_count}")
         
         if signal_count < 5:
-            logging.warning(f"[WARNING] Too few signals ({signal_count}) for meaningful optimization")
+            logging.warning(f"Too few signals ({signal_count}) for meaningful optimization")
             return self._empty_trader_result(trader_name, f"Too few signals ({signal_count})")
         
         # Create trader output directory
@@ -317,7 +307,7 @@ class ComprehensiveBatchTester:
         trader_output_dir.mkdir(exist_ok=True)
         
         # Run main optimization
-        logging.info(f"\n[CYCLE] Running {self.total_combinations:,} parameter combinations...")
+        logging.info(f"\nRunning {self.total_combinations:,} parameter combinations...")
         main_results = await self._run_optimization(
             signals_file, 
             self.param_grid, 
@@ -326,7 +316,7 @@ class ComprehensiveBatchTester:
         )
         
         # Run native-trail-only optimization
-        logging.info(f"\n[CYCLE] Running {self.native_only_combinations} native-trail-only tests...")
+        logging.info(f"\nRunning {self.native_only_combinations} native-trail-only tests...")
         native_results = await self._run_optimization(
             signals_file,
             self.native_trail_only_grid,
@@ -346,6 +336,7 @@ class ComprehensiveBatchTester:
             'best_win_rate': analysis['best_config']['win_rate'] if analysis['best_config'] else 0,
             'best_profit_factor': analysis['best_config']['profit_factor'] if analysis['best_config'] else 0,
             'profitable_configs': analysis['profitable_configs'],
+            'profitable_pct': analysis['profitable_pct'],
             'recommendation': analysis['recommendation']
         })
         
@@ -391,8 +382,8 @@ class ComprehensiveBatchTester:
         start_time = datetime.now()
         
         for i, params in enumerate(combinations, 1):
-            # Progress logging every 100 tests
-            if i % 100 == 0 or i == 1:
+            # Progress logging every 100 tests or at key milestones
+            if i % 100 == 0 or i == 1 or i == total:
                 elapsed = (datetime.now() - start_time).total_seconds()
                 rate = i / elapsed if elapsed > 0 else 0
                 eta_seconds = (total - i) / rate if rate > 0 else 0
@@ -433,7 +424,7 @@ class ComprehensiveBatchTester:
             df = pd.DataFrame(results)
             csv_path = output_dir / f"{test_type}_all_results.csv"
             df.to_csv(csv_path, index=False, encoding='utf-8')
-            logging.info(f"  [SAVE] Saved {len(results)} results to {csv_path}")
+            logging.info(f"  Saved {len(results)} results to {csv_path}")
         
         return results
     
@@ -447,378 +438,454 @@ class ComprehensiveBatchTester:
         """Analyze results and generate recommendations."""
         
         if not main_results:
-            return self._empty_trader_result(trader_name, "No valid results from backtests")
+            return self._empty_trader_result(trader_name, "No valid results")
         
-        df_main = pd.DataFrame(main_results)
-        df_native = pd.DataFrame(native_results) if native_results else pd.DataFrame()
+        # Convert to DataFrame for analysis
+        df = pd.DataFrame(main_results)
         
-        # Find best configurations
-        best_by_pnl = df_main.loc[df_main['total_pnl'].idxmax()].to_dict() if len(df_main) > 0 else None
-        best_by_wr = df_main.loc[df_main['win_rate'].idxmax()].to_dict() if len(df_main) > 0 else None
-        best_by_pf = df_main.loc[df_main['profit_factor'].idxmax()].to_dict() if len(df_main) > 0 else None
+        # Find profitable configurations
+        profitable = df[df['total_pnl'] > 0]
+        profitable_count = len(profitable)
+        profitable_pct = (profitable_count / len(df)) * 100 if len(df) > 0 else 0
         
-        # Count profitable configurations
-        profitable_configs = len(df_main[df_main['total_pnl'] > 0])
-        total_configs = len(df_main)
-        profitable_pct = (profitable_configs / total_configs * 100) if total_configs > 0 else 0
+        # Find best configuration by P&L
+        best_idx = df['total_pnl'].idxmax()
+        best_config = df.loc[best_idx].to_dict()
         
-        # Best native-only result
-        best_native = None
-        if len(df_native) > 0:
-            best_native = df_native.loc[df_native['total_pnl'].idxmax()].to_dict()
+        # Find top 10 configurations
+        top_10 = df.nlargest(10, 'total_pnl')
         
-        # Parameter sensitivity analysis
-        param_analysis = self._analyze_parameter_sensitivity(df_main)
+        # Find best by profit factor (minimum 3 trades)
+        valid_pf = df[df['total_trades'] >= 3]
+        best_pf_config = None
+        if len(valid_pf) > 0:
+            best_pf_idx = valid_pf['profit_factor'].idxmax()
+            best_pf_config = valid_pf.loc[best_pf_idx].to_dict()
         
-        # Generate recommendation
+        # Find best by win rate (minimum 5 trades)
+        valid_wr = df[df['total_trades'] >= 5]
+        best_wr_config = None
+        if len(valid_wr) > 0:
+            best_wr_idx = valid_wr['win_rate'].idxmax()
+            best_wr_config = valid_wr.loc[best_wr_idx].to_dict()
+        
+        # Analyze native-trail-only results
+        native_best = None
+        if native_results:
+            native_df = pd.DataFrame(native_results)
+            if len(native_df) > 0:
+                native_best_idx = native_df['total_pnl'].idxmax()
+                native_best = native_df.loc[native_best_idx].to_dict()
+        
+        # Generate fine-tune recommendations
+        fine_tune_grid = self._generate_fine_tune_recommendations(df, best_config)
+        
+        # Determine overall recommendation
         recommendation = self._generate_recommendation(
-            best_by_pnl, profitable_pct, param_analysis
+            trader_name, best_config, profitable_pct, fine_tune_grid
         )
         
-        # Generate detailed report
-        self._generate_trader_report(
-            trader_name, df_main, df_native, best_by_pnl, best_by_wr, best_by_pf,
-            best_native, profitable_configs, param_analysis, recommendation, output_dir
+        # Save analysis report
+        self._save_trader_report(
+            trader_name, output_dir, df, best_config, top_10, 
+            profitable_count, profitable_pct, native_best, fine_tune_grid, recommendation
         )
         
         return {
-            'trader': trader_name,
-            'total_tests': total_configs,
-            'profitable_configs': profitable_configs,
+            'trader_name': trader_name,
+            'total_tests': len(df),
+            'profitable_configs': profitable_count,
             'profitable_pct': profitable_pct,
-            'best_config': best_by_pnl,
-            'best_by_win_rate': best_by_wr,
-            'best_by_profit_factor': best_by_pf,
-            'best_native_only': best_native,
-            'param_analysis': param_analysis,
+            'best_config': best_config,
+            'best_pf_config': best_pf_config,
+            'best_wr_config': best_wr_config,
+            'top_10': top_10.to_dict('records'),
+            'native_best': native_best,
+            'fine_tune_grid': fine_tune_grid,
             'recommendation': recommendation
         }
     
-    def _analyze_parameter_sensitivity(self, df: pd.DataFrame) -> Dict:
-        """Analyze which parameters have the biggest impact on P&L."""
-        analysis = {}
+    def _generate_fine_tune_recommendations(self, df: pd.DataFrame, best_config: Dict) -> Dict:
+        """
+        Generate fine-tune parameter grid based on top performers.
+        Analyzes patterns in profitable configurations to suggest focused ranges.
+        """
+        # Get top 20% of configurations by P&L
+        top_pct = max(1, int(len(df) * 0.20))
+        top_configs = df.nlargest(top_pct, 'total_pnl')
         
-        # Key parameters to analyze
-        params_to_check = [
-            'breakeven_trigger_percent', 'trail_method', 'pullback_percent',
-            'atr_period', 'atr_multiplier', 'native_trail_percent',
-            'psar_enabled', 'rsi_hook_enabled'
+        # Only consider profitable configs for fine-tuning
+        profitable_top = top_configs[top_configs['total_pnl'] > 0]
+        
+        if len(profitable_top) < 3:
+            # Not enough profitable configs - use best config as center
+            return self._center_grid_around_config(best_config)
+        
+        fine_tune = {}
+        
+        # Analyze each parameter's distribution in top performers
+        param_columns = [
+            'breakeven_trigger_percent', 'pullback_percent', 
+            'atr_period', 'atr_multiplier', 'native_trail_percent'
         ]
         
-        for param in params_to_check:
-            if param in df.columns:
-                try:
-                    grouped = df.groupby(param)['total_pnl'].agg(['mean', 'std', 'count'])
-                    best_value = grouped['mean'].idxmax()
-                    worst_value = grouped['mean'].idxmin()
-                    spread = grouped['mean'].max() - grouped['mean'].min()
-                    
-                    analysis[param] = {
-                        'best_value': best_value,
-                        'best_avg_pnl': grouped.loc[best_value, 'mean'],
-                        'worst_value': worst_value,
-                        'worst_avg_pnl': grouped.loc[worst_value, 'mean'],
-                        'spread': spread,
-                        'importance': 'HIGH' if spread > 100 else 'MEDIUM' if spread > 50 else 'LOW'
-                    }
-                except Exception:
-                    continue
+        for param in param_columns:
+            if param in profitable_top.columns:
+                values = profitable_top[param].values
+                
+                # Get range that captures top performers
+                p25 = np.percentile(values, 25)
+                p75 = np.percentile(values, 75)
+                median = np.median(values)
+                
+                # Create focused range around the sweet spot
+                if param in ['breakeven_trigger_percent', 'pullback_percent', 'native_trail_percent']:
+                    # Integer percentages
+                    low = max(1, int(p25 - 2))
+                    high = int(p75 + 2)
+                    step = max(1, (high - low) // 5)
+                    fine_tune[param] = list(range(low, high + 1, step))
+                elif param == 'atr_period':
+                    # ATR period
+                    low = max(3, int(p25 - 2))
+                    high = int(p75 + 2)
+                    fine_tune[param] = [low, int(median), high]
+                elif param == 'atr_multiplier':
+                    # ATR multiplier (floats)
+                    low = max(0.5, round(p25 - 0.25, 1))
+                    high = round(p75 + 0.25, 1)
+                    mid = round(median, 1)
+                    fine_tune[param] = sorted(list(set([low, mid, high])))
         
-        return analysis
+        # Trail method - use whichever is more common in top performers
+        if 'trail_method' in profitable_top.columns:
+            method_counts = profitable_top['trail_method'].value_counts()
+            if len(method_counts) > 0:
+                best_method = method_counts.index[0]
+                fine_tune['trail_method'] = [best_method]
+        
+        # PSAR/RSI - check if enabled configs perform better
+        for indicator in ['psar_enabled', 'rsi_hook_enabled']:
+            if indicator in profitable_top.columns:
+                enabled_pnl = profitable_top[profitable_top[indicator] == True]['total_pnl'].mean() if True in profitable_top[indicator].values else 0
+                disabled_pnl = profitable_top[profitable_top[indicator] == False]['total_pnl'].mean() if False in profitable_top[indicator].values else 0
+                fine_tune[indicator] = [enabled_pnl > disabled_pnl]
+        
+        return fine_tune
+    
+    def _center_grid_around_config(self, config: Dict) -> Dict:
+        """Create a fine-tune grid centered around a single best config."""
+        fine_tune = {}
+        
+        be = config.get('breakeven_trigger_percent', 10)
+        fine_tune['breakeven_trigger_percent'] = [max(1, be-3), be, be+3]
+        
+        pb = config.get('pullback_percent', 10)
+        fine_tune['pullback_percent'] = [max(3, pb-3), pb, pb+3]
+        
+        atr_p = config.get('atr_period', 14)
+        fine_tune['atr_period'] = [max(5, atr_p-3), atr_p, atr_p+3]
+        
+        atr_m = config.get('atr_multiplier', 1.5)
+        fine_tune['atr_multiplier'] = [max(0.5, round(atr_m-0.5, 1)), atr_m, round(atr_m+0.5, 1)]
+        
+        nt = config.get('native_trail_percent', 25)
+        fine_tune['native_trail_percent'] = [max(10, nt-5), nt, nt+5]
+        
+        fine_tune['trail_method'] = [config.get('trail_method', 'pullback_percent')]
+        fine_tune['psar_enabled'] = [config.get('psar_enabled', False)]
+        fine_tune['rsi_hook_enabled'] = [config.get('rsi_hook_enabled', False)]
+        
+        return fine_tune
     
     def _generate_recommendation(
         self, 
+        trader_name: str, 
         best_config: Dict, 
         profitable_pct: float,
-        param_analysis: Dict
+        fine_tune_grid: Dict
     ) -> str:
-        """Generate trading recommendation based on results."""
-        
-        if not best_config:
-            return "[X] AVOID - No profitable configurations found"
+        """Generate overall recommendation for trader."""
         
         pnl = best_config.get('total_pnl', 0)
-        wr = best_config.get('win_rate', 0)
-        pf = best_config.get('profit_factor', 0)
+        win_rate = best_config.get('win_rate', 0)
+        profit_factor = best_config.get('profit_factor', 0)
+        trades = best_config.get('total_trades', 0)
         
-        if pnl < 0:
-            return "[X] AVOID - Best configuration is still unprofitable"
+        # Scoring
+        score = 0
+        reasons = []
         
-        if profitable_pct < 10:
-            return f"[!] RISKY - Only {profitable_pct:.1f}% of configs profitable (highly parameter-sensitive)"
+        if pnl > 500:
+            score += 3
+            reasons.append(f"Strong P&L (${pnl:.0f})")
+        elif pnl > 100:
+            score += 2
+            reasons.append(f"Positive P&L (${pnl:.0f})")
+        elif pnl > 0:
+            score += 1
+            reasons.append(f"Marginal P&L (${pnl:.0f})")
+        else:
+            reasons.append(f"Negative P&L (${pnl:.0f})")
         
-        if pf < 1.2:
-            return f"[!] MARGINAL - Low profit factor ({pf:.2f}), edge is thin"
+        if win_rate > 60:
+            score += 2
+            reasons.append(f"High win rate ({win_rate:.1f}%)")
+        elif win_rate > 50:
+            score += 1
+            reasons.append(f"Decent win rate ({win_rate:.1f}%)")
         
-        if wr < 40:
-            return f"[!] CAUTION - Low win rate ({wr:.1f}%), requires strong risk management"
+        if profit_factor > 2.0:
+            score += 2
+            reasons.append(f"Excellent profit factor ({profit_factor:.2f})")
+        elif profit_factor > 1.5:
+            score += 1
+            reasons.append(f"Good profit factor ({profit_factor:.2f})")
         
-        if profitable_pct > 50 and pf > 1.5 and wr > 50:
-            return f"[OK] RECOMMENDED - Robust trader ({profitable_pct:.0f}% configs profitable, PF: {pf:.2f})"
+        if profitable_pct > 20:
+            score += 1
+            reasons.append(f"Many profitable configs ({profitable_pct:.1f}%)")
         
-        if profitable_pct > 30 and pf > 1.3:
-            return f"[+] VIABLE - Decent trader ({profitable_pct:.0f}% configs profitable)"
+        if trades < 10:
+            score -= 1
+            reasons.append(f"Low sample size ({trades} trades)")
         
-        return f"[?] TEST MORE - Results inconclusive ({profitable_pct:.0f}% profitable)"
+        # Generate recommendation
+        if score >= 6:
+            verdict = "🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning"
+        elif score >= 4:
+            verdict = "🟡 PROMISING - Worth fine-tuning, monitor closely"
+        elif score >= 2:
+            verdict = "🟠 MARGINAL - Consider with caution, needs more data"
+        else:
+            verdict = "🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate"
+        
+        return f"{verdict}\n   Reasons: {', '.join(reasons)}"
     
-    def _generate_trader_report(
-        self, trader_name: str, df_main: pd.DataFrame, df_native: pd.DataFrame,
-        best_pnl: Dict, best_wr: Dict, best_pf: Dict, best_native: Dict,
-        profitable_configs: int, param_analysis: Dict, recommendation: str,
-        output_dir: Path
+    def _save_trader_report(
+        self, 
+        trader_name: str, 
+        output_dir: Path, 
+        df: pd.DataFrame,
+        best_config: Dict,
+        top_10: pd.DataFrame,
+        profitable_count: int,
+        profitable_pct: float,
+        native_best: Dict,
+        fine_tune_grid: Dict,
+        recommendation: str
     ):
-        """Generate comprehensive trader report."""
+        """Save detailed trader report."""
         
-        report = []
-        report.append("=" * 100)
-        report.append(f"OPTIMIZATION REPORT: {trader_name.upper()}")
-        report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report.append("=" * 100)
+        report_path = output_dir / f"{trader_name}_optimization_report.txt"
         
-        # Summary statistics
-        report.append("\n" + "-" * 50)
-        report.append("SUMMARY STATISTICS")
-        report.append("-" * 50)
-        report.append(f"Total configurations tested: {len(df_main):,}")
-        report.append(f"Profitable configurations: {profitable_configs:,} ({profitable_configs/len(df_main)*100:.1f}%)")
-        report.append(f"Average P&L across all configs: ${df_main['total_pnl'].mean():.2f}")
-        report.append(f"Median P&L: ${df_main['total_pnl'].median():.2f}")
-        report.append(f"P&L Std Dev: ${df_main['total_pnl'].std():.2f}")
-        
-        # Best by P&L
-        report.append("\n" + "-" * 50)
-        report.append("BEST CONFIGURATION (by P&L)")
-        report.append("-" * 50)
-        if best_pnl:
-            report.append(f"Total P&L: ${best_pnl['total_pnl']:.2f}")
-            report.append(f"Win Rate: {best_pnl['win_rate']:.1f}%")
-            report.append(f"Profit Factor: {best_pnl['profit_factor']:.2f}")
-            report.append(f"Total Trades: {best_pnl['total_trades']}")
-            report.append(f"Avg Hold Time: {best_pnl.get('avg_minutes_held', 0):.0f} minutes")
-            report.append("\nParameters:")
-            report.append(f"  Breakeven Trigger: {best_pnl['breakeven_trigger_percent']}%")
-            report.append(f"  Trail Method: {best_pnl['trail_method']}")
-            report.append(f"  Pullback %: {best_pnl['pullback_percent']}%")
-            report.append(f"  ATR Period: {best_pnl['atr_period']}")
-            report.append(f"  ATR Multiplier: {best_pnl['atr_multiplier']}")
-            report.append(f"  Native Trail: {best_pnl['native_trail_percent']}%")
-            report.append(f"  PSAR Enabled: {best_pnl['psar_enabled']}")
-            report.append(f"  RSI Hook Enabled: {best_pnl['rsi_hook_enabled']}")
-        
-        # Best by Win Rate
-        report.append("\n" + "-" * 50)
-        report.append("BEST CONFIGURATION (by Win Rate)")
-        report.append("-" * 50)
-        if best_wr:
-            report.append(f"Win Rate: {best_wr['win_rate']:.1f}%")
-            report.append(f"Total P&L: ${best_wr['total_pnl']:.2f}")
-            report.append(f"Profit Factor: {best_wr['profit_factor']:.2f}")
-        
-        # Best by Profit Factor
-        report.append("\n" + "-" * 50)
-        report.append("BEST CONFIGURATION (by Profit Factor)")
-        report.append("-" * 50)
-        if best_pf:
-            report.append(f"Profit Factor: {best_pf['profit_factor']:.2f}")
-            report.append(f"Total P&L: ${best_pf['total_pnl']:.2f}")
-            report.append(f"Win Rate: {best_pf['win_rate']:.1f}%")
-        
-        # Native-trail-only results
-        if best_native:
-            report.append("\n" + "-" * 50)
-            report.append("NATIVE TRAIL ONLY (Baseline)")
-            report.append("-" * 50)
-            report.append(f"Best Native Trail %: {best_native['native_trail_percent']}%")
-            report.append(f"P&L: ${best_native['total_pnl']:.2f}")
-            report.append(f"Win Rate: {best_native['win_rate']:.1f}%")
+        with open(report_path, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"OPTIMIZATION REPORT: {trader_name.upper()}\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Mode: {self.mode.upper()}\n")
+            f.write("=" * 80 + "\n\n")
             
-            if len(df_native) > 0:
-                report.append("\nAll native-trail-only results:")
-                for _, row in df_native.sort_values('native_trail_percent').iterrows():
-                    report.append(f"  {row['native_trail_percent']:3.0f}% -> ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}%")
-        
-        # Parameter sensitivity
-        report.append("\n" + "-" * 50)
-        report.append("PARAMETER SENSITIVITY ANALYSIS")
-        report.append("-" * 50)
-        for param, data in param_analysis.items():
-            importance = data.get('importance', 'UNKNOWN')
-            best_val = data.get('best_value')
-            best_pnl_val = data.get('best_avg_pnl', 0)
-            worst_val = data.get('worst_value')
-            spread = data.get('spread', 0)
+            # Summary
+            f.write("SUMMARY\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Total configurations tested: {len(df):,}\n")
+            f.write(f"Profitable configurations: {profitable_count:,} ({profitable_pct:.1f}%)\n")
+            f.write(f"Best P&L: ${best_config.get('total_pnl', 0):,.2f}\n")
+            f.write(f"Best Win Rate: {best_config.get('win_rate', 0):.1f}%\n")
+            f.write(f"Best Profit Factor: {best_config.get('profit_factor', 0):.2f}\n\n")
             
-            report.append(f"\n{param}:")
-            report.append(f"  Importance: {importance}")
-            report.append(f"  Best value: {best_val} (avg P&L: ${best_pnl_val:.2f})")
-            report.append(f"  Worst value: {worst_val}")
-            report.append(f"  P&L spread: ${spread:.2f}")
-        
-        # Top 20 configurations
-        report.append("\n" + "-" * 50)
-        report.append("TOP 20 CONFIGURATIONS BY P&L")
-        report.append("-" * 50)
-        top_20 = df_main.nlargest(20, 'total_pnl')
-        for i, (_, row) in enumerate(top_20.iterrows(), 1):
-            report.append(f"{i:2d}. P&L: ${row['total_pnl']:8.2f} | WR: {row['win_rate']:5.1f}% | "
-                         f"PF: {row['profit_factor']:5.2f} | BE: {row['breakeven_trigger_percent']:2.0f}% | "
-                         f"Trail: {row['trail_method'][:8]:8s} | Native: {row['native_trail_percent']:2.0f}%")
-        
-        # Recommendation
-        report.append("\n" + "=" * 100)
-        report.append("RECOMMENDATION")
-        report.append("=" * 100)
-        report.append(recommendation)
-        
-        # Config.py snippet
-        if best_pnl and best_pnl.get('total_pnl', 0) > 0:
-            report.append("\n" + "-" * 50)
-            report.append("COPY-PASTE CONFIG.PY SNIPPET")
-            report.append("-" * 50)
-            report.append(f'''
-"exit_strategy": {{
-    "breakeven_trigger_percent": {best_pnl['breakeven_trigger_percent']},
-    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-    "trail_method": "{best_pnl['trail_method']}",
+            # Recommendation
+            f.write("RECOMMENDATION\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"{recommendation}\n\n")
+            
+            # Best Configuration
+            f.write("BEST CONFIGURATION (by P&L)\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"  Breakeven Trigger: {best_config.get('breakeven_trigger_percent')}%\n")
+            f.write(f"  Trail Method: {best_config.get('trail_method')}\n")
+            f.write(f"  Pullback Percent: {best_config.get('pullback_percent')}%\n")
+            f.write(f"  ATR Period: {best_config.get('atr_period')}\n")
+            f.write(f"  ATR Multiplier: {best_config.get('atr_multiplier')}\n")
+            f.write(f"  Native Trail: {best_config.get('native_trail_percent')}%\n")
+            f.write(f"  PSAR Enabled: {best_config.get('psar_enabled')}\n")
+            f.write(f"  RSI Hook Enabled: {best_config.get('rsi_hook_enabled')}\n")
+            f.write(f"\n  Results:\n")
+            f.write(f"    Total Trades: {best_config.get('total_trades')}\n")
+            f.write(f"    Total P&L: ${best_config.get('total_pnl', 0):,.2f}\n")
+            f.write(f"    Win Rate: {best_config.get('win_rate', 0):.1f}%\n")
+            f.write(f"    Profit Factor: {best_config.get('profit_factor', 0):.2f}\n")
+            f.write(f"    Avg Hold Time: {best_config.get('avg_minutes_held', 0):.0f} min\n\n")
+            
+            # Top 10
+            f.write("TOP 10 CONFIGURATIONS\n")
+            f.write("-" * 40 + "\n")
+            for i, row in top_10.iterrows():
+                f.write(f"  #{top_10.index.get_loc(i)+1}: P&L=${row['total_pnl']:.0f} | "
+                       f"WR={row['win_rate']:.0f}% | "
+                       f"BE={row['breakeven_trigger_percent']}% | "
+                       f"Trail={row['trail_method']} | "
+                       f"PB={row['pullback_percent']}% | "
+                       f"NT={row['native_trail_percent']}%\n")
+            f.write("\n")
+            
+            # Native Trail Only Results
+            if native_best:
+                f.write("NATIVE TRAIL ONLY (Baseline)\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"  Best Native Trail: {native_best.get('native_trail_percent')}%\n")
+                f.write(f"  P&L: ${native_best.get('total_pnl', 0):,.2f}\n")
+                f.write(f"  Win Rate: {native_best.get('win_rate', 0):.1f}%\n\n")
+            
+            # Fine-Tune Recommendations
+            f.write("FINE-TUNE RECOMMENDATIONS\n")
+            f.write("-" * 40 + "\n")
+            f.write("Based on top performers, focus testing on these ranges:\n\n")
+            f.write("```json\n")
+            f.write(json.dumps(fine_tune_grid, indent=2))
+            f.write("\n```\n\n")
+            
+            # Config.py snippet
+            f.write("CONFIG.PY SNIPPET (Best Config)\n")
+            f.write("-" * 40 + "\n")
+            f.write(f'''"exit_strategy": {{
+    "breakeven_trigger_percent": {best_config.get('breakeven_trigger_percent')},
+    "trail_method": "{best_config.get('trail_method')}",
     "trail_settings": {{
-        "pullback_percent": {best_pnl['pullback_percent']},
-        "atr_period": {best_pnl['atr_period']},
-        "atr_multiplier": {best_pnl['atr_multiplier']}
+        "pullback_percent": {best_config.get('pullback_percent')},
+        "atr_period": {best_config.get('atr_period')},
+        "atr_multiplier": {best_config.get('atr_multiplier')}
     }},
     "momentum_exits": {{
-        "psar_enabled": {str(best_pnl['psar_enabled'])},
-        "psar_settings": {{"start": {best_pnl['psar_start']}, "increment": {best_pnl['psar_increment']}, "max": {best_pnl['psar_max']}}},
-        "rsi_hook_enabled": {str(best_pnl['rsi_hook_enabled'])},
-        "rsi_settings": {{"period": {best_pnl['rsi_period']}, "overbought_level": {best_pnl['rsi_overbought']}, "oversold_level": {best_pnl['rsi_oversold']}}}
+        "psar_enabled": {str(best_config.get('psar_enabled')).lower()},
+        "rsi_hook_enabled": {str(best_config.get('rsi_hook_enabled')).lower()}
     }}
 }},
-"safety_net": {{"enabled": True, "native_trail_percent": {best_pnl['native_trail_percent']}}}
+"safety_net": {{"enabled": True, "native_trail_percent": {best_config.get('native_trail_percent')}}}
 ''')
+            f.write("\n")
         
-        # Save report
-        report_path = output_dir / f"{trader_name}_optimization_report.txt"
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(report))
-        
-        logging.info(f"  [DOC] Generated report: {report_path}")
+        logging.info(f"  Saved report to {report_path}")
     
     def _empty_trader_result(self, trader_name: str, reason: str) -> Dict:
-        """Return empty result structure."""
+        """Return empty result structure for failed traders."""
         return {
-            'trader': trader_name,
+            'trader_name': trader_name,
             'total_tests': 0,
             'profitable_configs': 0,
             'profitable_pct': 0,
             'best_config': None,
-            'best_by_win_rate': None,
-            'best_by_profit_factor': None,
-            'best_native_only': None,
-            'param_analysis': {},
-            'recommendation': f"[X] SKIP - {reason}"
+            'best_pf_config': None,
+            'best_wr_config': None,
+            'top_10': [],
+            'native_best': None,
+            'fine_tune_grid': {},
+            'recommendation': f"⚠️ SKIPPED - {reason}"
         }
     
-    def generate_master_report(self):
-        """Generate master comparison report across all traders."""
-        
-        if not self.master_comparison:
-            logging.warning("No results to generate master report")
-            return
-        
-        df = pd.DataFrame(self.master_comparison)
-        
-        # Sort by best P&L
-        df_sorted = df.sort_values('best_pnl', ascending=False)
-        
-        report = []
-        report.append("=" * 100)
-        report.append("MASTER COMPARISON REPORT - ALL TRADERS")
-        report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report.append(f"Mode: {self.mode.upper()}")
-        report.append("=" * 100)
-        
-        report.append("\n" + "-" * 100)
-        report.append("TRADER RANKINGS (by Best P&L)")
-        report.append("-" * 100)
-        
-        for i, row in df_sorted.iterrows():
-            status = "[OK]" if row['best_pnl'] > 0 else "[X]"
-            report.append(f"{status} {row['trader'].upper():15s} | "
-                         f"Best P&L: ${row['best_pnl']:8.2f} | "
-                         f"Best WR: {row['best_win_rate']:5.1f}% | "
-                         f"Profitable: {row['profitable_configs']:4d} configs | "
-                         f"Signals: {row['signal_count']:3d}")
-        
-        # Profitable traders
-        profitable = df_sorted[df_sorted['best_pnl'] > 0]
-        unprofitable = df_sorted[df_sorted['best_pnl'] <= 0]
-        
-        report.append("\n" + "-" * 100)
-        report.append("SUMMARY")
-        report.append("-" * 100)
-        report.append(f"Total traders tested: {len(df)}")
-        report.append(f"Profitable traders: {len(profitable)}")
-        report.append(f"Unprofitable traders: {len(unprofitable)}")
-        
-        if len(profitable) > 0:
-            report.append(f"\n[OK] RECOMMENDED TRADERS:")
-            for _, row in profitable.iterrows():
-                report.append(f"   - {row['trader'].upper()}: ${row['best_pnl']:.2f}")
-        
-        if len(unprofitable) > 0:
-            report.append(f"\n[X] AVOID TRADERS:")
-            for _, row in unprofitable.iterrows():
-                report.append(f"   - {row['trader'].upper()}: ${row['best_pnl']:.2f}")
-        
-        # Save master report
-        report_path = self.master_output_dir / "MASTER_COMPARISON.txt"
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(report))
-        
-        # Save master CSV
-        csv_path = self.master_output_dir / "master_comparison.csv"
-        df_sorted.to_csv(csv_path, index=False, encoding='utf-8')
-        
-        logging.info(f"\n[CHART] Master report: {report_path}")
-        logging.info(f"[CHART] Master CSV: {csv_path}")
-    
-    async def run(self):
-        """Run batch tests on all traders."""
-        
+    async def run_all_traders(self):
+        """Run optimization for all traders."""
         logging.info("\n" + "=" * 100)
-        logging.info("STARTING COMPREHENSIVE BATCH TESTING")
-        logging.info("=" * 100 + "\n")
+        logging.info("STARTING BATCH OPTIMIZATION")
+        logging.info(f"Testing {len(self.traders)} traders in {self.mode.upper()} mode")
+        logging.info("=" * 100)
         
         start_time = datetime.now()
         
         for i, trader in enumerate(self.traders, 1):
-            logging.info(f"\n[{i}/{len(self.traders)}] Testing {trader}...")
+            logging.info(f"\n[{i}/{len(self.traders)}] Processing {trader}...")
             await self.test_single_trader(trader)
         
-        end_time = datetime.now()
-        duration = end_time - start_time
+        elapsed = datetime.now() - start_time
         
         # Generate master report
-        self.generate_master_report()
+        self._generate_master_report(elapsed)
         
         logging.info("\n" + "=" * 100)
-        logging.info("BATCH TESTING COMPLETE!")
-        logging.info(f"Total time: {duration}")
-        logging.info(f"Results: {self.master_output_dir}")
+        logging.info("BATCH OPTIMIZATION COMPLETE")
+        logging.info(f"Total time: {elapsed}")
+        logging.info(f"Results saved to: {self.master_output_dir}")
         logging.info("=" * 100)
+    
+    def _generate_master_report(self, elapsed):
+        """Generate master comparison report across all traders."""
+        
+        report_path = self.master_output_dir / "MASTER_COMPARISON.txt"
+        
+        # Sort by best P&L
+        sorted_comparison = sorted(self.master_comparison, key=lambda x: x['best_pnl'], reverse=True)
+        
+        with open(report_path, 'w') as f:
+            f.write("=" * 100 + "\n")
+            f.write("MASTER COMPARISON REPORT - ALL TRADERS\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Mode: {self.mode.upper()}\n")
+            f.write(f"Total Time: {elapsed}\n")
+            f.write("=" * 100 + "\n\n")
+            
+            # Rankings
+            f.write("TRADER RANKINGS (by Best P&L)\n")
+            f.write("-" * 80 + "\n")
+            f.write(f"{'Rank':<6}{'Trader':<15}{'Best P&L':<12}{'Win Rate':<10}{'PF':<8}{'Profitable %':<14}{'Signals':<10}\n")
+            f.write("-" * 80 + "\n")
+            
+            for i, trader in enumerate(sorted_comparison, 1):
+                f.write(f"{i:<6}{trader['trader']:<15}"
+                       f"${trader['best_pnl']:>8,.0f}   "
+                       f"{trader['best_win_rate']:>6.1f}%   "
+                       f"{trader['best_profit_factor']:>5.2f}   "
+                       f"{trader['profitable_pct']:>10.1f}%   "
+                       f"{trader['signal_count']:>6}\n")
+            
+            f.write("\n")
+            
+            # Recommendations Summary
+            f.write("RECOMMENDATIONS SUMMARY\n")
+            f.write("-" * 80 + "\n")
+            for trader in sorted_comparison:
+                f.write(f"\n{trader['trader'].upper()}:\n")
+                f.write(f"  {trader['recommendation']}\n")
+            
+            f.write("\n")
+            
+            # Top 3 Traders to Focus On
+            f.write("=" * 80 + "\n")
+            f.write("TOP 3 TRADERS TO FOCUS ON\n")
+            f.write("=" * 80 + "\n")
+            
+            profitable_traders = [t for t in sorted_comparison if t['best_pnl'] > 0]
+            for i, trader in enumerate(profitable_traders[:3], 1):
+                f.write(f"\n{i}. {trader['trader'].upper()}\n")
+                f.write(f"   Best P&L: ${trader['best_pnl']:,.0f}\n")
+                f.write(f"   Win Rate: {trader['best_win_rate']:.1f}%\n")
+                f.write(f"   See: {trader['trader']}/{trader['trader']}_optimization_report.txt\n")
+            
+            if not profitable_traders:
+                f.write("\n⚠️ No profitable traders found in this test run.\n")
+                f.write("Consider: More signals, different parameters, or different traders.\n")
+        
+        # Also save as CSV for easy analysis
+        csv_path = self.master_output_dir / "master_comparison.csv"
+        pd.DataFrame(sorted_comparison).to_csv(csv_path, index=False)
+        
+        logging.info(f"Master report saved to {report_path}")
 
 
 async def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description='Comprehensive Batch Tester')
-    parser.add_argument('--mode', choices=['quick', 'standard', 'full'], default='full',
-                       help='Testing mode: quick (~100 combos), standard (~2000), full (~15000+)')
-    parser.add_argument('--traders', nargs='+', default=None,
-                       help='Specific traders to test (default: all)')
+    parser = argparse.ArgumentParser(description='Comprehensive batch tester for all traders')
+    parser.add_argument('--mode', choices=['quick', 'balanced', 'full'], default='balanced',
+                       help='Testing mode: quick (~20min), balanced (~3-4hrs), full (~15-20hrs)')
+    parser.add_argument('--traders', nargs='+', help='Specific traders to test (default: all)')
     
     args = parser.parse_args()
     
-    tester = ComprehensiveBatchTester(traders=args.traders, mode=args.mode)
-    await tester.run()
+    tester = ComprehensiveBatchTester(
+        traders=args.traders,
+        mode=args.mode
+    )
+    
+    await tester.run_all_traders()
 
 
 if __name__ == "__main__":
