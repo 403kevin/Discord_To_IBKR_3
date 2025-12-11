@@ -679,7 +679,7 @@ class ComprehensiveBatchTester:
         
         report_path = output_dir / f"{trader_name}_optimization_report.txt"
         
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
             f.write(f"OPTIMIZATION REPORT: {trader_name.upper()}\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -816,7 +816,7 @@ class ComprehensiveBatchTester:
         # Sort by best P&L
         sorted_comparison = sorted(self.master_comparison, key=lambda x: x['best_pnl'], reverse=True)
         
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("=" * 100 + "\n")
             f.write("MASTER COMPARISON REPORT - ALL TRADERS\n")
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
