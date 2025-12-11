@@ -119,7 +119,7 @@ class ComprehensiveBatchTester:
             'trail_method': ['pullback_percent', 'atr'],
             
             # Pullback
-            'pullback_percent': [8, 10, 15],
+            'pullback_percent': [8, 10, 15, 20],
             
             # ATR
             'atr_period': [14],
