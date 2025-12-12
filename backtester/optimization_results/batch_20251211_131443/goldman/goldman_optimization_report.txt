@@ -1,0 +1,61 @@
+================================================================================
+OPTIMIZATION REPORT: GOLDMAN
+Generated: 2025-12-11 13:17:19
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 162 (84.4%)
+Best P&L: $528.00
+Best Win Rate: 55.0%
+Best Profit Factor: 2.51
+
+RECOMMENDATION
+----------------------------------------
+🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($528), Decent win rate (55.0%), Excellent profit factor (2.51), Many profitable configs (84.4%)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 5%
+  Trail Method: atr
+  Pullback Percent: 8%
+  ATR Period: 14
+  ATR Multiplier: 1.5
+  Native Trail: 25%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+  Results:
+    Total Trades: 20
+    Total P&L: $528.00
+    Win Rate: 55.0%
+    Profit Factor: 2.51
+    Avg Hold Time: 6 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$528 | WR=55% | BE=5% | Trail=atr | PB=8% | NT=25%
+  #2: P&L=$528 | WR=55% | BE=5% | Trail=atr | PB=10% | NT=25%
+  #3: P&L=$528 | WR=55% | BE=5% | Trail=atr | PB=15% | NT=25%
+  #4: P&L=$528 | WR=55% | BE=5% | Trail=atr | PB=20% | NT=25%
+  #5: P&L=$528 | WR=55% | BE=10% | Trail=atr | PB=8% | NT=25%
+  #6: P&L=$528 | WR=55% | BE=10% | Trail=atr | PB=10% | NT=25%
+  #7: P&L=$528 | WR=55% | BE=10% | Trail=atr | PB=15% | NT=25%
+  #8: P&L=$528 | WR=55% | BE=10% | Trail=atr | PB=20% | NT=25%
+  #9: P&L=$528 | WR=55% | BE=15% | Trail=atr | PB=8% | NT=25%
+  #10: P&L=$528 | WR=55% | BE=15% | Trail=atr | PB=10% | NT=25%
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 35%
+  P&L: $378.00
+  Win Rate: 40.0%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json

@@ -51,7 +51,7 @@ class Config:
         self.eod_close = {
             "enabled": True, #False while testing
             "hour": 13,
-            "minute": 00
+            "minute": 30
         }
         
         self.reconciliation_interval_seconds = 60  # Check every 60 seconds for ghost positions

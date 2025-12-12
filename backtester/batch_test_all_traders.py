@@ -337,9 +337,14 @@ class ComprehensiveBatchTester:
             'best_profit_factor': analysis['best_config']['profit_factor'] if analysis['best_config'] else 0,
             'profitable_configs': analysis['profitable_configs'],
             'profitable_pct': analysis['profitable_pct'],
+            # New outlier-resistant metrics
+            'best_trimmed_pnl': analysis['best_config'].get('trimmed_pnl', 0) if analysis['best_config'] else 0,
+            'best_pnl_without_best': analysis['best_config'].get('pnl_without_best', 0) if analysis[
+                'best_config'] else 0,
+            'best_consistency': analysis['best_config'].get('consistency_score', 0) if analysis['best_config'] else 0,
+            'outlier_flag': analysis['best_config'].get('outlier_flag', False) if analysis['best_config'] else False,
             'recommendation': analysis['recommendation']
         })
-        
         return analysis
     
     def _find_signals_file(self, trader_name: str) -> Optional[Path]:
@@ -411,6 +416,15 @@ class ComprehensiveBatchTester:
                         'final_capital': result.get('final_capital', 10000),
                         'return_pct': result.get('return_pct', 0),
                         'avg_minutes_held': result.get('avg_minutes_held', 0),
+                        # New outlier-resistant metrics
+                        'median_pnl': result.get('median_pnl', 0),
+                        'trimmed_pnl': result.get('trimmed_pnl', 0),
+                        'pnl_without_best': result.get('pnl_without_best', 0),
+                        'max_single_win': result.get('max_single_win', 0),
+                        'max_single_loss': result.get('max_single_loss', 0),
+                        'consistency_score': result.get('consistency_score', 0),
+                        'pnl_std': result.get('pnl_std', 0),
+                        'outlier_flag': result.get('outlier_flag', False),
                         **params
                     }
                     results.append(result_entry)
@@ -729,7 +743,25 @@ class ComprehensiveBatchTester:
                        f"PB={row['pullback_percent']}% | "
                        f"NT={row['native_trail_percent']}%\n")
             f.write("\n")
-            
+
+            # Outlier Analysis
+            f.write("OUTLIER ANALYSIS\n")
+            f.write("-" * 40 + "\n")
+            max_win = best_config.get('max_single_win', 0)
+            pnl_without = best_config.get('pnl_without_best', 0)
+            trimmed = best_config.get('trimmed_pnl', 0)
+            consistency = best_config.get('consistency_score', 0)
+            outlier_flag = best_config.get('outlier_flag', False)
+
+            f.write(f"  Max Single Win: ${max_win:,.2f}\n")
+            f.write(f"  Max Single Loss: ${best_config.get('max_single_loss', 0):,.2f}\n")
+            f.write(f"  P&L Without Best Trade: ${pnl_without:,.2f}\n")
+            f.write(f"  Trimmed P&L (excl top/bottom 10%): ${trimmed:,.2f}\n")
+            f.write(f"  Consistency Score: {consistency:.2f}\n")
+            if outlier_flag:
+                f.write(f"  ⚠️ OUTLIER WARNING: Best trade is >50% of total P&L\n")
+            f.write("\n")
+
             # Native Trail Only Results
             if native_best:
                 f.write("NATIVE TRAIL ONLY (Baseline)\n")
@@ -757,7 +789,7 @@ class ComprehensiveBatchTester:
                 else:
                     return obj
         
-        f.write(json.dumps(convert_to_native(fine_tune_grid), indent=2))
+            f.write(json.dumps(convert_to_native(fine_tune_grid), indent=2))
             f.write("\n```\n\n")
             
             # Config.py snippet
@@ -841,16 +873,18 @@ class ComprehensiveBatchTester:
             # Rankings
             f.write("TRADER RANKINGS (by Best P&L)\n")
             f.write("-" * 80 + "\n")
-            f.write(f"{'Rank':<6}{'Trader':<15}{'Best P&L':<12}{'Win Rate':<10}{'PF':<8}{'Profitable %':<14}{'Signals':<10}\n")
+            f.write(
+                f"{'Rank':<6}{'Trader':<12}{'Raw P&L':<11}{'Trimmed':<11}{'W/O Best':<11}{'Consist.':<9}{'Outlier':<8}\n")
             f.write("-" * 80 + "\n")
-            
+
             for i, trader in enumerate(sorted_comparison, 1):
-                f.write(f"{i:<6}{trader['trader']:<15}"
-                       f"${trader['best_pnl']:>8,.0f}   "
-                       f"{trader['best_win_rate']:>6.1f}%   "
-                       f"{trader['best_profit_factor']:>5.2f}   "
-                       f"{trader['profitable_pct']:>10.1f}%   "
-                       f"{trader['signal_count']:>6}\n")
+                outlier_warn = "⚠️" if trader.get('outlier_flag', False) else ""
+                f.write(f"{i:<6}{trader['trader']:<12}"
+                        f"${trader['best_pnl']:>7,.0f}   "
+                        f"${trader.get('best_trimmed_pnl', 0):>7,.0f}   "
+                        f"${trader.get('best_pnl_without_best', 0):>7,.0f}   "
+                        f"{trader.get('best_consistency', 0):>6.2f}   "
+                        f"{outlier_warn:<8}\n")
             
             f.write("\n")
             

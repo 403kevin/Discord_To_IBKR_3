@@ -1,0 +1,16 @@
+================================================================================
+OPTIMIZATION REPORT: GOLDMAN
+Generated: 2025-12-11 08:28:42
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 162 (84.4%)
+Best P&L: $528.00
+Best Win Rate: 55.0%
+Best Profit Factor: 2.51
+
+RECOMMENDATION
+----------------------------------------

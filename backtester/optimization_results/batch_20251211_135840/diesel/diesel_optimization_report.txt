@@ -1,0 +1,133 @@
+================================================================================
+OPTIMIZATION REPORT: DIESEL
+Generated: 2025-12-11 14:18:45
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 130 (67.7%)
+Best P&L: $146.00
+Best Win Rate: 30.0%
+Best Profit Factor: 4.32
+
+RECOMMENDATION
+----------------------------------------
+🟡 PROMISING - Worth fine-tuning, monitor closely
+   Reasons: Positive P&L ($146), Excellent profit factor (4.32), Many profitable configs (67.7%)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 20%
+  Trail Method: atr
+  Pullback Percent: 8%
+  ATR Period: 14
+  ATR Multiplier: 2.0
+  Native Trail: 30%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+  Results:
+    Total Trades: 20
+    Total P&L: $146.00
+    Win Rate: 30.0%
+    Profit Factor: 4.32
+    Avg Hold Time: 10 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$146 | WR=30% | BE=20% | Trail=atr | PB=8% | NT=30%
+  #2: P&L=$146 | WR=30% | BE=20% | Trail=atr | PB=10% | NT=30%
+  #3: P&L=$146 | WR=30% | BE=20% | Trail=atr | PB=15% | NT=30%
+  #4: P&L=$146 | WR=30% | BE=20% | Trail=atr | PB=20% | NT=30%
+  #5: P&L=$85 | WR=25% | BE=10% | Trail=atr | PB=8% | NT=30%
+  #6: P&L=$85 | WR=25% | BE=10% | Trail=atr | PB=10% | NT=30%
+  #7: P&L=$85 | WR=25% | BE=10% | Trail=atr | PB=15% | NT=30%
+  #8: P&L=$85 | WR=25% | BE=10% | Trail=atr | PB=20% | NT=30%
+  #9: P&L=$85 | WR=25% | BE=15% | Trail=atr | PB=8% | NT=30%
+  #10: P&L=$85 | WR=25% | BE=15% | Trail=atr | PB=10% | NT=30%
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 30%
+  P&L: $33.00
+  Win Rate: 30.0%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json
+{
+  "breakeven_trigger_percent": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+  ],
+  "pullback_percent": [
+    6,
+    8,
+    10,
+    12,
+    14,
+    16
+  ],
+  "atr_period": [
+    12,
+    14,
+    16
+  ],
+  "atr_multiplier": [
+    1.2,
+    2.0,
+    2.2
+  ],
+  "native_trail_percent": [
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32
+  ],
+  "trail_method": [
+    "atr"
+  ],
+  "psar_enabled": [
+    0
+  ],
+  "rsi_hook_enabled": [
+    0
+  ]
+}
+```
+
+CONFIG.PY SNIPPET (Best Config)
+----------------------------------------
+"exit_strategy": {
+    "breakeven_trigger_percent": 20,
+    "trail_method": "atr",
+    "trail_settings": {
+        "pullback_percent": 8,
+        "atr_period": 14,
+        "atr_multiplier": 2.0
+    },
+    "momentum_exits": {
+        "psar_enabled": false,
+        "rsi_hook_enabled": false
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 30}
+

@@ -1,0 +1,168 @@
+====================================================================================================
+OPTIMIZATION REPORT: QIQO
+Generated: 2025-11-28 07:15:12
+====================================================================================================
+
+--------------------------------------------------
+SUMMARY STATISTICS
+--------------------------------------------------
+Total configurations tested: 144
+Profitable configurations: 6 (4.2%)
+Average P&L across all configs: $-634.17
+Median P&L: $-775.00
+P&L Std Dev: $372.63
+
+--------------------------------------------------
+BEST CONFIGURATION (by P&L)
+--------------------------------------------------
+Total P&L: $206.00
+Win Rate: 31.2%
+Profit Factor: 1.13
+Total Trades: 48
+Avg Hold Time: 17 minutes
+
+Parameters:
+  Breakeven Trigger: 7%
+  Trail Method: pullback_percent
+  Pullback %: 15%
+  ATR Period: 14
+  ATR Multiplier: 1.5
+  Native Trail: 20%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+--------------------------------------------------
+BEST CONFIGURATION (by Win Rate)
+--------------------------------------------------
+Win Rate: 37.5%
+Total P&L: $-85.00
+Profit Factor: 0.96
+
+--------------------------------------------------
+BEST CONFIGURATION (by Profit Factor)
+--------------------------------------------------
+Profit Factor: 1.13
+Total P&L: $206.00
+Win Rate: 31.2%
+
+--------------------------------------------------
+NATIVE TRAIL ONLY (Baseline)
+--------------------------------------------------
+Best Native Trail %: 35%
+P&L: $807.00
+Win Rate: 45.5%
+
+All native-trail-only results:
+    8% -> $-1042.00 | WR:  22.4%
+   10% -> $ -775.00 | WR:  29.2%
+   12% -> $ -543.00 | WR:  29.2%
+   15% -> $  -85.00 | WR:  37.5%
+   18% -> $    4.00 | WR:  37.5%
+   20% -> $  -74.00 | WR:  37.5%
+   25% -> $  514.00 | WR:  39.1%
+   30% -> $  505.00 | WR:  44.4%
+   35% -> $  807.00 | WR:  45.5%
+   40% -> $  -55.00 | WR:  47.7%
+
+--------------------------------------------------
+PARAMETER SENSITIVITY ANALYSIS
+--------------------------------------------------
+
+breakeven_trigger_percent:
+  Importance: HIGH
+  Best value: 7 (avg P&L: $-450.92)
+  Worst value: 15
+  P&L spread: $332.75
+
+trail_method:
+  Importance: LOW
+  Best value: pullback_percent (avg P&L: $-631.33)
+  Worst value: atr
+  P&L spread: $5.67
+
+pullback_percent:
+  Importance: HIGH
+  Best value: 15 (avg P&L: $-331.25)
+  Worst value: 8
+  P&L spread: $513.88
+
+atr_period:
+  Importance: LOW
+  Best value: 14 (avg P&L: $-634.17)
+  Worst value: 14
+  P&L spread: $0.00
+
+atr_multiplier:
+  Importance: LOW
+  Best value: 2.0 (avg P&L: $-612.58)
+  Worst value: 1.5
+  P&L spread: $43.17
+
+native_trail_percent:
+  Importance: MEDIUM
+  Best value: 25 (avg P&L: $-598.29)
+  Worst value: 30
+  P&L spread: $78.25
+
+psar_enabled:
+  Importance: LOW
+  Best value: False (avg P&L: $-634.17)
+  Worst value: False
+  P&L spread: $0.00
+
+rsi_hook_enabled:
+  Importance: LOW
+  Best value: False (avg P&L: $-634.17)
+  Worst value: False
+  P&L spread: $0.00
+
+--------------------------------------------------
+TOP 20 CONFIGURATIONS BY P&L
+--------------------------------------------------
+ 1. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 20%
+ 2. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 25%
+ 3. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 30%
+ 4. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 20%
+ 5. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 25%
+ 6. P&L: $  206.00 | WR:  31.2% | PF:  1.13 | BE:  7% | Trail: pullback | Native: 30%
+ 7. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 20%
+ 8. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 25%
+ 9. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 30%
+10. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 20%
+11. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 25%
+12. P&L: $  -22.00 | WR:  27.1% | PF:  0.99 | BE:  5% | Trail: pullback | Native: 30%
+13. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 20%
+14. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 25%
+15. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 30%
+16. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 20%
+17. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 25%
+18. P&L: $  -85.00 | WR:  37.5% | PF:  0.96 | BE: 15% | Trail: pullback | Native: 30%
+19. P&L: $ -201.00 | WR:  33.3% | PF:  0.90 | BE: 10% | Trail: pullback | Native: 20%
+20. P&L: $ -201.00 | WR:  33.3% | PF:  0.90 | BE: 10% | Trail: pullback | Native: 25%
+
+====================================================================================================
+RECOMMENDATION
+====================================================================================================
+[!] RISKY - Only 4.2% of configs profitable (highly parameter-sensitive)
+
+--------------------------------------------------
+COPY-PASTE CONFIG.PY SNIPPET
+--------------------------------------------------
+
+"exit_strategy": {
+    "breakeven_trigger_percent": 7,
+    "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
+    "trail_method": "pullback_percent",
+    "trail_settings": {
+        "pullback_percent": 15,
+        "atr_period": 14,
+        "atr_multiplier": 1.5
+    },
+    "momentum_exits": {
+        "psar_enabled": False,
+        "psar_settings": {"start": 0.02, "increment": 0.02, "max": 0.2},
+        "rsi_hook_enabled": False,
+        "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 20}

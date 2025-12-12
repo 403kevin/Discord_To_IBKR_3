@@ -1,0 +1,83 @@
+====================================================================================================
+MASTER COMPARISON REPORT - ALL TRADERS
+Generated: 2025-12-11 14:23:13
+Mode: QUICK
+Total Time: 0:24:33.520612
+====================================================================================================
+
+TRADER RANKINGS (by Best P&L)
+--------------------------------------------------------------------------------
+Rank  Trader         Best P&L    Win Rate  PF      Profitable %  Signals   
+--------------------------------------------------------------------------------
+1     qiqo           $   4,938     44.4%   17.63        100.0%       20
+2     zeus           $     620     47.4%    7.74         90.6%       20
+3     goldman        $     528     55.0%    2.51         84.4%       20
+4     waxui          $     350     36.8%    1.50          8.3%       20
+5     diesel         $     146     30.0%    4.32         67.7%       20
+6     money_mo       $      99     33.3%    1.99         46.9%       20
+7     expo           $     -81      5.6%    0.08          0.0%       19
+8     prophet        $     -86      5.9%    0.72          0.0%       20
+9     gandalf        $     -94      0.0%    0.00          0.0%       12
+10    nitro          $    -215     20.0%    0.48          0.0%       20
+
+RECOMMENDATIONS SUMMARY
+--------------------------------------------------------------------------------
+
+QIQO:
+  🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($4938), Excellent profit factor (17.63), Many profitable configs (100.0%)
+
+ZEUS:
+  🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($620), Excellent profit factor (7.74), Many profitable configs (90.6%)
+
+GOLDMAN:
+  🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($528), Decent win rate (55.0%), Excellent profit factor (2.51), Many profitable configs (84.4%)
+
+WAXUI:
+  🟠 MARGINAL - Consider with caution, needs more data
+   Reasons: Positive P&L ($350)
+
+DIESEL:
+  🟡 PROMISING - Worth fine-tuning, monitor closely
+   Reasons: Positive P&L ($146), Excellent profit factor (4.32), Many profitable configs (67.7%)
+
+MONEY_MO:
+  🟠 MARGINAL - Consider with caution, needs more data
+   Reasons: Marginal P&L ($99), Good profit factor (1.99), Many profitable configs (46.9%)
+
+EXPO:
+  🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-81)
+
+PROPHET:
+  🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-86)
+
+GANDALF:
+  🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-94)
+
+NITRO:
+  🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-215)
+
+================================================================================
+TOP 3 TRADERS TO FOCUS ON
+================================================================================
+
+1. QIQO
+   Best P&L: $4,938
+   Win Rate: 44.4%
+   See: qiqo/qiqo_optimization_report.txt
+
+2. ZEUS
+   Best P&L: $620
+   Win Rate: 47.4%
+   See: zeus/zeus_optimization_report.txt
+
+3. GOLDMAN
+   Best P&L: $528
+   Win Rate: 55.0%
+   See: goldman/goldman_optimization_report.txt
