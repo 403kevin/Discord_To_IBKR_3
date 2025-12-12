@@ -1,0 +1,61 @@
+====================================================================================================
+MASTER COMPARISON REPORT - ALL TRADERS
+Generated: 2025-12-12 08:12:10
+Mode: QUICK
+Total Time: 0:00:03.019583
+====================================================================================================
+
+TRADER RANKINGS (by Best P&L)
+--------------------------------------------------------------------------------
+Rank  Trader      Raw P&L    Trimmed    W/O Best   Consist. Outlier 
+--------------------------------------------------------------------------------
+1     goldman     $      0   $      0   $      0     0.00           
+2     qiqo        $      0   $      0   $      0     0.00           
+3     gandalf     $      0   $      0   $      0     0.00           
+4     zeus        $      0   $      0   $      0     0.00           
+5     waxui       $      0   $      0   $      0     0.00           
+6     nitro       $      0   $      0   $      0     0.00           
+7     money_mo    $      0   $      0   $      0     0.00           
+8     diesel      $      0   $      0   $      0     0.00           
+9     prophet     $      0   $      0   $      0     0.00           
+10    expo        $      0   $      0   $      0     0.00           
+
+RECOMMENDATIONS SUMMARY
+--------------------------------------------------------------------------------
+
+GOLDMAN:
+  ⚠️ SKIPPED - No valid results
+
+QIQO:
+  ⚠️ SKIPPED - No valid results
+
+GANDALF:
+  ⚠️ SKIPPED - No valid results
+
+ZEUS:
+  ⚠️ SKIPPED - No valid results
+
+WAXUI:
+  ⚠️ SKIPPED - No valid results
+
+NITRO:
+  ⚠️ SKIPPED - No valid results
+
+MONEY_MO:
+  ⚠️ SKIPPED - No valid results
+
+DIESEL:
+  ⚠️ SKIPPED - No valid results
+
+PROPHET:
+  ⚠️ SKIPPED - No valid results
+
+EXPO:
+  ⚠️ SKIPPED - No valid results
+
+================================================================================
+TOP 3 TRADERS TO FOCUS ON
+================================================================================
+
+⚠️ No profitable traders found in this test run.
+Consider: More signals, different parameters, or different traders.

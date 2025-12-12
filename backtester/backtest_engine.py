@@ -207,9 +207,9 @@ class BacktestEngine:
         """Load historical data for a signal"""
         filename = get_data_filename_databento(
             signal['ticker'],
-            signal['expiry'],
+            signal['expiry_date'],
             signal['strike'],
-            signal['contract_type']
+            signal['contract_type'][0] if len(signal['contract_type']) > 1 else signal['contract_type']
         )
         
         filepath = self.data_folder_path / filename
