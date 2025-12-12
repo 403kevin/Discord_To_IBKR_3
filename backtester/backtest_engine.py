@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-backtest_engine.py - TIMEZONE FIXED VERSION v2
-===============================================
+backtest_engine.py - TIMEZONE FIXED VERSION v3 + OUTLIER METRICS
+=================================================================
 CRITICAL FIX: Signal timestamps are now properly converted from LOCAL TIME to UTC
 
 THE BUG:
@@ -13,6 +13,11 @@ THE FIX:
 - Added SIGNAL_TIMEZONE setting (default: America/Denver for Mountain Time)
 - Signal timestamps are now properly localized then converted to UTC
 - Data timestamps (from Databento) are already in UTC - no change needed
+
+NEW IN v3:
+- Added outlier-resistant metrics (median_pnl, trimmed_pnl, consistency_score)
+- Outlier detection flag when single trade > 50% of total P&L
+- pnl_without_best metric for robustness testing
 
 Exit logic maintained:
 - Correct exit priority order
@@ -60,6 +65,7 @@ class BacktestEngine:
     """
     Event-driven backtest engine for day trading options
     NOW WITH PROPER LOCAL TIME -> UTC CONVERSION
+    AND OUTLIER-RESISTANT METRICS
     """
     
     def __init__(self, signal_file_path: str, data_folder_path: str = "backtester/historical_data"):
@@ -77,6 +83,18 @@ class BacktestEngine:
         self.atr_period = 14
         self.atr_multiplier = 1.5
         self.native_trail_percent = 25
+        
+        # PSAR parameters
+        self.psar_enabled = False
+        self.psar_start = 0.02
+        self.psar_increment = 0.02
+        self.psar_max = 0.2
+        
+        # RSI parameters
+        self.rsi_hook_enabled = False
+        self.rsi_period = 14
+        self.rsi_overbought = 70
+        self.rsi_oversold = 30
         
         # State tracking
         self.portfolio = {'cash': self.starting_capital, 'positions': {}}
@@ -98,6 +116,18 @@ class BacktestEngine:
             self.atr_period = params.get('atr_period', 14)
             self.atr_multiplier = params.get('atr_multiplier', 1.5)
             self.native_trail_percent = params.get('native_trail_percent', 25)
+            
+            # PSAR parameters
+            self.psar_enabled = params.get('psar_enabled', False)
+            self.psar_start = params.get('psar_start', 0.02)
+            self.psar_increment = params.get('psar_increment', 0.02)
+            self.psar_max = params.get('psar_max', 0.2)
+            
+            # RSI parameters
+            self.rsi_hook_enabled = params.get('rsi_hook_enabled', False)
+            self.rsi_period = params.get('rsi_period', 14)
+            self.rsi_overbought = params.get('rsi_overbought', 70)
+            self.rsi_oversold = params.get('rsi_oversold', 30)
         
         # Reset state
         self.portfolio = {'cash': self.starting_capital, 'positions': {}}
@@ -167,104 +197,72 @@ class BacktestEngine:
                 parsed = parser.parse_signal(signal_text, default_profile)
                 if parsed:
                     parsed['timestamp'] = timestamp_str
+                    parsed['signal_id'] = f"{parsed['ticker']}_{parsed['strike']}_{parsed['contract_type']}_{timestamp_str}"
                     signals.append(parsed)
         
         logging.info(f"Loaded {len(signals)} signals")
         return signals
     
     def _load_signal_data(self, signal: Dict):
-        """
-        Load historical data for a signal
-        Data timestamps are already in UTC from Databento
-        """
-        ticker = signal['ticker']
-        expiry = signal['expiry_date']
-        strike = signal['strike']
-        right = 'C' if signal['contract_type'] == 'CALL' else 'P'
+        """Load historical data for a signal"""
+        filename = get_data_filename_databento(
+            signal['ticker'],
+            signal['expiry'],
+            signal['strike'],
+            signal['contract_type']
+        )
         
-        filename = get_data_filename_databento(ticker, expiry, strike, right)
         filepath = self.data_folder_path / filename
         
         if not filepath.exists():
-            logging.warning(f"Data file not found: {filename}")
+            logging.warning(f"Data file not found: {filepath}")
             signal['data'] = None
             return
         
-        try:
-            df = pd.read_csv(filepath)
-            
-            # Identify time column
-            time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
-            
-            # Parse timestamps as UTC (Databento data is already UTC)
-            df[time_col] = pd.to_datetime(df[time_col], utc=True)
-            
-            # Ensure timezone is set
-            if df[time_col].dt.tz is None:
-                df[time_col] = df[time_col].dt.tz_localize('UTC')
-            
-            # Calculate mid price if not present
-            if 'mid' not in df.columns:
-                if 'bid' in df.columns and 'ask' in df.columns:
-                    df['mid'] = (df['bid'] + df['ask']) / 2
-                elif 'close' in df.columns:
-                    df['mid'] = df['close']
-            
-            signal['data'] = df
-            logging.debug(f"Loaded {len(df)} bars for {ticker}")
-            
-        except Exception as e:
-            logging.error(f"Error loading {filename}: {e}")
-            signal['data'] = None
-    
-    def _convert_signal_time_to_utc(self, timestamp_str: str) -> pd.Timestamp:
-        """
-        Convert signal timestamp from local time to UTC.
+        df = pd.read_csv(filepath)
         
-        THE KEY FIX: Signal timestamps are in user's local time (e.g., Mountain Time)
-        but data is in UTC. We must convert properly.
+        # Convert timestamp column
+        time_col = 'timestamp' if 'timestamp' in df.columns else 'ts_event'
+        df[time_col] = pd.to_datetime(df[time_col], utc=True)
         
-        Example:
-            Input:  "2025-08-25 07:35:00" (Mountain Time)
-            Output: "2025-08-25 13:35:00+00:00" (UTC)
-        """
-        try:
-            # Parse the timestamp string (naive datetime)
-            naive_dt = pd.to_datetime(timestamp_str)
-            
-            # Localize to signal timezone (e.g., Mountain Time)
-            local_dt = self.signal_tz.localize(naive_dt)
-            
-            # Convert to UTC
-            utc_dt = local_dt.astimezone(pytz.UTC)
-            
-            return pd.Timestamp(utc_dt)
-            
-        except Exception as e:
-            logging.error(f"Error converting timestamp '{timestamp_str}': {e}")
-            # Fallback: treat as UTC (old behavior)
-            return pd.to_datetime(timestamp_str, utc=True)
+        # Calculate mid price if not present
+        if 'mid' not in df.columns:
+            if 'bid' in df.columns and 'ask' in df.columns:
+                df['mid'] = (df['bid'] + df['ask']) / 2
+            elif 'close' in df.columns:
+                df['mid'] = df['close']
+        
+        signal['data'] = df
     
     def _build_event_queue(self, signals: List[Dict]) -> List[Dict]:
-        """
-        Build chronological event queue
-        FIXED: Signal timestamps properly converted from local time to UTC
-        """
+        """Build chronological event queue"""
         events = []
         
         for signal in signals:
             if signal.get('data') is None:
                 continue
             
-            signal_id = f"{signal['ticker']}_{signal['expiry_date']}_{signal['strike']}_{signal['contract_type']}"
-            signal['signal_id'] = signal_id
+            signal_id = signal['signal_id']
             
-            # CRITICAL FIX: Convert signal time from local timezone to UTC
-            signal_time = self._convert_signal_time_to_utc(signal['timestamp'])
+            # Parse signal timestamp and convert to UTC
+            # Signal timestamps are in LOCAL TIME (Mountain Time)
+            timestamp_str = signal['timestamp']
             
-            logging.debug(f"Signal {signal_id}: local={signal['timestamp']} -> UTC={signal_time}")
+            try:
+                # Parse the naive datetime
+                naive_dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                
+                # Localize to signal timezone (Mountain Time)
+                local_dt = self.signal_tz.localize(naive_dt)
+                
+                # Convert to UTC
+                signal_time = local_dt.astimezone(pytz.UTC)
+                
+            except Exception as e:
+                logging.warning(f"Failed to parse timestamp {timestamp_str}: {e}")
+                continue
             
-            # Add signal entry event
+            # Add signal event
             events.append({
                 'timestamp': signal_time,
                 'type': 'signal',
@@ -294,9 +292,7 @@ class BacktestEngine:
         return events
     
     def _process_signal_event(self, event: Dict):
-        """
-        Process signal entry
-        """
+        """Process signal entry"""
         signal = event['signal']
         signal_id = signal['signal_id']
         
@@ -430,26 +426,25 @@ class BacktestEngine:
             if current_price <= pullback_threshold:
                 return "pullback_stop"
         
-        # 3. NATIVE TRAILING STOP (last resort)
-        native_stop_price = highest_price * (1 - self.native_trail_percent / 100)
-        if current_price <= native_stop_price:
+        # 3. NATIVE TRAIL (last resort - always active)
+        native_stop = highest_price * (1 - self.native_trail_percent / 100)
+        if current_price <= native_stop:
             return "native_trail"
         
         return None
     
     def _close_position(self, signal_id: str, exit_reason: str, exit_price: float, exit_time):
-        """Close a position and log the trade"""
+        """Close position and log trade"""
         if signal_id not in self.portfolio['positions']:
             return
         
         position = self.portfolio['positions'][signal_id]
         signal = position['signal']
-        
         entry_price = position['entry_price']
         quantity = position['quantity']
         
-        # Calculate P&L (same for CALL and PUT - we're buying to open, selling to close)
-        pnl = (exit_price - entry_price) * quantity * 100
+        # Calculate P&L (assuming 100 shares per contract for options)
+        pnl = (exit_price - entry_price) * 100 * quantity
         
         # Log trade
         self.trade_log.append({
@@ -461,17 +456,19 @@ class BacktestEngine:
             'exit_price': exit_price,
             'entry_time': position['entry_time'],
             'exit_time': exit_time,
-            'quantity': quantity,
             'pnl': pnl,
-            'exit_reason': exit_reason
+            'exit_reason': exit_reason,
+            'highest_price': position['highest_price'],
+            'breakeven_activated': position['breakeven_activated']
         })
         
         # Update portfolio
         self.portfolio['cash'] += pnl
         del self.portfolio['positions'][signal_id]
-        del self.active_contracts[signal_id]
         
-        # Clean up ATR tracking
+        # Clean up tracking
+        if signal_id in self.active_contracts:
+            del self.active_contracts[signal_id]
         if signal_id in self.atr_values:
             del self.atr_values[signal_id]
         if signal_id in self.atr_stops:
@@ -496,7 +493,7 @@ class BacktestEngine:
                     self._close_position(signal_id, 'eod_close', exit_price, exit_time)
     
     def _calculate_results(self) -> Dict:
-        """Calculate backtest results"""
+        """Calculate backtest results with outlier-resistant metrics"""
         if not self.trade_log:
             return self._empty_results()
         
@@ -506,25 +503,31 @@ class BacktestEngine:
         if 'entry_time' in df.columns and 'exit_time' in df.columns:
             df['entry_time'] = pd.to_datetime(df['entry_time'], utc=True)
             df['exit_time'] = pd.to_datetime(df['exit_time'], utc=True)
-            df['hold_minutes'] = (df['exit_time'] - df['entry_time']).dt.total_seconds() / 60
-            avg_hold_minutes = df['hold_minutes'].mean()
+            df['hold_time'] = (df['exit_time'] - df['entry_time']).dt.total_seconds() / 60
         else:
-            avg_hold_minutes = 0
+            df['hold_time'] = 0
         
+        # Basic metrics
         total_trades = len(df)
         winning_trades = len(df[df['pnl'] > 0])
         losing_trades = len(df[df['pnl'] <= 0])
-        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
         total_pnl = df['pnl'].sum()
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        
         avg_win = df[df['pnl'] > 0]['pnl'].mean() if winning_trades > 0 else 0
         avg_loss = abs(df[df['pnl'] <= 0]['pnl'].mean()) if losing_trades > 0 else 0
         
-        profit_factor = (avg_win * winning_trades / (avg_loss * losing_trades)) if losing_trades > 0 and avg_loss > 0 else 0
+        gross_profit = df[df['pnl'] > 0]['pnl'].sum()
+        gross_loss = abs(df[df['pnl'] <= 0]['pnl'].sum())
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else gross_profit if gross_profit > 0 else 0
         
         final_capital = self.starting_capital + total_pnl
         return_pct = (total_pnl / self.starting_capital) * 100
         
+        avg_hold_minutes = df['hold_time'].mean() if len(df) > 0 else 0
+        
+        # Exit reason counts
         exit_reasons = df['exit_reason'].value_counts().to_dict()
         
         results = {
@@ -539,9 +542,61 @@ class BacktestEngine:
             'final_capital': final_capital,
             'return_pct': return_pct,
             'avg_minutes_held': avg_hold_minutes,
-            'exit_reasons': exit_reasons
+            'exit_reasons': exit_reasons,
+            'max_drawdown': 0  # Placeholder for now
         }
         
+        # =================================================================
+        # OUTLIER-RESISTANT METRICS
+        # =================================================================
+        trade_pnls = [t['pnl'] for t in self.trade_log]
+        
+        if len(trade_pnls) > 0:
+            # Median P&L (not affected by outliers)
+            results['median_pnl'] = float(np.median(trade_pnls))
+            
+            # Standard deviation (measures consistency)
+            results['pnl_std'] = float(np.std(trade_pnls))
+            
+            # Max single trade (outlier detection)
+            results['max_single_win'] = float(max(trade_pnls))
+            results['max_single_loss'] = float(min(trade_pnls))
+            
+            # P&L without best trade (robustness check)
+            sorted_pnls = sorted(trade_pnls, reverse=True)
+            results['pnl_without_best'] = float(sum(sorted_pnls[1:])) if len(sorted_pnls) > 1 else 0
+            
+            # Trimmed P&L (exclude top and bottom 10%)
+            if len(trade_pnls) >= 5:
+                trim_count = max(1, len(trade_pnls) // 10)
+                sorted_asc = sorted(trade_pnls)
+                trimmed = sorted_asc[trim_count:-trim_count] if trim_count > 0 and len(sorted_asc) > 2*trim_count else sorted_asc
+                results['trimmed_pnl'] = float(sum(trimmed))
+            else:
+                results['trimmed_pnl'] = results['total_pnl']
+            
+            # Consistency score (mean / std - Sharpe-like)
+            if results['pnl_std'] > 0:
+                results['consistency_score'] = float(np.mean(trade_pnls) / results['pnl_std'])
+            else:
+                results['consistency_score'] = 0.0
+            
+            # Outlier flag (best trade > 50% of total P&L)
+            if results['total_pnl'] > 0:
+                results['outlier_flag'] = results['max_single_win'] > (results['total_pnl'] * 0.5)
+            else:
+                results['outlier_flag'] = False
+        else:
+            results['median_pnl'] = 0
+            results['pnl_std'] = 0
+            results['max_single_win'] = 0
+            results['max_single_loss'] = 0
+            results['pnl_without_best'] = 0
+            results['trimmed_pnl'] = 0
+            results['consistency_score'] = 0
+            results['outlier_flag'] = False
+        
+        # Log results
         logging.info("\n" + "="*80)
         logging.info("BACKTEST RESULTS")
         logging.info("="*80)
@@ -569,13 +624,23 @@ class BacktestEngine:
             'final_capital': self.starting_capital,
             'return_pct': 0,
             'avg_minutes_held': 0,
-            'exit_reasons': {}
+            'exit_reasons': {},
+            'max_drawdown': 0,
+            # Outlier-resistant metrics
+            'median_pnl': 0,
+            'pnl_std': 0,
+            'max_single_win': 0,
+            'max_single_loss': 0,
+            'pnl_without_best': 0,
+            'trimmed_pnl': 0,
+            'consistency_score': 0,
+            'outlier_flag': False
         }
 
 
 if __name__ == "__main__":
     print("="*80)
-    print("BACKTEST ENGINE - TIMEZONE FIXED v2")
+    print("BACKTEST ENGINE - TIMEZONE FIXED v3 + OUTLIER METRICS")
     print(f"Signal timezone: {SIGNAL_TIMEZONE}")
     print("="*80)
     
@@ -588,4 +653,5 @@ if __name__ == "__main__":
     
     print(f"\n{'='*80}")
     print(f"FINAL: {results['total_trades']} trades | ${results['total_pnl']:.2f} P&L")
+    print(f"Outlier Flag: {results['outlier_flag']} | P&L Without Best: ${results['pnl_without_best']:.2f}")
     print(f"{'='*80}")
