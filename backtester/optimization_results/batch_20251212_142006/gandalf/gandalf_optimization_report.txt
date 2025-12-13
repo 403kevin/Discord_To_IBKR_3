@@ -1,0 +1,124 @@
+================================================================================
+OPTIMIZATION REPORT: GANDALF
+Generated: 2025-12-12 14:26:29
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 0 (0.0%)
+Best P&L: $-94.00
+Best Win Rate: 0.0%
+Best Profit Factor: 0.00
+
+RECOMMENDATION
+----------------------------------------
+🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-94)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 5%
+  Trail Method: atr
+  Pullback Percent: 8%
+  ATR Period: 14
+  ATR Multiplier: 1.5
+  Native Trail: 20%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+  Results:
+    Total Trades: 11
+    Total P&L: $-94.00
+    Win Rate: 0.0%
+    Profit Factor: 0.00
+    Avg Hold Time: 4 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=8% | NT=20%
+  #2: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=8% | NT=25%
+  #3: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=8% | NT=30%
+  #4: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=10% | NT=20%
+  #5: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=10% | NT=25%
+  #6: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=10% | NT=30%
+  #7: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=15% | NT=20%
+  #8: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=15% | NT=25%
+  #9: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=15% | NT=30%
+  #10: P&L=$-94 | WR=0% | BE=5% | Trail=atr | PB=20% | NT=20%
+
+OUTLIER ANALYSIS
+----------------------------------------
+  Max Single Win: $0.00
+  Max Single Loss: $-38.00
+  P&L Without Best Trade: $-94.00
+  Trimmed P&L (excl top/bottom 10%): $-56.00
+  Consistency Score: -0.82
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 8%
+  P&L: $-124.00
+  Win Rate: 0.0%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json
+{
+  "breakeven_trigger_percent": [
+    2,
+    5,
+    8
+  ],
+  "pullback_percent": [
+    5,
+    8,
+    11
+  ],
+  "atr_period": [
+    11,
+    14,
+    17
+  ],
+  "atr_multiplier": [
+    1.0,
+    1.5,
+    2.0
+  ],
+  "native_trail_percent": [
+    15,
+    20,
+    25
+  ],
+  "trail_method": [
+    "atr"
+  ],
+  "psar_enabled": [
+    false
+  ],
+  "rsi_hook_enabled": [
+    false
+  ]
+}
+```
+
+CONFIG.PY SNIPPET (Best Config)
+----------------------------------------
+"exit_strategy": {
+    "breakeven_trigger_percent": 5,
+    "trail_method": "atr",
+    "trail_settings": {
+        "pullback_percent": 8,
+        "atr_period": 14,
+        "atr_multiplier": 1.5
+    },
+    "momentum_exits": {
+        "psar_enabled": false,
+        "rsi_hook_enabled": false
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 20}
+

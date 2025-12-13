@@ -1,0 +1,134 @@
+================================================================================
+OPTIMIZATION REPORT: WAXUI
+Generated: 2025-12-12 14:32:02
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 16 (8.3%)
+Best P&L: $350.00
+Best Win Rate: 36.8%
+Best Profit Factor: 1.50
+
+RECOMMENDATION
+----------------------------------------
+🟠 MARGINAL - Consider with caution, needs more data
+   Reasons: Positive P&L ($350)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 5%
+  Trail Method: atr
+  Pullback Percent: 8%
+  ATR Period: 14
+  ATR Multiplier: 2.0
+  Native Trail: 30%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+  Results:
+    Total Trades: 19
+    Total P&L: $350.00
+    Win Rate: 36.8%
+    Profit Factor: 1.50
+    Avg Hold Time: 11 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$350 | WR=37% | BE=5% | Trail=atr | PB=8% | NT=30%
+  #2: P&L=$350 | WR=37% | BE=5% | Trail=atr | PB=10% | NT=30%
+  #3: P&L=$350 | WR=37% | BE=5% | Trail=atr | PB=15% | NT=30%
+  #4: P&L=$350 | WR=37% | BE=5% | Trail=atr | PB=20% | NT=30%
+  #5: P&L=$280 | WR=37% | BE=10% | Trail=atr | PB=8% | NT=30%
+  #6: P&L=$280 | WR=37% | BE=10% | Trail=atr | PB=10% | NT=30%
+  #7: P&L=$280 | WR=37% | BE=10% | Trail=atr | PB=15% | NT=30%
+  #8: P&L=$280 | WR=37% | BE=10% | Trail=atr | PB=20% | NT=30%
+  #9: P&L=$280 | WR=37% | BE=15% | Trail=atr | PB=8% | NT=30%
+  #10: P&L=$280 | WR=37% | BE=15% | Trail=atr | PB=10% | NT=30%
+
+OUTLIER ANALYSIS
+----------------------------------------
+  Max Single Win: $720.00
+  Max Single Loss: $-150.00
+  P&L Without Best Trade: $-370.00
+  Trimmed P&L (excl top/bottom 10%): $-220.00
+  Consistency Score: 0.10
+  ⚠️ OUTLIER WARNING: Best trade is >50% of total P&L
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 40%
+  P&L: $2,194.00
+  Win Rate: 10.5%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json
+{
+  "breakeven_trigger_percent": [
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18
+  ],
+  "pullback_percent": [
+    7,
+    9,
+    11,
+    13,
+    15,
+    17
+  ],
+  "atr_period": [
+    12,
+    14,
+    16
+  ],
+  "atr_multiplier": [
+    1.8,
+    2.0,
+    2.2
+  ],
+  "native_trail_percent": [
+    28,
+    29,
+    30,
+    31,
+    32
+  ],
+  "trail_method": [
+    "atr"
+  ],
+  "psar_enabled": [
+    0
+  ],
+  "rsi_hook_enabled": [
+    0
+  ]
+}
+```
+
+CONFIG.PY SNIPPET (Best Config)
+----------------------------------------
+"exit_strategy": {
+    "breakeven_trigger_percent": 5,
+    "trail_method": "atr",
+    "trail_settings": {
+        "pullback_percent": 8,
+        "atr_period": 14,
+        "atr_multiplier": 2.0
+    },
+    "momentum_exits": {
+        "psar_enabled": false,
+        "rsi_hook_enabled": false
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 30}
+

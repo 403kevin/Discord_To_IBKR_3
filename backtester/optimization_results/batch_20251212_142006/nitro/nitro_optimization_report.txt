@@ -1,0 +1,124 @@
+================================================================================
+OPTIMIZATION REPORT: NITRO
+Generated: 2025-12-12 14:34:50
+Mode: QUICK
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 192
+Profitable configurations: 0 (0.0%)
+Best P&L: $-215.00
+Best Win Rate: 20.0%
+Best Profit Factor: 0.48
+
+RECOMMENDATION
+----------------------------------------
+🔴 NOT RECOMMENDED - Poor performance, skip or re-evaluate
+   Reasons: Negative P&L ($-215)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 10%
+  Trail Method: atr
+  Pullback Percent: 8%
+  ATR Period: 14
+  ATR Multiplier: 2.0
+  Native Trail: 30%
+  PSAR Enabled: False
+  RSI Hook Enabled: False
+
+  Results:
+    Total Trades: 20
+    Total P&L: $-215.00
+    Win Rate: 20.0%
+    Profit Factor: 0.48
+    Avg Hold Time: 9 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$-215 | WR=20% | BE=10% | Trail=atr | PB=8% | NT=30%
+  #2: P&L=$-215 | WR=20% | BE=10% | Trail=atr | PB=10% | NT=30%
+  #3: P&L=$-215 | WR=20% | BE=10% | Trail=atr | PB=15% | NT=30%
+  #4: P&L=$-215 | WR=20% | BE=10% | Trail=atr | PB=20% | NT=30%
+  #5: P&L=$-223 | WR=20% | BE=10% | Trail=atr | PB=8% | NT=20%
+  #6: P&L=$-223 | WR=20% | BE=10% | Trail=atr | PB=10% | NT=20%
+  #7: P&L=$-223 | WR=20% | BE=10% | Trail=atr | PB=15% | NT=20%
+  #8: P&L=$-223 | WR=20% | BE=10% | Trail=atr | PB=20% | NT=20%
+  #9: P&L=$-228 | WR=20% | BE=10% | Trail=atr | PB=8% | NT=25%
+  #10: P&L=$-228 | WR=20% | BE=10% | Trail=atr | PB=10% | NT=25%
+
+OUTLIER ANALYSIS
+----------------------------------------
+  Max Single Win: $105.00
+  Max Single Loss: $-191.00
+  P&L Without Best Trade: $-320.00
+  Trimmed P&L (excl top/bottom 10%): $-149.00
+  Consistency Score: -0.21
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 10%
+  P&L: $-377.00
+  Win Rate: 10.0%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json
+{
+  "breakeven_trigger_percent": [
+    7,
+    10,
+    13
+  ],
+  "pullback_percent": [
+    5,
+    8,
+    11
+  ],
+  "atr_period": [
+    11,
+    14,
+    17
+  ],
+  "atr_multiplier": [
+    1.5,
+    2.0,
+    2.5
+  ],
+  "native_trail_percent": [
+    25,
+    30,
+    35
+  ],
+  "trail_method": [
+    "atr"
+  ],
+  "psar_enabled": [
+    false
+  ],
+  "rsi_hook_enabled": [
+    false
+  ]
+}
+```
+
+CONFIG.PY SNIPPET (Best Config)
+----------------------------------------
+"exit_strategy": {
+    "breakeven_trigger_percent": 10,
+    "trail_method": "atr",
+    "trail_settings": {
+        "pullback_percent": 8,
+        "atr_period": 14,
+        "atr_multiplier": 2.0
+    },
+    "momentum_exits": {
+        "psar_enabled": false,
+        "rsi_hook_enabled": false
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 30}
+
