@@ -1,0 +1,53 @@
+====================================================================================================
+MASTER COMPARISON REPORT - ALL TRADERS
+Generated: 2025-12-15 06:04:56
+Mode: BALANCED
+Total Time: 18:26:19.951898
+====================================================================================================
+
+TRADER RANKINGS (by Best P&L)
+--------------------------------------------------------------------------------
+Rank  Trader      Raw P&L    Trimmed    W/O Best   Consist. Outlier 
+--------------------------------------------------------------------------------
+1     zeus        $    755   $    380   $    357     0.40   ⚠️      
+2     waxui       $    350   $   -220   $   -370     0.10   ⚠️      
+3     diesel      $    330   $     67   $    178     0.35           
+4     money_mo    $    273   $    114   $     88     0.32   ⚠️      
+
+RECOMMENDATIONS SUMMARY
+--------------------------------------------------------------------------------
+
+ZEUS:
+  🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($755), Excellent profit factor (9.21), Many profitable configs (87.3%)
+
+WAXUI:
+  🟠 MARGINAL - Consider with caution, needs more data
+   Reasons: Positive P&L ($350)
+
+DIESEL:
+  🟡 PROMISING - Worth fine-tuning, monitor closely
+   Reasons: Positive P&L ($330), Excellent profit factor (6.41), Many profitable configs (47.3%)
+
+MONEY_MO:
+  🟡 PROMISING - Worth fine-tuning, monitor closely
+   Reasons: Positive P&L ($273), Excellent profit factor (3.68), Many profitable configs (48.2%)
+
+================================================================================
+TOP 3 TRADERS TO FOCUS ON
+================================================================================
+
+1. ZEUS
+   Best P&L: $755
+   Win Rate: 47.4%
+   See: zeus/zeus_optimization_report.txt
+
+2. WAXUI
+   Best P&L: $350
+   Win Rate: 36.8%
+   See: waxui/waxui_optimization_report.txt
+
+3. DIESEL
+   Best P&L: $330
+   Win Rate: 30.0%
+   See: diesel/diesel_optimization_report.txt

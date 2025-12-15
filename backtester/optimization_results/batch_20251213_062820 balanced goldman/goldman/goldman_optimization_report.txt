@@ -1,0 +1,138 @@
+================================================================================
+OPTIMIZATION REPORT: GOLDMAN
+Generated: 2025-12-14 01:19:37
+Mode: BALANCED
+================================================================================
+
+SUMMARY
+----------------------------------------
+Total configurations tested: 80,640
+Profitable configurations: 68,160 (84.5%)
+Best P&L: $1,799.00
+Best Win Rate: 60.0%
+Best Profit Factor: 6.23
+
+RECOMMENDATION
+----------------------------------------
+🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($1799), Decent win rate (60.0%), Excellent profit factor (6.23), Many profitable configs (84.5%)
+
+BEST CONFIGURATION (by P&L)
+----------------------------------------
+  Breakeven Trigger: 10%
+  Trail Method: atr
+  Pullback Percent: 5%
+  ATR Period: 30
+  ATR Multiplier: 2.0
+  Native Trail: 35%
+  PSAR Enabled: True
+  RSI Hook Enabled: True
+
+  Results:
+    Total Trades: 20
+    Total P&L: $1,799.00
+    Win Rate: 60.0%
+    Profit Factor: 6.23
+    Avg Hold Time: 11 min
+
+TOP 10 CONFIGURATIONS
+----------------------------------------
+  #1: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=5% | NT=35%
+  #2: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=5% | NT=35%
+  #3: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=5% | NT=35%
+  #4: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=5% | NT=35%
+  #5: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=7% | NT=35%
+  #6: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=7% | NT=35%
+  #7: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=7% | NT=35%
+  #8: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=7% | NT=35%
+  #9: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=10% | NT=35%
+  #10: P&L=$1799 | WR=60% | BE=10% | Trail=atr | PB=10% | NT=35%
+
+OUTLIER ANALYSIS
+----------------------------------------
+  Max Single Win: $1,280.00
+  Max Single Loss: $-125.00
+  P&L Without Best Trade: $519.00
+  Trimmed P&L (excl top/bottom 10%): $487.00
+  Consistency Score: 0.32
+  ⚠️ OUTLIER WARNING: Best trade is >50% of total P&L
+
+NATIVE TRAIL ONLY (Baseline)
+----------------------------------------
+  Best Native Trail: 35%
+  P&L: $378.00
+  Win Rate: 40.0%
+
+FINE-TUNE RECOMMENDATIONS
+----------------------------------------
+Based on top performers, focus testing on these ranges:
+
+```json
+{
+  "breakeven_trigger_percent": [
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18
+  ],
+  "pullback_percent": [
+    5,
+    8,
+    11,
+    14,
+    17,
+    20
+  ],
+  "atr_period": [
+    8,
+    14,
+    22
+  ],
+  "atr_multiplier": [
+    1.2,
+    2.0,
+    2.8
+  ],
+  "native_trail_percent": [
+    28,
+    30,
+    32,
+    34,
+    36,
+    38,
+    40,
+    42
+  ],
+  "trail_method": [
+    "atr"
+  ],
+  "psar_enabled": [
+    0
+  ],
+  "rsi_hook_enabled": [
+    0
+  ]
+}
+```
+
+CONFIG.PY SNIPPET (Best Config)
+----------------------------------------
+"exit_strategy": {
+    "breakeven_trigger_percent": 10,
+    "trail_method": "atr",
+    "trail_settings": {
+        "pullback_percent": 5,
+        "atr_period": 30,
+        "atr_multiplier": 2.0
+    },
+    "momentum_exits": {
+        "psar_enabled": true,
+        "rsi_hook_enabled": true
+    }
+},
+"safety_net": {"enabled": True, "native_trail_percent": 35}
+

@@ -1,0 +1,28 @@
+====================================================================================================
+MASTER COMPARISON REPORT - ALL TRADERS
+Generated: 2025-12-14 10:18:55
+Mode: BALANCED
+Total Time: 4:04:34.542819
+====================================================================================================
+
+TRADER RANKINGS (by Best P&L)
+--------------------------------------------------------------------------------
+Rank  Trader      Raw P&L    Trimmed    W/O Best   Consist. Outlier 
+--------------------------------------------------------------------------------
+1     qiqo        $  6,022   $    301   $    219     0.25   ⚠️      
+
+RECOMMENDATIONS SUMMARY
+--------------------------------------------------------------------------------
+
+QIQO:
+  🟢 HIGHLY RECOMMENDED - Strong performer, proceed to fine-tuning
+   Reasons: Strong P&L ($6022), Excellent profit factor (21.69), Many profitable configs (100.0%)
+
+================================================================================
+TOP 3 TRADERS TO FOCUS ON
+================================================================================
+
+1. QIQO
+   Best P&L: $6,022
+   Win Rate: 50.0%
+   See: qiqo/qiqo_optimization_report.txt

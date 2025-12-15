@@ -18,9 +18,9 @@ class Config:
         # =================================================================
         # --- LEGEND: GLOBAL BOT SETTINGS ---
         # =================================================================
-        self.polling_interval_seconds = 2
-        self.delay_between_channels = 2
-        self.delay_after_full_cycle = 2
+        self.polling_interval_seconds = 1
+        self.delay_between_channels = 1
+        self.delay_after_full_cycle = 0.5
         
         self.MARKET_TIMEZONE = "US/Mountain" 
 
@@ -87,7 +87,7 @@ class Config:
         # ADD THIS NEW SECTION BELOW sentiment_filter
         # No API key required - uses TradingView's public endpoints
         self.vix_filter = {
-            "enabled": True,
+            "enabled": False,
             
             # Basic VIX range
             "vix_max": 30,      # Don't trade when VIX > 30 (market panic/extreme fear)
@@ -102,7 +102,7 @@ class Config:
             # ADVANCED: Multi-metric volatility regime detection
             # Set "enabled": True to use sophisticated vol filtering
             "advanced_metrics": {
-                "enabled": True,  # Set True to enable advanced filtering
+                "enabled": False,  # Set True to enable advanced filtering
                 
                 "vvix_max": 130,   # VIX of VIX - don't trade if volatility itself is too volatile
                                    # Normal range: 70-100, High: 100-130, Extreme: >130
@@ -163,7 +163,7 @@ class Config:
         # =================================================================
         self.profiles = [
             {
-                "channel_id": "1392531225348014180",
+                "channel_id": "000000",
                 "channel_name": "test_server",
                 "enabled": False,
                 "assume_buy_on_ambiguous": True,
@@ -187,13 +187,11 @@ class Config:
                     "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-                    
-                    "trail_method": "atr", # ** pullback_percent or atr **
-
+                    "trail_method": "atr",
                     "trail_settings": {
                         "pullback_percent": 10,
-                        "atr_period": 14,
-                        "atr_multiplier": 1.5
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -202,7 +200,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 35}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
             
             # ==========
@@ -230,14 +228,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 5,
+                    "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
                         "pullback_percent": 10,
-                        "atr_period": 5,
-                        "atr_multiplier": 3
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -246,7 +244,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 25}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             # ==========
@@ -280,9 +278,9 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 8,
-                        "atr_period": 5,
-                        "atr_multiplier": 2.5
+                        "pullback_percent": 10,
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -291,7 +289,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 25}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             # ==========
@@ -320,14 +318,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 5,
+                    "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-                    "trail_method": "pullback_percent",
+                    "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 12,
-                        "atr_period": 5,
-                        "atr_multiplier": 0.5
+                        "pullback_percent": 10,
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -336,7 +334,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 25}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             # ==========
@@ -365,14 +363,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 15,
+                    "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 8,
-                        "atr_period": 30,
-                        "atr_multiplier": 3.0
+                        "pullback_percent": 10,
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -389,9 +387,9 @@ class Config:
             # ==========
 
             {
-                "channel_id": "1196227916032376883",
-                "channel_name": "arrow",
-                "enabled": False,
+                "channel_id": "852526152252784651",
+                "channel_name": "GOLDMAN",
+                "enabled": True,
                 "assume_buy_on_ambiguous": False,
                 "ambiguous_expiry_enabled": True,
 
@@ -415,9 +413,9 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 8,
-                        "atr_period": 30,
-                        "atr_multiplier": 3.0
+                        "pullback_percent": 10,
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -426,7 +424,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 35}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             
@@ -459,11 +457,11 @@ class Config:
                     "breakeven_trigger_percent": 10,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-                    "trail_method": "pullback_percent",
+                    "trail_method": "atr",
                     "trail_settings": {
                         "pullback_percent": 10,
-                        "atr_period": 5,
-                        "atr_multiplier": 0.5
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -472,7 +470,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 25}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
             
@@ -507,9 +505,9 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 8,
-                        "atr_period": 5,
-                        "atr_multiplier": 0.5
+                        "pullback_percent": 10,
+                        "atr_period": 20,
+                        "atr_multiplier": 2
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -518,7 +516,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 25}
+                "safety_net": {"enabled": True, "native_trail_percent": 30}
             },
 
         ]
