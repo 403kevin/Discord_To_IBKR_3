@@ -228,14 +228,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 7,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
-                        "atr_multiplier": 2
+                        "pullback_percent": 5,
+                        "atr_period": 10,
+                        "atr_multiplier": 1
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -278,8 +278,8 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
+                        "pullback_percent": 8,
+                        "atr_period": 14,
                         "atr_multiplier": 2
                     },
                     "momentum_exits": {
@@ -318,13 +318,13 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 20,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
+                        "pullback_percent": 5,
+                        "atr_period": 30,
                         "atr_multiplier": 2
                     },
                     "momentum_exits": {
@@ -363,14 +363,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 5,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
-                        "atr_multiplier": 2
+                        "pullback_percent": 8,
+                        "atr_period": 14,
+                        "atr_multiplier": 1.5
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -379,7 +379,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 30}
+                "safety_net": {"enabled": True, "native_trail_percent": 20}
             },
 
             # ==========
@@ -401,7 +401,7 @@ class Config:
 
                 "trading": {
                     "funds_allocation": 1000,
-                    "min_price_per_contract": 0.30,
+                    "min_price_per_contract": 0.20,
                     "max_price_per_contract": 10.0,
                     "entry_order_type": "MKT",
                     "time_in_force": "DAY"
@@ -413,8 +413,8 @@ class Config:
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
+                        "pullback_percent": 5,
+                        "atr_period": 30,
                         "atr_multiplier": 2
                     },
                     "momentum_exits": {
@@ -424,7 +424,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 30}
+                "safety_net": {"enabled": True, "native_trail_percent": 36}
             },
 
             
@@ -454,14 +454,14 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 5,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
-                    "trail_method": "atr",
+                    "trail_method": "pullback_percent",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
-                        "atr_multiplier": 2
+                        "pullback_percent": 17,
+                        "atr_period": 8,
+                        "atr_multiplier": 0.8
                     },
                     "momentum_exits": {
                         "psar_enabled": False,
@@ -470,7 +470,7 @@ class Config:
                         "rsi_settings": {"period": 14, "overbought_level": 70, "oversold_level": 30}
                     }
                 },
-                "safety_net": {"enabled": True, "native_trail_percent": 30}
+                "safety_net": {"enabled": True, "native_trail_percent": 18}
             },
 
             
@@ -500,13 +500,13 @@ class Config:
                 },
 
                 "exit_strategy": {
-                    "breakeven_trigger_percent": 10,
+                    "breakeven_trigger_percent": 5,
                     "min_ticks_per_bar": 5,
                     "exit_priority": ["breakeven", "rsi_hook", "psar_flip", "atr_trail", "pullback_stop"],
                     "trail_method": "atr",
                     "trail_settings": {
-                        "pullback_percent": 10,
-                        "atr_period": 20,
+                        "pullback_percent": 8,
+                        "atr_period": 14,
                         "atr_multiplier": 2
                     },
                     "momentum_exits": {
